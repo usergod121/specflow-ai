@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  日志配置。
+  刻意简单：写 stderr，不写文件、不滚动。
+  这套工具一次运行只有几十行日志，落到文件里只会多出一个没人清理的目录；
+  真正的运行记录已经在 .specflow/snapshots 里了。
+-->
+<configuration>
+
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss} %-5level %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <logger name="com.specflow" level="INFO"/>
+
+    <!-- 第三方库的 DEBUG 日志对排查本项目没有价值 -->
+    <root level="WARN">
+        <appender-ref ref="STDERR"/>
+    </root>
+
+</configuration>

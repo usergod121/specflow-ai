@@ -1,0 +1,19 @@
+# Specflow 项目配置。一次配好，长期复用。
+#
+# 与 spec 的分工：spec 描述「这一次改什么」，本文件描述
+# 「这个项目怎么构建、怎么连模型」。
+
+build:
+  # 改动落盘后执行的编译命令；返回非 0 即视为校验失败并自动回滚。
+  compile: "mvn -q -DskipTests compile"
+
+llm:
+  base-url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  # 密钥只从环境变量读，不写进版本库
+  api-key-env: "SPECFLOW_API_KEY"
+  temperature: 0.2
+
+snapshot:
+  enabled: true
+  dir: ".specflow/snapshots"

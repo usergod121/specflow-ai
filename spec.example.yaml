@@ -1,0 +1,27 @@
+version: 1
+
+# 示例 spec。复制成 spec.yaml 后按需修改，再运行：
+#   specflow validate          只校验，不花钱
+#   specflow run               真正调用模型
+
+strategy: search_replace
+
+prompt: |
+  给 Console 增加一个 error 方法，输出以 "[ERROR] " 开头的行。
+  保持与现有 ok/warn/fail 方法一致的写法。
+
+acceptance:
+  - 新方法使用与其他方法相同的输出通道
+  - 不改动已有方法的签名
+# 允许被改动的文件白名单。补丁块指向不在其中的文件会被直接拒绝。
+# 文件不存在就是新建，已存在就是就地修改——不用声明模式。
+targets:
+  - src/main/java/com/specflow/cli/Console.java
+
+constraints:
+  - 不引入新的第三方依赖
+  - 不调整已有方法的顺序
+
+verify:
+  compile: true
+  max-retry: 1

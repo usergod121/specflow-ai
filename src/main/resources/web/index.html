@@ -1,0 +1,3076 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>specflow</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --line: #e3e6ea;
+    --text: #1f2328;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --add: #e6ffec;
+    --del: #ffebe9;
+    --warn: #fff8e1;
+    --error: #fff1f0;
+    --ok: #e7f6ec;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  /*
+   * hidden 属性只靠浏览器自带的样式生效，而页面里任何一条 display 规则都会把它盖掉。
+   * <main id="workspace"> 和 .welcome 就栽在这里：标着 hidden 却照样占满一屏，
+   * 于是欢迎页下面拖着一整个空的工作区，模板、文件树全是空的还照样显示；
+   * 反过来，有项目时欢迎页那块空面板也会压在模板上面。
+   * 所以这条规矩要写死——用 hidden 表达「不显示」的地方，一律以它为准。
+   */
+  [hidden] { display: none !important; }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  #files-panel { width: 340px; flex: none; padding: 12px; }
+  #main-panel { flex: 1; min-width: 0; padding: 16px; }
+
+  h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  input[type=text], textarea, select {
+    width: 100%;
+    padding: 7px 9px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+    background: #fff;
+    color: inherit;
+  }
+  textarea { resize: vertical; font-family: inherit; }
+  input[type=text]:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  /* ---------- 文件树 ---------- */
+  .tree-tools {
+    display: flex;
+    gap: 12px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .tree-tools span { cursor: pointer; }
+  .tree-tools span:hover { color: var(--accent); }
+  .tree {
+    max-height: 46vh;
+    overflow: auto;
+    margin: 6px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    padding: 6px 0;
+  }
+  .node {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    padding: 2px 4px;
+    font: 12px/1.6 ui-monospace, Consolas, monospace;
+    white-space: nowrap;
+  }
+  .node.dir { cursor: pointer; }
+  .node:hover { background: var(--bg); }
+  .node .caret { width: 10px; flex: none; color: var(--muted); }
+  .node .name { overflow: hidden; text-overflow: ellipsis; }
+  .node.dir .name { color: #4b5563; }
+  .node.file input { flex: none; margin: 0; }
+  .node.file { cursor: pointer; }
+
+  /* 目录行上的「＋」：每一行都挂个加号会把树糊掉，所以平时压暗，指到这行才亮起来 */
+  .node.dir .plus {
+    margin-left: auto;
+    flex: none;
+    padding: 0 4px;
+    color: var(--muted);
+    opacity: .35;
+  }
+  .node.dir:hover .plus { opacity: 1; }
+  .node.dir .plus:hover { color: var(--accent); }
+
+  .newpath { display: flex; gap: 6px; margin-top: 8px; }
+  .newpath input { flex: 1; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+  .newpath button { padding: 6px 12px; font-size: 13px; flex: none; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    padding: 2px 6px;
+    border: 1px solid #bcd0f7;
+    border-radius: 4px;
+    background: #eef4ff;
+    font: 11px/1.6 ui-monospace, Consolas, monospace;
+  }
+  .chip .text { overflow: hidden; text-overflow: ellipsis; }
+  .chip .x { cursor: pointer; color: var(--muted); flex: none; }
+  .chip .x:hover { color: #b91c1c; }
+  .counts { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .counts b { color: var(--text); }
+
+  /* ---------- 表单 ---------- */
+  .field { margin-bottom: 12px; }
+  .field > label {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .field > label .key {
+    font: 11px ui-monospace, Consolas, monospace;
+    color: #9ca3af;
+    margin-left: 6px;
+  }
+  .tpl-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  /* 小号按钮：给「管理模板」这类行内入口用。它必须一眼看出能点，
+     否则模板列表看起来就是个固定的下拉框。 */
+  button.small {
+    padding: 3px 12px;
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .tpl-head .type {
+    font: 11px/1.6 ui-monospace, Consolas, monospace;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #eef4ff;
+    border: 1px solid #bcd0f7;
+    color: #1d4ed8;
+  }
+  .row { display: flex; gap: 20px; align-items: center; margin: 12px 0; }
+  .row label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+
+  button {
+    padding: 8px 22px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  button:disabled { background: #9db4e8; cursor: default; }
+  /* 次要按钮：白底描边。凡是「可做但非主路径」的动作都用它。
+     之前这条规则只写在 .actions / .list-row 里，别处的 ghost 会退化成主按钮。 */
+  button.ghost {
+    background: #fff;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  button.ghost:disabled {
+    background: #fff;
+    color: #9db4e8;
+    border-color: #c7d6f5;
+    cursor: default;
+  }
+
+  .notice {
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    white-space: pre-wrap;
+    background: #fff;
+    box-shadow: 0 6px 20px rgba(31, 35, 40, .14);
+    margin-bottom: 8px;
+  }
+  .notice.error { background: var(--error); }
+  .notice.warn { background: var(--warn); }
+  .notice.ok { background: var(--ok); }
+
+  /* 提示浮层。必须压在所有弹层之上：模板管理、任务草稿打开时会盖住整个主面板，
+     提示要是写进主面板就等于没写——表现为「点了保存没反应」，其实后端已经说清原因了。 */
+  #notice {
+    position: fixed;
+    top: 56px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 50;
+    width: min(560px, calc(100% - 32px));
+  }
+  #notice:empty { display: none; }
+  #log {
+    margin-top: 16px;
+    border-top: 1px solid var(--line);
+    padding-top: 10px;
+    font: 12px/1.7 ui-monospace, Consolas, monospace;
+    max-height: 220px;
+    overflow: auto;
+  }
+  #log:empty { display: none; }
+  .line { white-space: pre-wrap; word-break: break-all; }
+  .line.warn { color: #92400e; }
+  .line.error { color: #b91c1c; }
+  .line .round { color: var(--muted); margin-right: 6px; }
+
+  #result:empty { display: none; }
+  #result { margin-top: 16px; }
+  .status { font-weight: 600; margin-bottom: 4px; }
+  .status.ok { color: #15803d; }
+  .status.bad { color: #b91c1c; }
+  .status.mid { color: #92400e; }
+  .detail { color: var(--muted); font-size: 13px; margin-bottom: 12px; white-space: pre-wrap; }
+  details.change {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  details.change summary {
+    padding: 7px 10px;
+    cursor: pointer;
+    font: 12px/1.5 ui-monospace, Consolas, monospace;
+    background: var(--bg);
+  }
+  .diff { font: 12px/1.6 ui-monospace, Consolas, monospace; overflow-x: auto; }
+  .diff div { padding: 0 10px; white-space: pre; }
+  .diff div.add { background: var(--add); }
+  .diff div.del { background: var(--del); }
+  .ctx-list { margin-top: 6px; }
+  .ctx-empty { color: #9ca3af; font-size: 12px; }
+  .ctx-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 3px 0;
+  }
+  .ctx-kind {
+    flex: none;
+    padding: 1px 5px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--bg);
+    font: 11px ui-monospace, Consolas, monospace;
+    color: var(--muted);
+  }
+  .ctx-name {
+    font: 12px ui-monospace, Consolas, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ctx-note {
+    color: var(--muted);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ctx-item .x { cursor: pointer; color: var(--muted); margin-left: auto; flex: none; }
+  .ctx-item .x:hover { color: #b91c1c; }
+  .ctx-add { margin-top: 6px; }
+  .ctx-add summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .ctx-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .ctx-form button { align-self: flex-start; padding: 6px 14px; font-size: 13px; }
+
+  /* ---------- 验收标准 ---------- */
+  .acceptance-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .acceptance-row .a-text { flex: 1; padding: 5px 8px; font-size: 13px; }
+  .acceptance-row .x { cursor: pointer; color: var(--muted); flex: none; }
+  .acceptance-row .x:hover { color: #b91c1c; }
+  #add-acceptance { align-self: flex-start; padding: 5px 12px; font-size: 12px; }
+
+  /* ---------- 运行历史 ---------- */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(15, 23, 42, .35);
+  }
+  .overlay-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(920px, 100%);
+    max-height: 86vh;
+    overflow: hidden;
+    background: var(--panel);
+    border-radius: 10px;
+  }
+  .overlay-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .overlay-head .close { margin-left: auto; cursor: pointer; color: var(--muted); font-size: 12px; }
+  .overlay-head .close:hover { color: var(--text); }
+  .overlay-body { overflow: auto; padding: 14px 16px; }
+  .run-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 7px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .run-row:hover { background: var(--bg); }
+  .run-row .when { flex: none; font: 12px ui-monospace, Consolas, monospace; color: var(--muted); }
+  .badge { flex: none; padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+  .badge.ok { background: #ecfdf5; color: #15803d; }
+  .badge.bad { background: var(--error); color: #b91c1c; }
+  .badge.mid { background: var(--warn); color: #92400e; }
+  .run-row .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-detail { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .run-detail h3 { margin: 0 0 8px; font-size: 13px; }
+  .timeline { font: 12px/1.7 ui-monospace, Consolas, monospace; }
+  .timeline div { white-space: pre-wrap; }
+  .timeline .warn { color: #92400e; }
+  .timeline .error { color: #b91c1c; }
+  .timeline .round { color: var(--muted); margin-right: 6px; }
+  .empty { color: #9ca3af; font-size: 13px; }
+
+  /* ---------- 工作区管理（模板 / 任务草稿） ---------- */
+  .mgr-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .mgr-bar input, .mgr-bar select { flex: 1; }
+  .mgr-bar button { flex: none; padding: 7px 14px; font-size: 13px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+  .tabs span {
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tabs span.on { color: var(--accent); border-bottom-color: var(--accent); }
+  .field-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 90px 60px 1fr 34px;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .field-row.head { color: var(--muted); font-size: 11px; }
+  .field-row input, .field-row select { padding: 5px 7px; font-size: 12px; }
+  .field-row .x { cursor: pointer; color: var(--muted); text-align: center; }
+  .field-row .x:hover { color: #b91c1c; }
+  .list-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 7px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .list-row:hover { background: var(--bg); }
+  .list-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .list-row button { padding: 3px 10px; font-size: 12px; }
+  .list-row .danger { background: #fff; color: #b91c1c; border: 1px solid #f3c3c3; }
+  .mono { font-family: ui-monospace, Consolas, monospace; }
+  textarea.mono, input.mono { font-size: 12px; }
+
+  .actions { display: flex; gap: 10px; align-items: center; margin: 14px 0; }
+  .actions .note { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+  /* ---------- 实现方案 ---------- */
+  #plan:empty { display: none; }
+  #plan {
+    margin-top: 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .plan-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 9px 12px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+  }
+  .plan-head b { font-size: 13px; }
+  .plan-head .discard { margin-left: auto; cursor: pointer; color: var(--muted); font-size: 12px; }
+  .plan-head .discard:hover { color: #b91c1c; }
+  .plan-body { padding: 12px; }
+  .plan-summary { font-size: 13px; margin-bottom: 10px; white-space: pre-wrap; }
+  .flow { overflow-x: auto; text-align: center; }
+  .flow svg { max-width: 100%; height: auto; }
+  .flow-fallback {
+    font: 12px/1.6 ui-monospace, Consolas, monospace;
+    text-align: left;
+    white-space: pre;
+    background: var(--bg);
+    padding: 10px;
+    border-radius: 6px;
+    overflow-x: auto;
+  }
+  /* 图旁边那几行说明：哪几行没画进图里、哪些节点孤立、以及看原文的开关 */
+  .flow-notes { margin-top: 8px; }
+  .flow-note {
+    padding: 6px 8px;
+    border: 1px solid #f0e2b8;
+    border-radius: 6px;
+    background: #fffdf5;
+    color: #6b5b2e;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .flow-raw { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .flow-raw summary { cursor: pointer; }
+  .flow-raw summary:hover { color: var(--accent); }
+  .flow-raw pre {
+    margin: 6px 0 0;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    overflow-x: auto;
+    font: 12px/1.6 ui-monospace, Consolas, monospace;
+    white-space: pre;
+  }
+  .missing { margin-top: 12px; }
+  .missing h3 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    color: #92400e;
+  }
+  .missing h3.blocking { color: #b91c1c; }
+  .missing .item {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border-radius: 6px;
+    background: var(--warn);
+    font-size: 13px;
+  }
+  .missing .item-head { display: flex; align-items: center; gap: 6px; }
+  .missing .what { font-weight: 600; }
+  .missing .why, .missing .how { color: #6b5b2e; font-size: 12px; margin-top: 2px; }
+  .missing .blocking-hint { color: #b91c1c; }
+  /* 严重度标签：三档颜色要一眼分得开，否则「严重度」等于没写 */
+  .sev {
+    flex: none;
+    padding: 0 5px;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    font-size: 11px;
+    line-height: 1.7;
+  }
+  .sev-blocking { background: #fee2e2; border-color: #fca5a5; color: #b91c1c; }
+  .sev-quality { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+  .sev-optional, .sev-unknown { background: #eef1f5; border-color: #d7dce3; color: var(--muted); }
+  .gate {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid #fca5a5;
+    border-radius: 6px;
+    background: #fff5f5;
+    color: #b91c1c;
+    font-size: 12px;
+  }
+  .gate button { flex: none; }
+  .ok-plan {
+    margin-top: 12px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #ecfdf5;
+    color: #15803d;
+    font-size: 13px;
+  }
+
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+  /* ---------- 欢迎页 ---------- */
+  /* 没打开项目时占满整屏。它和主界面是同一张页面的两块，靠 hidden 切换——
+     换项目时整页重来一次，状态一定干净。 */
+  .welcome {
+    display: flex;
+    justify-content: center;
+    padding: 48px 16px;
+  }
+  .welcome-panel {
+    width: min(880px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .welcome-head {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--line);
+  }
+  .welcome-head h1 { margin: 0 0 6px; font-size: 20px; font-weight: 600; }
+  .welcome-head p { margin: 0; color: var(--muted); font-size: 13px; }
+  .welcome-body {
+    display: flex;
+    gap: 28px;
+    padding: 20px 24px 24px;
+    align-items: flex-start;
+  }
+  .welcome-recent { flex: 1; min-width: 0; }
+  .welcome-open { width: 220px; flex: none; }
+  .welcome-open button { width: 100%; }
+  .welcome-open button.ghost { margin-top: 4px; }
+
+  /* 一整行：左边是「点它就打开」，右边可能有别的动作。
+     目录浏览和最近打开共用它，两处长得一样——它们本来就是同一件事。 */
+  .open-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    border-radius: 6px;
+  }
+  .open-row:hover { background: var(--bg); }
+  .open-row > .hit {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+    padding: 8px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .open-row > .hit:disabled { cursor: default; }
+  .open-row .label { flex: 1; min-width: 0; }
+  .open-row .label .head {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .open-row .label .sub {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .open-row .when { flex: none; color: var(--muted); font-size: 12px; }
+  /* 项目被删了或移走了：灰掉并且点不动，别让人点了才发现 */
+  .open-row[data-missing="true"] .label .head { color: var(--muted); }
+  .open-row > .x {
+    flex: none;
+    padding: 4px 8px;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    cursor: pointer;
+  }
+  .open-row > .x:hover { color: #b91c1c; }
+
+  /* ---------- 目录浏览 ---------- */
+  .browser-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .browser-bar input { flex: 1; }
+  .browser-bar button { flex: none; padding: 7px 16px; }
+  #browser-dirs { margin-bottom: 6px; }
+  #browser-scan { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+  #browser-scan:empty { border-top: 0; margin-top: 0; padding-top: 0; }
+  #browser-scan .scan-line { font-size: 13px; margin-bottom: 4px; }
+  #browser-scan .scan-line .file { font-family: ui-monospace, Consolas, monospace; }
+  #browser-scan .scan-line .lang { color: var(--muted); }
+  #browser-scan .scan-command {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px;
+  }
+
+  /* 顶栏里的项目名。它比「编译校验…」那串更重要，所以给它正常字号和颜色。 */
+  .project-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--accent);
+  }
+  .project-name:empty { display: none; }
+
+  /* 「这个项目还没配过」的提示条。不弹窗、不挡路，但要摆在明面上。 */
+  #setup {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    margin-bottom: 14px;
+    background: var(--warn);
+    border: 1px solid #f0e2b8;
+    border-radius: 6px;
+  }
+  #setup .setup-text { flex: 1; min-width: 0; font-size: 13px; }
+  #setup .setup-command {
+    width: 100%;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* 读不出来的模板。不弹窗、不挡路，但要摆在明面上——
+     藏起来的话用户只会看到模板少了一个，然后对着「找不到模板」猜。 */
+  #tplbroken { margin-top: 10px; }
+  #tplbroken .broken-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  #tplbroken .broken-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    margin-bottom: 4px;
+    background: var(--warn);
+    border: 1px solid #f0e2b8;
+    border-radius: 6px;
+    font-size: 12px;
+  }
+  #tplbroken .broken-row .text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div id="notice"></div>
+
+<header>
+  <h1>specflow</h1>
+  <span class="project-name" id="projectname"></span>
+  <span class="meta" id="meta"></span>
+  <button class="ghost small" id="switchproject" style="margin-left:auto">切换项目</button>
+  <button class="ghost small" id="historylink">运行历史</button>
+</header>
+
+<!-- 欢迎页。没打开项目时显示它，打开了就换成下面的主界面。 -->
+<section class="welcome" id="welcome" hidden>
+  <div class="welcome-panel">
+    <div class="welcome-head">
+      <h1>specflow</h1>
+      <p>选一个项目开始。每个项目的东西都写在它自己的 <span class="mono">.specflow</span> 目录里。</p>
+    </div>
+    <div class="welcome-body">
+      <div class="welcome-recent">
+        <h2>最近打开</h2>
+        <div id="recent-list"></div>
+      </div>
+      <div class="welcome-open">
+        <button id="open-folder">打开文件夹…</button>
+        <div class="hint">
+          会弹出系统的文件夹选择窗口，和 IDEA 打开项目一样。
+        </div>
+        <button class="ghost" id="open-folder-manual">手动输入路径…</button>
+        <div class="hint">
+          目录里还没有 specflow 配置也没关系——进来之后会让你决定要不要初始化。
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="overlay" id="history" hidden>
+  <div class="overlay-panel">
+    <div class="overlay-head">
+      <b>运行历史</b>
+      <span class="meta" id="historymeta"></span>
+      <span class="close" id="historyclose">关闭</span>
+    </div>
+    <div class="overlay-body">
+      <div class="hint" id="historystats"></div>
+      <div id="runlist"></div>
+      <div id="rundetail"></div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="browser" hidden>
+  <div class="overlay-panel">
+    <div class="overlay-head">
+      <b>打开文件夹</b>
+      <span class="meta" id="browser-path"></span>
+      <span class="close" id="browser-close">关闭</span>
+    </div>
+    <div class="overlay-body">
+      <div class="browser-bar">
+        <button class="ghost" id="browser-up">上一级</button>
+        <input type="text" id="browser-input" placeholder="也可以直接粘一个完整路径">
+        <button class="ghost" id="browser-go">前往</button>
+      </div>
+      <div id="browser-dirs"></div>
+      <div id="browser-scan"></div>
+    </div>
+    <div class="actions">
+      <button id="browser-open">打开这个目录</button>
+      <span class="note" id="browser-note"></span>
+    </div>
+  </div>
+</div>
+
+<main id="workspace" hidden>
+  <aside class="panel" id="files-panel">
+    <div class="tpl-head">
+      <h2 style="margin:0">目标文件</h2>
+      <button class="ghost small" id="refreshfiles" style="margin-left:auto">刷新</button>
+    </div>
+    <input type="text" id="search" placeholder="输入关键字过滤…">
+    <div class="tree-tools" id="treetools" hidden>
+      <span id="expandall">展开全部</span>
+      <span id="collapseall">折叠全部</span>
+    </div>
+    <div class="tree" id="files"></div>
+
+    <h2 style="margin-top:14px">新建文件</h2>
+    <div class="newpath">
+      <input type="text" id="newpath" placeholder="src/main/java/demo/Foo.java">
+      <button id="addpath">添加</button>
+    </div>
+    <div class="chips" id="newchips"></div>
+    <div class="counts" id="picked"></div>
+  </aside>
+
+  <section class="panel" id="main-panel">
+
+    <div id="setup" hidden></div>
+
+    <div class="tpl-head">
+      <h2 style="margin:0">模板</h2>
+      <span class="type" id="tpltype" hidden></span>
+      <button class="ghost small" id="tplmanage" style="margin-left:auto">管理模板</button>
+    </div>
+    <select id="tpl"></select>
+    <div class="hint" id="tpldesc"></div>
+    <div id="tplbroken"></div>
+
+    <div class="field" style="margin-top:14px">
+      <label for="demand">需求</label>
+      <textarea id="demand" rows="6"
+                placeholder="例如：给 OrderService 加一个按订单号查询的方法"></textarea>
+    </div>
+
+    <div class="field">
+      <label>验收标准</label>
+      <div id="acceptance"></div>
+      <button class="ghost" id="add-acceptance">＋ 加一条</button>
+    </div>
+
+    <div class="field">
+      <label for="requirement-id">需求编号
+        <span class="key">填了会在改动处标 @requirement</span>
+      </label>
+      <input type="text" id="requirement-id" placeholder="例如 R-001">
+    </div>
+
+    <div class="field">
+      <label>上下文依赖</label>
+      <div class="ctx-list" id="ctxlist"></div>
+      <details class="ctx-add">
+        <summary>＋ 添加上下文依赖</summary>
+        <div class="ctx-form">
+          <select id="ctxkind">
+            <option value="ref">引用项目里的文件（每次运行实时读取）</option>
+            <option value="text">粘贴一段文本（例如建表语句）</option>
+          </select>
+          <input type="text" id="ctxname" placeholder="名称（可留空，自动用文件名）">
+          <input type="text" id="ctxref" placeholder="相对项目根的路径，例如 docs/order-table.sql">
+          <textarea id="ctxtext" rows="4" placeholder="粘贴内容" hidden></textarea>
+          <input type="text" id="ctxnote" placeholder="说明（可选）：例如「照这个已有接口的风格写」">
+          <button id="ctxadd">添加</button>
+        </div>
+      </details>
+    </div>
+
+    <details class="field">
+      <summary style="cursor:pointer;color:var(--muted);font-size:12px">附加约束</summary>
+      <textarea id="constraints" rows="2" placeholder="不引入新的第三方依赖"></textarea>
+    </details>
+
+    <div class="row">
+      <label><input type="checkbox" id="compile" checked> 编译校验</label>
+      <label>失败重试上限
+        <input type="number" id="maxretry" value="6" min="0" max="20" step="1"
+               style="width:64px;text-align:center">
+        轮
+      </label>
+    </div>
+
+    <div class="actions">
+      <button id="review" class="ghost">先检查</button>
+      <button id="run">运行</button>
+      <button id="taskmanage" class="ghost">任务草稿</button>
+      <span class="note" id="actionnote"></span>
+    </div>
+
+    <div id="plan"></div>
+    <div id="log"></div>
+    <div id="result"></div>
+  </section>
+</main>
+
+<div class="overlay" id="tplmgr" hidden>
+  <div class="overlay-panel">
+    <div class="overlay-head">
+      <b>模板管理</b>
+      <span class="meta" id="tplmgr-meta"></span>
+      <span class="close" id="tplmgr-close">关闭</span>
+    </div>
+    <div class="overlay-body">
+      <div class="mgr-bar">
+        <select id="tf-pick"></select>
+        <button class="ghost" id="tf-new">新建</button>
+      </div>
+      <div class="tabs">
+        <span data-view="form" class="on">表单</span>
+        <span data-view="yaml">源码</span>
+      </div>
+
+      <div id="tf-form">
+        <div class="field"><label>名称（同时是文件名）</label>
+          <input type="text" id="tf-name"></div>
+        <div class="field">
+          <label>标签</label>
+          <div class="chips" id="tf-tags"></div>
+          <div class="newpath">
+            <input type="text" id="tf-tag-input" list="tf-tag-options" placeholder="打一个词按回车加入，例如 mybatis">
+            <button class="ghost" id="tf-tag-add">添加</button>
+          </div>
+          <datalist id="tf-tag-options"></datalist>
+        </div>
+        <div class="field"><label>用途说明</label>
+          <input type="text" id="tf-desc"></div>
+        <div class="field">
+          <label>角色提示词</label>
+          <textarea id="tf-system" rows="6"></textarea></div>
+        <div class="hint">
+          需求不写在这里——需求每次都不一样，写进模板就等于一个模板只能匹配一种需求。
+        </div>
+      </div>
+
+      <div id="tf-yaml" hidden>
+        <textarea id="tf-source" rows="20" class="mono"></textarea>
+      </div>
+
+      <div class="actions">
+        <button id="tf-save">保存</button>
+        <button class="ghost" id="tf-delete">删除</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="taskmgr" hidden>
+  <div class="overlay-panel">
+    <div class="overlay-head">
+      <b>任务草稿</b>
+      <span class="meta">把当前这套组装存下来，下次直接载入</span>
+      <span class="close" id="taskmgr-close">关闭</span>
+    </div>
+    <div class="overlay-body">
+      <div class="mgr-bar">
+        <input type="text" id="task-name" placeholder="给这次需求起个名字，例如：订单查询接口">
+        <button id="task-save">保存当前</button>
+      </div>
+      <div id="task-list"></div>
+    </div>
+  </div>
+</div>
+
+<script src="flowchart.js"></script>
+<script>
+const FREE = '__free__';
+/** 下拉框里「新建模板」那一项。它是个动作，不是一种能停留的模式，所以也不能当模板名用。 */
+const NEW_TEMPLATE = '__new__';
+
+/**
+ * 从全部候选项里挑出该选中的那个。
+ *
+ * <p>重建下拉框（改了模板之后）不该把用户已经选好的东西弄丢：原来选的还在就留着，
+ * 不在了（比如刚被删掉）才退回第一个模板。
+ *
+ * <p>「新建模板」是动作不是模式，任何时候都不能被留下来当选择——
+ * 否则下次重建会把它当成默认值，下拉框会一直停在一项点了就弹窗的东西上。
+ *
+ * <p>纯逻辑、不碰 DOM，所以 src/test/js/web.test.js 直接读这段源码来测。
+ */
+function resolveTemplateChoice(values, previous, fallback) {
+  if (previous && previous !== NEW_TEMPLATE && values.includes(previous)) {
+    return previous;
+  }
+  return fallback;
+}
+
+const state = {
+  files: [],            // 项目里真实存在的文件
+  dirs: [],             // 项目里的目录（含空目录）：空包只能靠它显示出来
+  fileset: new Set(),   // 上面那份的集合形式，用来判断某个路径是不是新建
+  compileCommand: null, // 顶栏那句话要拼它
+  selected: new Set(),  // 本次选中的全部目标路径
+  expanded: new Set(),  // 展开的目录
+  dirPaths: [],         // 全部目录路径，「展开全部」用
+  templates: [],
+  brokenTemplates: [], // 目录里读不出来的那几份，附原因；照列出来并提供删除
+  templateChoice: null, // 模板下拉框里上一次真实选中的项；null = 还没选过
+  context: [],          // 本次的上下文依赖；模板默认项带 from='template' 标记
+  plan: null,           // 检查阶段确认过的实现方案，会随运行一起发回去
+  forced: false,        // 用户是否点了「我知道，仍然继续」（有阻断项时的一次性放行）
+  running: false,
+  cursor: 0,
+  runId: '',
+};
+const $ = id => document.getElementById(id);
+
+// ---------- 启动 ----------
+async function boot() {
+  try {
+    // 先问一句现在什么状态：没打开项目就进欢迎页，打开了才去拉项目里的东西。
+    // 这两条路差别很大，早期分岔比后面到处判断「有没有项目」干净得多。
+    const session = await getJson('/api/state');
+    renderHeader(session);
+    if (!session.open) {
+      renderWelcome(session.recent || []);
+      $('open-folder').onclick = pickFolder;
+      $('open-folder-manual').onclick = () => openBrowser('');
+      // 两种情况都要接着处理：窗口还开着（继续等结果），
+      // 或者刚选好还没来得及打开就刷新了（把用户的选择捡回来，不能默默丢掉）。
+      // 不处理的话，用户看到的是一个可以再点的按钮——再点一次就是第二个窗口。
+      const picking = session.picking;
+      if (picking && (picking.status === 'picking' || picking.status === 'picked')) {
+        showWaitingForPick();
+        followPicking(picking);
+      }
+      return;
+    }
+    await startWorkspace();
+  } catch (e) {
+    // 加载失败必须说出来。静默停在「加载中…」和「打不开」在用户眼里是一回事。
+    $('meta').textContent = '加载失败';
+    notice('error', '界面初始化失败：' + e.message
+        + '\n可以先在浏览器直接打开 /api/state，看看后端返回了什么。');
+  }
+}
+
+/** 顶栏：显示当前项目，并把只有项目里才有意义的按钮亮出来。 */
+function renderHeader(session) {
+  $('projectname').textContent = session.open ? session.root : '';
+  $('projectname').title = session.open ? session.root : '';
+  $('switchproject').hidden = !session.open;
+  $('historylink').hidden = !session.open;
+}
+
+/**
+ * 欢迎页：最近打开的项目。
+ *
+ * <p>点一下就打开。已经不在磁盘上的（被删了、移走了）灰掉并且点不动——
+ * 让人点了才发现，比一开始就说明白要糟。
+ */
+function renderWelcome(recent) {
+  $('welcome').hidden = false;
+  const box = $('recent-list');
+  box.innerHTML = '';
+  if (!recent.length) {
+    box.appendChild(emptyLine('还没打开过项目。点右边「打开文件夹」挑一个。'));
+    return;
+  }
+  for (const item of recent) {
+    const row = document.createElement('div');
+    row.className = 'open-row';
+    row.dataset.missing = item.exists ? 'false' : 'true';
+
+    const hit = document.createElement('button');
+    hit.type = 'button';
+    hit.className = 'hit';
+    hit.disabled = !item.exists;
+    hit.onclick = () => openProject(item.path);
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    const head = document.createElement('span');
+    head.className = 'head';
+    head.textContent = item.exists ? item.name : item.name + '（已不在磁盘上）';
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = item.path;
+    label.append(head, sub);
+
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = item.lastOpened || '';
+    hit.append(label, when);
+
+    // 项目被删了就会一直挂在这儿，得给个地方把它去掉
+    const forget = document.createElement('button');
+    forget.type = 'button';
+    forget.className = 'x';
+    forget.title = '从列表里去掉';
+    forget.textContent = '×';
+    forget.onclick = () => forgetRecent(item.path);
+
+    row.append(hit, forget);
+    box.appendChild(row);
+  }
+}
+
+/** 从「最近打开」里去掉一条，然后重画那个列表。 */
+async function forgetRecent(path) {
+  const result = await sendJson('DELETE', '/api/recent?path=' + encodeURIComponent(path));
+  if (!result.ok) {
+    return;
+  }
+  renderWelcome(result.payload.recent || []);
+}
+
+// ---------- 打开 / 切换项目 ----------
+
+/**
+ * 打开一个项目，然后整页重来一次。
+ *
+ * <p>刻意用整页刷新，而不是就地替换：换项目要换掉的东西太多（模板、文件树、草稿、
+ * 运行进度），就地更新只要漏一处，界面上就会留下「文件树是新的、模板还是旧的」这种四不像。
+ * 刷新一次几百毫秒，换的是「状态一定干净」。
+ */
+async function openProject(path) {
+  const result = await sendJson('POST', '/api/open', JSON.stringify({ path }));
+  if (!result.ok) {
+    return false;
+  }
+  location.reload();
+  return true;
+}
+
+/**
+ * 打开项目：让本机的服务去弹系统自己的「选择文件夹」窗口。
+ *
+ * <p>浏览器不会把系统对话框里选中的绝对路径交给页面（`<input webkitdirectory>`
+ * 和 File System Access API 都只给文件名），所以这件事只能由跑在同一台机器上的服务做。
+ *
+ * <p>窗口开没开着以<b>服务端</b>为准（`/api/pick-folder`）：这里点一下只是「开始挑」，
+ * 然后隔半秒问一次结果。这样刷新页面、连点几下、换个标签页，看到的都是同一个窗口，
+ * 不会再弹一个出来——那正是之前「点了又弹窗」的根子。
+ */
+async function pickFolder() {
+  showWaitingForPick();
+  clearNotice();
+  const started = await sendJson('POST', '/api/pick-folder', '');
+  if (!started.ok) {
+    restoreOpenButton();
+    return;
+  }
+  await followPicking(started.payload);
+}
+
+/**
+ * 盯着服务端那份状态，直到这次挑目录有了结果。
+ */
+async function followPicking(state) {
+  let now = state;
+  let failures = 0;
+  while (now && now.status === 'picking') {
+    await sleep(500);
+    const result = await sendJson('GET', '/api/pick-folder', '');
+    if (!result.ok) {
+      // 网络抖一下不该把这次挑目录整个丢掉：多试几次（服务本来就跑在本机）
+      if (++failures < 5) {
+        continue;
+      }
+      restoreOpenButton();
+      return;
+    }
+    failures = 0;
+    now = result.payload;
+  }
+  if (now && now.status === 'picked') {
+    // 打开是另一件事（走 /api/open），失败会自己提示；成功则整页刷新，
+    // 所以这里只在失败时把按钮还回来——刷新那一瞬间还能再点一次就是又弹一个窗口
+    const opened = await openProject(now.path);
+    await consumePick();
+    if (!opened) {
+      restoreOpenButton();
+    }
+    return;
+  }
+  if (now && now.status === 'failed') {
+    notice('warn', (now.error || '弹不出选择文件夹的窗口')
+        + '\n也可以点下面的「手动输入路径…」。');
+  }
+  await consumePick();
+  restoreOpenButton();
+}
+
+/**
+ * 认领这次结果，让服务端回到「没有窗口」。
+ *
+ * <p>不认领的话，「选好了」会一直挂在服务端：用户下次切回欢迎页时，
+ * 页面又会拿它去打开那个项目——他刚关掉的东西自己又开了。
+ */
+async function consumePick() {
+  try {
+    await fetch('/api/pick-folder', { method: 'DELETE' });
+  } catch (e) {
+    // 认领失败不影响用户，下一次挑目录会从原地重新开始
+  }
+}
+
+function showWaitingForPick() {
+  const button = $('open-folder');
+  button.disabled = true;
+  button.textContent = '正在等你选…';
+}
+
+function restoreOpenButton() {
+  const button = $('open-folder');
+  button.disabled = false;
+  button.textContent = '打开文件夹…';
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function closeProject() {
+  const result = await sendJson('POST', '/api/close', '');
+  if (!result.ok) {
+    return;
+  }
+  location.reload();
+}
+
+// ---------- 目录浏览 ----------
+
+let browserPath = '';
+let browserParent = null;
+/** 第几次翻目录。连点不同目录时，先回来的那次可能是旧的，只让最后一次的结果落地。 */
+let browserGeneration = 0;
+
+/** 打开目录浏览器。{@code startAt} 为空时先列盘符。 */
+async function openBrowser(startAt) {
+  $('browser').hidden = false;
+  clearNotice();
+  await browseTo(startAt || '');
+}
+
+async function browseTo(path) {
+  const generation = ++browserGeneration;
+  // 读一个目录也可能很慢（不通的网络位置要等到 SMB 超时，几十秒）。
+  // 不给任何反馈的话，用户看到的就是「点了没反应」，然后一直点。
+  const note = $('browser-note');
+  note.textContent = '读取中…';
+  $('browser-go').disabled = true;
+  let listing;
+  try {
+    listing = await getJson('/api/browse?path=' + encodeURIComponent(path || ''));
+  } catch (e) {
+    // 手输一个不存在的路径是常事，说清楚就行，不用炸。
+    // 但如果这条已经是旧的了，就别拿它的失败去打扰用户——新的那次还在路上。
+    if (generation === browserGeneration) {
+      note.textContent = '';
+      notice('error', e.message);
+    }
+    return;
+  } finally {
+    if (generation === browserGeneration) {
+      $('browser-go').disabled = false;
+    }
+  }
+  if (generation !== browserGeneration) {
+    return;   // 有更新的请求在路上，这次的结果作废
+  }
+  browserPath = listing.path || '';
+  browserParent = listing.parent;
+  $('browser-path').textContent = browserPath || '这台机器上的盘符';
+  $('browser-input').value = browserPath;
+  $('browser-up').disabled = !browserParent;
+  $('browser-open').disabled = !browserPath;
+  note.textContent = listing.truncated
+      ? '子目录太多，只列了前 300 个——直接粘完整路径更快'
+      : '';
+  renderBrowserDirs(listing.dirs || []);
+  renderBrowserScan(listing.scan);
+}
+
+function renderBrowserDirs(dirs) {
+  const box = $('browser-dirs');
+  box.innerHTML = '';
+  if (!dirs.length) {
+    box.appendChild(emptyLine(browserPath ? '这个目录下没有子目录' : '没有可用的盘符'));
+    return;
+  }
+  for (const dir of dirs) {
+    const row = document.createElement('div');
+    row.className = 'open-row';
+    const hit = document.createElement('button');
+    hit.type = 'button';
+    hit.className = 'hit';
+    hit.onclick = () => browseTo(dir.path);
+    const label = document.createElement('span');
+    label.className = 'label';
+    const head = document.createElement('span');
+    head.className = 'head';
+    head.textContent = dir.name;
+    label.appendChild(head);
+    hit.appendChild(label);
+    row.appendChild(hit);
+    box.appendChild(row);
+  }
+}
+
+/**
+ * 这个目录是什么项目。
+ *
+ * <p>认不出来也照样能打开——只是没有编译校验和模板。说清楚这一点，
+ * 比留一片空白让人以为工具坏了要好。
+ */
+function renderBrowserScan(scan) {
+  const box = $('browser-scan');
+  box.innerHTML = '';
+  if (!scan) {
+    return;
+  }
+  if (!scan.manifests.length) {
+    box.appendChild(emptyLine('没认出这是个什么项目。打开也能用，只是不会有编译校验和模板。'));
+    return;
+  }
+  const title = document.createElement('div');
+  title.className = 'scan-line';
+  title.textContent = '认出这是个 ' + scan.manifests.map(item => item.language).join(' / ') + ' 项目：';
+  box.appendChild(title);
+
+  for (const manifest of scan.manifests) {
+    const line = document.createElement('div');
+    line.className = 'scan-line';
+    const file = document.createElement('span');
+    file.className = 'file';
+    file.textContent = manifest.file;
+    const lang = document.createElement('span');
+    lang.className = 'lang';
+    lang.textContent = '　' + manifest.language;
+    line.append(file, lang);
+    box.appendChild(line);
+  }
+  if (scan.compileCommand) {
+    const command = document.createElement('div');
+    command.className = 'scan-command';
+    command.textContent = '编译校验会用：' + scan.compileCommand;
+    box.appendChild(command);
+  }
+  if (scan.configured) {
+    const configured = document.createElement('div');
+    configured.className = 'scan-line';
+    configured.textContent = '这个目录已经配过 specflow。';
+    box.appendChild(configured);
+  }
+}
+
+// ---------- 工作区 ----------
+
+/**
+ * 还没配过的项目，在工作区顶上说明白，并给一个初始化按钮。
+ *
+ * <p>不说的话，用户看到的是「模板下拉框空的、编译校验也没配」，
+ * 却不知道这两件事是同一个原因，也不知道怎么修。
+ */
+function renderSetup(config) {
+  const box = $('setup');
+  box.innerHTML = '';
+  const scan = config.scan;
+  if (!scan || scan.configured) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+
+  const text = document.createElement('div');
+  text.className = 'setup-text';
+  text.textContent = scan.manifests.length
+      ? '这个项目还没配过 specflow：没有模板，也不会做编译校验。'
+      : '这个项目还没配过 specflow，也没认出它用什么构建。';
+
+  const button = document.createElement('button');
+  button.textContent = '初始化';
+  button.onclick = initializeProject;
+
+  box.append(text, button);
+  if (scan.compileCommand) {
+    const command = document.createElement('div');
+    command.className = 'setup-command';
+    command.textContent = '初始化会按扫描结果填上编译校验命令：' + scan.compileCommand;
+    box.appendChild(command);
+  }
+}
+
+async function initializeProject() {
+  const result = await sendJson('POST', '/api/init', '');
+  if (!result.ok) {
+    return;
+  }
+  notice('ok', '已生成 ' + (result.payload.written || []).length + ' 个文件');
+  // 刷新一次，让新生成的模板和编译命令立刻生效
+  location.reload();
+}
+
+/** 打开了项目才走这一套：拉配置和文件、渲染主界面、接上按钮。 */
+async function startWorkspace() {
+  const [config, files] = await Promise.all([getJson('/api/config'), getJson('/api/files')]);
+  state.templates = config.templates || [];
+  state.brokenTemplates = config.brokenTemplates || [];
+  state.compileCommand = config.compileCommand;
+  applyFiles(files);
+
+  $('workspace').hidden = false;
+  renderSetup(config);
+  renderTemplateSelect();
+  renderAcceptance([]);
+
+  wireWorkspace();
+}
+
+/**
+ * 把一份文件树数据收进状态并重画。
+ *
+ * <p>目录也一起收：空目录只能靠它显示出来（树是从文件路径推的，推不出空目录）。
+ */
+function applyFiles(payload) {
+  state.files = payload.files || [];
+  state.dirs = payload.dirs || [];
+  state.fileset = new Set(state.files);
+  renderMeta();
+  renderFiles();
+}
+
+/** 顶栏那句话：编译命令 + 文件数。三处都要更新它，所以只写一遍。 */
+function renderMeta() {
+  $('meta').textContent = (state.compileCommand
+      ? '编译校验：' + state.compileCommand
+      : '未配置编译命令，运行时不会自检') + ' · ' + state.files.length + ' 个文件';
+}
+
+function wireWorkspace() {
+  $('switchproject').onclick = closeProject;
+  $('run').onclick = run;
+  $('review').onclick = review;
+  $('historylink').onclick = openHistory;
+  $('historyclose').onclick = () => {
+    $('history').hidden = true;
+  };
+  $('history').onclick = event => {
+    // 点遮罩关闭，点面板本身不关
+    if (event.target === $('history')) $('history').hidden = true;
+  };
+
+  // 模板管理
+  $('tplmanage').onclick = openTemplateManager;
+  $('tplmgr-close').onclick = () => {
+    $('tplmgr').hidden = true;
+  };
+  $('tplmgr').onclick = event => {
+    if (event.target === $('tplmgr')) $('tplmgr').hidden = true;
+  };
+  $('tf-pick').onchange = event => loadDraft(event.target.value);
+  $('tf-new').onclick = startNewTemplate;
+  $('tf-tag-add').onclick = addTag;
+  $('add-acceptance').onclick = () => $('acceptance').appendChild(acceptanceRow(''));
+  $('tf-tag-input').onkeydown = event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      addTag();
+    }
+  };
+  $('tf-save').onclick = saveTemplate;
+  $('tf-delete').onclick = deleteTemplate;
+  for (const tab of document.querySelectorAll('#tplmgr .tabs span')) {
+    tab.onclick = async () => {
+      // 两边看到的必须是同一份内容，所以切视图时要把当前视图的改动收进 draft。
+      // 表单 → 源码是直接读表单；源码 → 表单得先把 YAML 解析回来，
+      // 否则下面 renderTemplateDraft 会拿旧 draft 重画，源码里写的那些就悄悄没了。
+      if (tab.dataset.view === 'yaml') {
+        if (tplDraft && !$('tf-form').hidden) {
+          tplDraft = readTemplateDraft();
+        }
+        switchTemplateView('yaml');
+        return;
+      }
+      if (!$('tf-yaml').hidden && !await syncDraftFromSource()) {
+        return;   // 源码里写坏了：留在源码视图，别把坏的丢进表单再重画
+      }
+      switchTemplateView('form');
+    };
+  }
+
+  // 任务草稿
+  $('taskmanage').onclick = openTaskManager;
+  $('taskmgr-close').onclick = () => {
+    $('taskmgr').hidden = true;
+  };
+  $('taskmgr').onclick = event => {
+    if (event.target === $('taskmgr')) $('taskmgr').hidden = true;
+  };
+  $('task-save').onclick = saveTask;
+  $('search').oninput = renderFiles;
+  $('refreshfiles').onclick = refreshFiles;
+  $('tpl').onchange = onTemplateChoice;
+  $('addpath').onclick = addNewPath;
+  $('newpath').onkeydown = event => {
+    if (event.key === 'Enter') addNewPath();
+  };
+  $('ctxkind').onchange = toggleContextForm;
+  $('ctxadd').onclick = addContextItem;
+  toggleContextForm();
+  $('expandall').onclick = () => {
+    state.expanded = new Set(state.dirPaths);
+    renderFiles();
+  };
+  $('collapseall').onclick = () => {
+    state.expanded.clear();
+    renderFiles();
+  };
+}
+
+/**
+ * Esc 关掉最上面那层弹层。
+ *
+ * <p>只能点右上角那个「关闭」的话，键盘用户就被关在弹层里了——
+ * 底层的主面板虽然看得见，却点不到也用不了。
+ */
+function wireEscToClose() {
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    // 同一个层级下靠后的那个盖在上面，所以取最后一个
+    const topmost = [...document.querySelectorAll('.overlay:not([hidden])')].pop();
+    if (topmost) {
+      topmost.hidden = true;
+    }
+  });
+}
+
+// ---------- 目录浏览的按钮 ----------
+
+$('browser-close').onclick = () => {
+  $('browser').hidden = true;
+};
+$('browser').onclick = event => {
+  if (event.target === $('browser')) $('browser').hidden = true;
+};
+$('browser-up').onclick = () => browseTo(browserParent || '');
+$('browser-go').onclick = () => browseTo($('browser-input').value.trim());
+$('browser-input').onkeydown = event => {
+  if (event.key === 'Enter') {
+    browseTo($('browser-input').value.trim());
+  }
+};
+$('browser-open').onclick = () => openProject(browserPath);
+// 挂在全局而不是 wireWorkspace 里：欢迎页也要能用 Esc 关掉这个弹层，
+// 而欢迎页上根本没有工作区可接——目录弹层恰恰主要是在那里用。
+wireEscToClose();
+
+// 从别的窗口切回来时自动刷新文件树：你多半刚在 IDE 里加了文件或建了个包，
+// 切回来就该看见，而不是要自己去点刷新（更不该以为工具没反应）。
+window.addEventListener('focus', () => {
+  if ($('workspace') && !$('workspace').hidden) {
+    refreshFiles();
+  }
+});
+
+
+async function getJson(url) {
+  const response = await fetch(url);
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (e) {
+    throw new Error(url + ' 返回的不是 JSON（HTTP ' + response.status + '）');
+  }
+  if (!response.ok) {
+    const detail = body.error || (body.problems || []).join('；') || ('HTTP ' + response.status);
+    throw new Error(url + ' —— ' + detail);
+  }
+  return body;
+}
+
+/**
+ * 重新拉一遍文件列表。
+ *
+ * <p>只在两处自动触发：跑完一次任务（可能有新文件落地），以及从别的窗口切回来
+ * （你多半刚从 IDE 里加了文件或包）。另外给了一个手动「刷新」按钮。
+ *
+ * <p>不做定时轮询：这是本机工具，用户盯着屏幕的时候自己在改文件，
+ * 每隔几秒扫一遍整棵项目树纯属白烧 CPU。
+ */
+async function refreshFiles() {
+  let payload;
+  try {
+    payload = await getJson('/api/files');
+  } catch (e) {
+    // 刷新失败不该把界面搞乱，说一句就够了
+    notice('error', '刷新文件列表失败：' + e.message);
+    return;
+  }
+  applyFiles(payload);
+}
+
+// ---------- 文件树 ----------
+// 目标文件由两份数据决定：selected 是被选中的全部路径，fileset 是项目里真实存在的文件。
+// **两者的差集就是本次要新建的文件**——所以界面上不需要「新建 / 修改」开关：
+// 从树里勾的必然是已存在的，手输的必然是新的。
+function renderFiles() {
+  const keyword = $('search').value.trim().toLowerCase();
+  const box = $('files');
+  box.innerHTML = '';
+
+  if (keyword) {
+    // 搜索时用平铺列表：在树里找匹配项反而更慢也更难读
+    const hits = state.files.filter(path => path.toLowerCase().includes(keyword));
+    if (hits.length) hits.forEach(path => box.appendChild(fileNode(path, 0)));
+    else box.textContent = '没有匹配的文件';
+    $('treetools').hidden = true;
+  } else {
+    const tree = buildTree(state.files, state.dirs);
+    state.dirPaths = collectDirPaths(tree);
+    renderDir(tree, box, 0);
+    $('treetools').hidden = false;
+  }
+  updatePicked();
+}
+
+/**
+ * 把扁平路径折成树，并顺手把「只有一层子目录、自己又没有文件」的目录链合并。
+ * 不合并的话 src/main/java/com/... 会白白吃掉五层缩进，一屏只放得下三个节点。
+ *
+ * <p>目录单独传进来：树原本是从文件路径推出来的，推不出空目录——
+ * 而「我刚在 IDE 里建了个包」恰恰就是一个空目录。
+ */
+function buildTree(paths, dirs = []) {
+  const raw = { dirs: new Map(), files: [] };
+  for (const path of dirs) {
+    let node = raw;
+    for (const name of path.split('/')) {
+      if (!node.dirs.has(name)) node.dirs.set(name, { dirs: new Map(), files: [] });
+      node = node.dirs.get(name);
+    }
+  }
+  for (const path of paths) {
+    const parts = path.split('/');
+    let node = raw;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!node.dirs.has(parts[i])) node.dirs.set(parts[i], { dirs: new Map(), files: [] });
+      node = node.dirs.get(parts[i]);
+    }
+    node.files.push(parts[parts.length - 1]);
+  }
+  return collapse(raw, '');
+}
+
+function collapse(node, prefix) {
+  const result = { label: '', path: prefix, dirs: new Map(), files: node.files };
+  for (const [name, child] of node.dirs) {
+    let label = name;
+    let path = prefix ? prefix + '/' + name : name;
+    let current = child;
+    while (current.dirs.size === 1 && current.files.length === 0) {
+      const [nextName, nextChild] = current.dirs.entries().next().value;
+      label += '/' + nextName;
+      path += '/' + nextName;
+      current = nextChild;
+    }
+    const sub = collapse(current, path);
+    sub.label = label;
+    result.dirs.set(path, sub);
+  }
+  return result;
+}
+
+/** 目录的展开状态与「展开全部」都以合并后的路径为准，两处必须用同一套路径。 */
+function collectDirPaths(node, out = []) {
+  for (const child of node.dirs.values()) {
+    out.push(child.path);
+    collectDirPaths(child, out);
+  }
+  return out;
+}
+
+function renderDir(node, container, depth) {
+  for (const child of node.dirs.values()) {
+    const open = state.expanded.has(child.path);
+    container.appendChild(dirNode(child, open, depth));
+    if (!open) continue;
+    const box = document.createElement('div');
+    renderDir(child, box, depth + 1);
+    for (const name of child.files) {
+      box.appendChild(fileNode(child.path + '/' + name, depth + 1, name));
+    }
+    container.appendChild(box);
+  }
+  if (depth === 0) {
+    for (const name of node.files) container.appendChild(fileNode(name, 0));
+  }
+}
+
+function dirNode(dir, open, depth) {
+  const row = document.createElement('div');
+  row.className = 'node dir';
+  row.style.paddingLeft = (4 + depth * 12) + 'px';
+  const caret = document.createElement('span');
+  caret.className = 'caret';
+  caret.textContent = open ? '▾' : '▸';
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = dir.label;
+  // 行上显示的是合并后的短标签（main/java/com/specflow），完整路径挂在 title 上
+  name.title = dir.path;
+  const add = document.createElement('span');
+  add.className = 'plus';
+  add.textContent = '＋';
+  add.title = '在这个目录下新建文件（路径自动填好）';
+  add.onclick = event => {
+    // 点 ＋ 是「在这儿新建」，不是「展开/折叠」，别让它冒泡到行的点击上去
+    event.stopPropagation();
+    startNewIn(dir.path);
+  };
+  row.append(caret, name, add);
+  row.onclick = () => {
+    open ? state.expanded.delete(dir.path) : state.expanded.add(dir.path);
+    renderFiles();
+  };
+  return row;
+}
+
+/**
+ * 在某个目录下新建：把那一段路径填进下面的输入框并落好光标，用户只需要打文件名。
+ *
+ * <p>为什么填输入框，而不是在目录里就势插一行输入框：树的每一次重画都会把行上的节点换掉，
+ * 而「上一处还没写完就去点下一处」正是重画发生的时刻——鼠标抬起时按下的那个节点已经没了，
+ * 这一次点击就白点了（用户看到的是「点了没反应」）。填输入框没有这个问题：
+ * 它不在重画的范围内，也不需要多出「正在哪儿新建」这么一份状态。
+ */
+function startNewIn(dir) {
+  const input = $('newpath');
+  input.value = dir + '/';
+  input.focus();
+}
+
+/** 手输和人粘进来的路径什么都可能是：反斜杠、开头的斜杠、两边的空格，统一收拾干净。 */
+function cleanPath(raw) {
+  return raw.trim().replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function fileNode(path, depth, label) {
+  const row = document.createElement('label');
+  row.className = 'node file';
+  row.style.paddingLeft = (4 + depth * 12 + 10) + 'px';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = state.selected.has(path);
+  box.onchange = () => {
+    box.checked ? state.selected.add(path) : state.selected.delete(path);
+    updatePicked();
+  };
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = label || path;
+  name.title = path;
+  row.append(box, name);
+  return row;
+}
+
+/** 手动粘整条路径的老入口：树里没显示的地方（比如项目根下的文件）还得靠它。 */
+function addNewPath() {
+  const input = $('newpath');
+  const path = cleanPath(input.value);
+  if (!path) return;
+  state.selected.add(path);
+  input.value = '';
+  renderFiles();
+}
+
+function updatePicked() {
+  const selected = [...state.selected];
+  const created = selected.filter(path => !state.fileset.has(path));
+  const edited = selected.length - created.length;
+
+  $('picked').innerHTML = '将修改 <b>' + edited + '</b> 个，新建 <b>' + created.length + '</b> 个';
+
+  const chips = $('newchips');
+  chips.innerHTML = '';
+  for (const path of created) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    const text = document.createElement('span');
+    text.className = 'text';
+    text.textContent = path;
+    text.title = path;
+    const remove = document.createElement('span');
+    remove.className = 'x';
+    remove.textContent = '×';
+    remove.onclick = () => {
+      state.selected.delete(path);
+      renderFiles();
+    };
+    chip.append(text, remove);
+    chips.appendChild(chip);
+  }
+}
+
+// ---------- 模板与表单 ----------
+function renderTemplateSelect() {
+  const options = state.templates.map(template => ({
+    value: template.name,
+    text: template.name + (template.description ? ' — ' + template.description : ''),
+  }));
+  // 「新建模板」排在模板之后、自由输入之前：它跟模板是一件事，
+  // 而「自由输入」是那个「以上都不是」的兜底项，理应垫底。
+  options.push({ value: NEW_TEMPLATE, text: '＋ 新建模板…' });
+  options.push({ value: FREE, text: '自由输入（不用模板，直接写需求）' });
+
+  const select = $('tpl');
+  select.innerHTML = '';
+  for (const option of options) {
+    const element = document.createElement('option');
+    element.value = option.value;
+    element.textContent = option.text;
+    select.appendChild(element);
+  }
+
+  selectTemplate(state.templateChoice, state.templates.length ? state.templates[0].name : FREE);
+}
+
+/**
+ * 把模板下拉框设成一项，并刷新下面的表单。
+ *
+ * <p>下拉框里混着一个「动作」项（＋ 新建模板…），它不能被记住。
+ * 「记住用户到底选了什么」只发生在这一处：凡是要动下拉框的都走这里，
+ * 否则那个动作项会被当成上一次的选择记下来——包括那些不经过 onchange 的地方
+ * （载入任务草稿、存完模板之后重选）。
+ *
+ * @param choice   想要选中的项；不是真实候选项（比如停在了动作项上）就退回 fallback
+ * @param fallback 退无可退时选哪个
+ */
+function selectTemplate(choice, fallback) {
+  const values = [...$('tpl').options].map(option => option.value);
+  state.templateChoice = resolveTemplateChoice(values, choice, fallback);
+  $('tpl').value = state.templateChoice;
+  renderTemplateForm();
+}
+
+/**
+ * 模板下拉框换了选择。
+ *
+ * <p>「＋ 新建模板…」混在选项里，但它是动作不是模式：选中就弹新建，
+ * 并且立刻把下拉框还原成原来那个选择，不让一个动作留在选择里。
+ */
+function onTemplateChoice(event) {
+  if (event.target.value !== NEW_TEMPLATE) {
+    selectTemplate(event.target.value, FREE);
+    return;
+  }
+  selectTemplate(state.templateChoice, FREE);
+  openTemplateManager({ fresh: true });
+}
+
+function currentTemplate() {
+  return state.templates.find(template => template.name === $('tpl').value);
+}
+
+/**
+ * 模板切换时只更新「角色与标签」的展示，并替换掉模板带来的默认上下文。
+ *
+ * <p>需求、验收标准、目标文件都不受模板影响——它们每次都不一样。
+ */
+function renderTemplateForm() {
+  const template = currentTemplate();
+
+  $('tpltype').hidden = !template || !template.tags || !template.tags.length;
+  $('tpltype').textContent = template && template.tags ? template.tags.join(' · ') : '';
+  $('tpldesc').textContent = template
+      ? (template.description || '')
+      : '不用模板时，需求就是下面那一段文字，没有角色与标签的预设';
+
+  applyTemplateContext(template);
+}
+
+// ---------- 需求与验收标准 ----------
+function acceptanceRow(value) {
+  const row = document.createElement('div');
+  row.className = 'acceptance-row';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'a-text';
+  input.value = value || '';
+  input.placeholder = '例如：传入不存在的订单号时返回空，不抛异常';
+  const remove = document.createElement('span');
+  remove.className = 'x';
+  remove.textContent = '×';
+  remove.title = '删掉这一条';
+  remove.onclick = () => row.remove();
+  row.append(input, remove);
+  return row;
+}
+
+function renderAcceptance(items) {
+  const box = $('acceptance');
+  box.innerHTML = '';
+  for (const item of items || []) box.appendChild(acceptanceRow(item));
+  if (!box.childElementCount) box.appendChild(acceptanceRow(''));
+}
+
+function readAcceptance() {
+  return [...document.querySelectorAll('#acceptance .a-text')]
+      .map(input => input.value.trim())
+      .filter(Boolean);
+}
+
+// ---------- 上下文依赖 ----------
+/**
+ * 切换模板时只替换「模板带来的」那批默认依赖，用户手动加的原样保留——
+ * 否则换个模板就把刚粘贴的表结构弄丢了。
+ */
+function applyTemplateContext(template) {
+  state.context = state.context.filter(item => item.from !== 'template');
+  const defaults = (template && template.context) || [];
+  for (const item of defaults) {
+    state.context.push({ name: item.name, ref: item.ref, text: item.text,
+                         note: item.note, from: 'template' });
+  }
+  renderContext();
+}
+
+function renderContext() {
+  const box = $('ctxlist');
+  box.innerHTML = '';
+  if (!state.context.length) {
+    box.className = 'ctx-list ctx-empty';
+    box.textContent = '（暂无。目标文件会自动附上，这里只加它还需要额外参考的东西）';
+    return;
+  }
+  box.className = 'ctx-list';
+  state.context.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.className = 'ctx-item';
+
+    const kind = document.createElement('span');
+    kind.className = 'ctx-kind';
+    kind.textContent = item.ref ? '引用' : '文本';
+
+    const name = document.createElement('span');
+    name.className = 'ctx-name';
+    name.textContent = item.name;
+    name.title = item.ref || item.text || item.name;
+
+    const note = document.createElement('span');
+    note.className = 'ctx-note';
+    note.textContent = item.note || '';
+    note.title = item.note || '';
+
+    const remove = document.createElement('span');
+    remove.className = 'x';
+    remove.textContent = '×';
+    remove.onclick = () => {
+      state.context.splice(index, 1);
+      renderContext();
+    };
+
+    row.append(kind, name, note, remove);
+    box.appendChild(row);
+  });
+}
+
+function toggleContextForm() {
+  const isRef = $('ctxkind').value === 'ref';
+  $('ctxref').hidden = !isRef;
+  $('ctxtext').hidden = isRef;
+}
+
+function addContextItem() {
+  const isRef = $('ctxkind').value === 'ref';
+  const ref = $('ctxref').value.trim().replace(/\\/g, '/');
+  const text = $('ctxtext').value;
+  const typed = $('ctxname').value.trim();
+
+  if (isRef && !ref) {
+    notice('warn', '引用文件需要填路径');
+    return;
+  }
+  if (!isRef && !text.trim()) {
+    notice('warn', '粘贴文本需要填内容');
+    return;
+  }
+  const name = typed || (isRef ? ref.split('/').pop() : '粘贴的文本');
+  state.context.push({
+    name,
+    ref: isRef ? ref : null,
+    text: isRef ? null : text,
+    note: $('ctxnote').value.trim(),
+    from: 'manual',
+  });
+
+  $('ctxname').value = '';
+  $('ctxref').value = '';
+  $('ctxtext').value = '';
+  $('ctxnote').value = '';
+  clearNotice();
+  renderContext();
+}
+
+// ---------- 运行 ----------
+function payload() {
+  const body = {
+    prompt: $('demand').value,
+    acceptance: readAcceptance(),
+    requirementId: $('requirement-id').value.trim(),
+    targets: [...state.selected],
+    constraints: $('constraints').value.split('\n').map(s => s.trim()).filter(Boolean),
+    // 只带该形态用得上的那个字段：后端见到 ref 和 text 同时存在会直接拒绝
+    context: state.context.map(item => item.ref
+        ? { name: item.name, ref: item.ref, note: item.note }
+        : { name: item.name, text: item.text, note: item.note }),
+    verifyCompile: $('compile').checked,
+    maxRetry: retryBudget($('maxretry').value),
+  };
+  if (currentTemplate()) body.template = currentTemplate().name;
+  // 检查阶段确认过的方案随运行一起发回去，让模型按图施工
+  if (state.plan) body.approvedPlan = state.plan;
+  return body;
+}
+
+/** 必填项空着就不要发出去——省一次模型调用，也让错误出现在它该出现的地方。 */
+function validateForm() {
+  const missing = [];
+  if (!$('demand').value.trim()) missing.push('需求（这次要做什么）');
+  if (!state.selected.size) missing.push('目标文件（左边至少勾一个，或手输一个新文件路径）');
+  return missing;
+}
+
+/**
+ * 重试轮数是直接发给引擎的预算。
+ *
+ * <p>不能写成 {@code Number(v) || 0}：空输入和非数字都会变成 0，
+ * 也就是「一次都不重试」，而界面上看不出来——一次失败就直接结束了。
+ * 拿不准就用默认的 6。
+ */
+function retryBudget(raw) {
+  const text = String(raw).trim();
+  if (!text) {
+    return 6;
+  }
+  const value = Math.floor(Number(text));
+  return Number.isFinite(value) ? Math.min(20, Math.max(0, value)) : 6;
+}
+
+/**
+ * 这份方案里有没有「不补上就只能靠它猜」的项。
+ *
+ * <p>只认模型明确标成「阻断」的。它没标、或标了个认不出来的词，都不算——
+ * 反过来说，只要有一项是阻断，运行前就得让用户点一次确认。
+ */
+function blockingItems() {
+  const items = (state.plan && state.plan.missing) || [];
+  return items.filter(item => item.severity === 'BLOCKING');
+}
+
+async function run() {
+  clearNotice();
+  $('log').innerHTML = '';
+  $('result').innerHTML = '';
+
+  const missing = validateForm();
+  if (missing.length) {
+    notice('warn', '还差这些信息：\n- ' + missing.join('\n- '));
+    return;
+  }
+
+  // 有阻断项时先拦一下。不是不让跑，是别让它「悄悄猜」——
+  // 用户点一下「我知道，仍然继续」之后，那次运行的记录里就带着这些缺失项，
+  // 事后翻历史能看出「当时是在知道缺什么的情况下继续的」。
+  const blocking = blockingItems();
+  if (blocking.length && !state.forced) {
+    notice('warn', '这份方案里有 ' + blocking.length + ' 项被标成「阻断」：'
+        + blocking.map(item => item.what).join('、')
+        + '\n要么先补上，要么点方案里的「我知道，仍然继续」让它按默认值猜。');
+    return;
+  }
+  state.forced = false;
+
+  state.cursor = 0;
+  state.runId = '';
+  setRunning(true);
+
+  let response;
+  let body;
+  try {
+    response = await fetch('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload()),
+    });
+    body = await response.json();
+  } catch (e) {
+    notice('error', '无法连接后端：' + e.message);
+    setRunning(false);
+    return;
+  }
+
+  if (!response.ok) {
+    notice(response.status === 409 ? 'warn' : 'error',
+        (body.problems || [body.error || '请求失败']).join('\n'));
+    setRunning(false);
+    return;
+  }
+  state.runId = body.runId;
+  poll();
+}
+
+async function poll() {
+  let view;
+  try {
+    view = await fetch('/api/events?from=' + state.cursor).then(r => r.json());
+  } catch (e) {
+    notice('error', '读取运行进度失败：' + e.message);
+    setRunning(false);
+    return;
+  }
+  if (view.runId !== state.runId) {   // 后端开了新的一次运行，从头拉
+    state.runId = view.runId;
+    state.cursor = 0;
+  }
+  for (const event of view.events) {
+    state.cursor = event.id + 1;
+    if (event.type === 'result') renderResult(event.payload);
+    else appendLog(event);
+  }
+  if (view.running) setTimeout(poll, 400);
+  else setRunning(false);
+}
+
+function appendLog(event) {
+  const div = document.createElement('div');
+  div.className = 'line ' + (event.level === 'info' ? '' : event.level);
+  if (event.round) {
+    const round = document.createElement('span');
+    round.className = 'round';
+    round.textContent = '第 ' + event.round + ' 轮';
+    div.appendChild(round);
+  }
+  div.appendChild(document.createTextNode(event.text));
+  $('log').appendChild(div);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+// ---------- 检查阶段 ----------
+
+/**
+ * 严重度的三个档次：这是缺信息的「该不该停下来」的唯一判据。
+ *
+ * <p>只有「阻断」会拦人，其余一律按模型给的默认值往下走——否则「缺什么都要问」的毛病
+ * 只不过换了个地方出现（从一句话变成一张表，用户还是得一条条看）。
+ */
+const SEVERITY = {
+  BLOCKING: ['sev-blocking', '阻断'],
+  QUALITY: ['sev-quality', '影响质量'],
+  OPTIONAL: ['sev-optional', '可选'],
+  UNKNOWN: ['sev-unknown', '未标'],
+};
+
+/** 跟模型约定的缺失项上限。超了不拦，但要说一声，用户才知道「它列这么多是它话多」。 */
+const CHATTY_LIMIT = 5;
+
+/** 缺失项里的一行「标签：内容」。三个字段共用一套写法，省得样式各写一遍。 */
+function missingLine(label, text) {
+  const div = document.createElement('div');
+  div.className = 'why';
+  div.textContent = label + '：' + text;
+  return div;
+}
+
+async function review() {
+  clearNotice();
+  const missing = validateForm();
+  if (missing.length) {
+    notice('warn', '还差这些信息：\n- ' + missing.join('\n- '));
+    return;
+  }
+  setReviewing(true);
+
+  let plan;
+  try {
+    const response = await fetch('/api/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload()),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      notice(response.status === 409 ? 'warn' : 'error',
+          (body.problems || [body.error || '检查失败']).join('\n'));
+      setReviewing(false);
+      return;
+    }
+    plan = body;
+  } catch (e) {
+    notice('error', '检查失败：' + e.message);
+    setReviewing(false);
+    return;
+  }
+  state.plan = plan;
+  // 换了一份方案，上一次那次「仍然继续」的放行不能跟着过来
+  state.forced = false;
+  renderPlan();
+  setReviewing(false);
+}
+
+function renderPlan() {
+  const box = $('plan');
+  box.innerHTML = '';
+  const plan = state.plan;
+  if (!plan) {
+    $('actionnote').textContent = '';
+    return;
+  }
+
+  const head = document.createElement('div');
+  head.className = 'plan-head';
+  const title = document.createElement('b');
+  title.textContent = '模型的实现方案';
+  const discard = document.createElement('span');
+  discard.className = 'discard';
+  discard.textContent = '丢弃这份方案';
+  discard.onclick = () => {
+    state.plan = null;
+    state.forced = false;
+    renderPlan();
+  };
+  head.append(title, discard);
+
+  const body = document.createElement('div');
+  body.className = 'plan-body';
+
+  if (plan.summary) {
+    const summary = document.createElement('div');
+    summary.className = 'plan-summary';
+    summary.textContent = plan.summary;
+    body.appendChild(summary);
+  }
+
+  const flow = document.createElement('div');
+  const flowReport = renderFlowchart(plan.flowchart || '', flow);
+  body.appendChild(flow);
+  body.appendChild(flowNotes(plan.flowchart || '', flowReport));
+
+  const items = plan.missing || [];
+  if (items.length) {
+    const blocking = items.filter(item => item.severity === 'BLOCKING');
+    const missing = document.createElement('div');
+    missing.className = 'missing';
+
+    const heading = document.createElement('h3');
+    heading.className = blocking.length ? 'blocking' : '';
+    heading.textContent = blocking.length
+        ? '有 ' + blocking.length + ' 项阻断：不补上，它就只能猜（共 ' + items.length + ' 项）'
+        : '没有阻断项：下面 ' + items.length + ' 项它按自己的默认值处理';
+    missing.appendChild(heading);
+
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = 'item';
+
+      // 严重度是这一块最该一眼看到的东西：先给标签，再给内容
+      const head = document.createElement('div');
+      head.className = 'item-head';
+      const chip = document.createElement('span');
+      const severity = SEVERITY[item.severity] || SEVERITY.UNKNOWN;
+      chip.className = 'sev ' + severity[0];
+      chip.textContent = severity[1];
+      const what = document.createElement('span');
+      what.className = 'what';
+      what.textContent = item.what;
+      head.append(chip, what);
+      row.appendChild(head);
+
+      if (item.impact) {
+        row.appendChild(missingLine('技术影响', item.impact));
+      }
+      if (item.business) {
+        row.appendChild(missingLine('业务影响', item.business));
+      }
+      if (item.severity === 'BLOCKING') {
+        const hint = missingLine('没补会怎样', '它可能会写出编不过、或者看着对但查不到数据的代码');
+        hint.className = 'why' + ' blocking-hint';
+        row.appendChild(hint);
+      } else {
+        row.appendChild(missingLine('它打算这么写', item.fallback || '按常规做法处理（它没给具体默认值）'));
+      }
+      missing.appendChild(row);
+    }
+
+    if (items.length > CHATTY_LIMIT) {
+      const tip = document.createElement('div');
+      tip.className = 'hint';
+      tip.textContent = '约定的上限是 ' + CHATTY_LIMIT + ' 条，它列了 ' + items.length
+          + ' 条——可能有点保守。挑着补就行，其余它会按默认值写。';
+      missing.appendChild(tip);
+    }
+    body.appendChild(missing);
+
+    if (blocking.length) {
+      const gate = document.createElement('div');
+      gate.className = 'gate';
+      gate.textContent = '这 ' + blocking.length + ' 项没补之前，点「运行」会先被拦一下——'
+          + '你确认了才往下走。';
+      const force = document.createElement('button');
+      force.className = 'ghost force-run';
+      force.textContent = '我知道，仍然继续';
+      force.onclick = () => {
+        state.forced = true;
+        run();
+      };
+      gate.appendChild(force);
+      body.appendChild(gate);
+    }
+  } else {
+    const ok = document.createElement('div');
+    ok.className = 'ok-plan';
+    ok.textContent = '模型认为信息已经足够，可以直接开发。';
+    body.appendChild(ok);
+  }
+
+  box.append(head, body);
+  $('actionnote').textContent = '已带上这份方案';
+}
+
+/**
+ * 图旁边的那几行：哪几行没画进图里、哪些节点是孤立的，外加「看原始 Mermaid」的开关。
+ *
+ * <p>这几行是为了回答一个没法回答的问题：「图上少的那块，是模型没画，还是我们没画？」
+ * 以前解析器认不出来的行直接跳过，用户只能凭感觉怀疑。现在宁可多说一句，也不静默丢。
+ */
+function flowNotes(text, report) {
+  const box = document.createElement('div');
+  box.className = 'flow-notes';
+
+  const lines = [];
+  if (report.ignored.length) {
+    lines.push('有 ' + report.ignored.length + ' 行没能画进图里（'
+        + [...new Set(report.ignored.map(item => item.reason))].join('、') + '）');
+  }
+  if (report.isolated.length) {
+    lines.push('有 ' + report.isolated.length + ' 个节点没有任何连线：'
+        + report.isolated.join('、'));
+  }
+  if (lines.length) {
+    const note = document.createElement('div');
+    note.className = 'flow-note';
+    note.textContent = lines.join('；') + '。原文见下面。';
+    box.appendChild(note);
+  }
+
+  const raw = document.createElement('details');
+  raw.className = 'flow-raw';
+  const summary = document.createElement('summary');
+  summary.textContent = '看原始 Mermaid';
+  const pre = document.createElement('pre');
+  pre.textContent = text || '（模型没有给出流程图）';
+  raw.append(summary, pre);
+  box.appendChild(raw);
+  return box;
+}
+// ---------- 模板管理 ----------
+// 表单与源码是同一份数据的两个视图：表单提交 JSON，源码提交 YAML，
+// 后端两条路都先校验再落盘，所以不会出现「存得进去、跑不起来」。
+
+let tplDraft = null;   // 正在编辑的模板（对象形态）；源码视图也用它做往返
+let noticeTimer = 0;   // 成功提示的自动收起定时器；0 表示没有挂着
+let templateOpenGeneration = 0;   // 「管理模板」打开到第几次，用来丢掉晚回来的那一次
+
+/**
+ * 打开模板管理。
+ *
+ * @param fresh 为真时直接落到「新建」：编辑区清空、光标落在名字上。
+ *              下拉框里选「＋ 新建模板…」走的就是这条——意图已经很明确，不用再点一次「新建」。
+ */
+async function openTemplateManager({ fresh = false } = {}) {
+  // 每次打开记一个代际。连点两次「管理模板」时，先发的那个请求会后回来，
+  // 它要是照样解锁编辑区、重填表单，用户在这中间敲进去的东西就又被擦掉了。
+  const generation = ++templateOpenGeneration;
+  // 立刻开弹层。取数据要等一个来回，慢网下能有好几秒——
+  // 「点了没反应」正是这个工具已经被抱怨过的毛病，不能再犯一次。
+  $('tplmgr').hidden = false;
+  clearNotice();
+  setTemplateBusy(true);
+  try {
+    await reloadConfig();
+  } catch (e) {
+    if (generation !== templateOpenGeneration) {
+      return;
+    }
+    // 读不到就退回关闭：留一个空弹层比不给弹层更让人以为坏了
+    $('tplmgr').hidden = true;
+    setTemplateBusy(false);
+    notice('error', '读取模板失败：' + e.message);
+    return;
+  }
+  if (generation !== templateOpenGeneration) {
+    return;
+  }
+  setTemplateBusy(false);
+  // 默认编辑主面板正在用的那个；在用「自由输入」或者那个模板刚被删时退回第一个
+  const inUse = state.templates.some(t => t.name === $('tpl').value) ? $('tpl').value : null;
+  fillTemplatePicker(fresh ? NEW_TEMPLATE
+      : (inUse || (state.templates[0] && state.templates[0].name)));
+}
+
+/**
+ * 数据还没回来之前，先把编辑区锁上。
+ *
+ * <p>一是让人看出「在忙」，二是防住真出过的事故：弹层已经显示、表单还是上一份内容，
+ * 这期间敲进去的字会在 reloadConfig 回来重填表单时被擦掉，保存时就成了空名字。
+ */
+function setTemplateBusy(busy) {
+  $('tplmgr-meta').textContent = busy ? '读取中…' : '';
+  for (const id of ['tf-pick', 'tf-new', 'tf-save', 'tf-delete',
+                    'tf-name', 'tf-desc', 'tf-system', 'tf-tag-input', 'tf-tag-add', 'tf-source']) {
+    $(id).disabled = busy;
+  }
+}
+
+/** 重新拉配置——模板改过之后下拉框和表单都要跟着变 */
+async function reloadConfig() {
+  const config = await getJson('/api/config');
+  state.templates = config.templates || [];
+  state.brokenTemplates = config.brokenTemplates || [];
+  state.compileCommand = config.compileCommand;
+  renderTagOptions(config.commonTags || []);
+  renderMeta();
+  renderBrokenTemplates();
+  renderTemplateSelect();
+}
+
+/**
+ * 把读不出来的模板列出来，并给一个删除入口。
+ *
+ * <p>它们不参与选择，但也不能不声不响地消失——用户会以为模板丢了。
+ * 给删除按钮是因为坏文件多半是手滑写出来的，而「自己去
+ * {@code .specflow/templates} 里翻出那个文件」这件事本来就不该让用户做。
+ */
+function renderBrokenTemplates() {
+  const box = $('tplbroken');
+  box.innerHTML = '';
+  if (!state.brokenTemplates.length) {
+    return;
+  }
+  const title = document.createElement('div');
+  title.className = 'broken-title';
+  title.textContent = '这些模板读不出来，已跳过：';
+  box.appendChild(title);
+  for (const item of state.brokenTemplates) {
+    const row = document.createElement('div');
+    row.className = 'broken-row';
+    const text = document.createElement('span');
+    text.className = 'text';
+    text.textContent = item.reason;
+    text.title = item.reason;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'ghost';
+    remove.textContent = '删除';
+    remove.onclick = () => deleteBrokenTemplate(item.name);
+    row.append(text, remove);
+    box.appendChild(row);
+  }
+}
+
+/** 删掉一份读不出来的模板。删除只看名字，所以坏文件照样删得掉。 */
+async function deleteBrokenTemplate(name) {
+  const result = await sendJson('DELETE', '/api/templates?name=' + encodeURIComponent(name));
+  if (!result.ok) {
+    return;
+  }
+  notice('ok', '模板「' + name + '」已删除');
+  await reloadConfig();
+}
+
+/**
+ * 填弹层顶部那个下拉框。
+ *
+ * <p>它回答的是「我正在编辑哪一个」，所以「新建」也是它的一个取值，
+ * 和主界面那个下拉框是同一套写法。之前新建时是把它的值清空——
+ * 顶上就挂着一个空的、点开却列着别的模板的框子，看着像在问「要先选一个吗」。
+ */
+function fillTemplatePicker(name) {
+  const picker = $('tf-pick');
+  picker.innerHTML = '';
+  for (const template of state.templates) {
+    const option = document.createElement('option');
+    option.value = template.name;
+    option.textContent = template.name;
+    picker.appendChild(option);
+  }
+  const fresh = document.createElement('option');
+  fresh.value = NEW_TEMPLATE;
+  fresh.textContent = '＋ 新建模板…';
+  picker.appendChild(fresh);
+
+  $('tplmgr-meta').textContent = state.templates.length + ' 个模板';
+  loadDraft(name || NEW_TEMPLATE);
+}
+
+function switchTemplateView(view) {
+  for (const tab of document.querySelectorAll('#tplmgr .tabs span')) {
+    tab.classList.toggle('on', tab.dataset.view === view);
+  }
+  $('tf-form').hidden = view !== 'form';
+  $('tf-yaml').hidden = view !== 'yaml';
+  if (view === 'yaml') {
+    $('tf-source').value = tplDraft ? templateToYaml(tplDraft) : '';
+  } else {
+    renderTemplateDraft();
+  }
+}
+
+/**
+ * 把源码视图里的 YAML 解析回来，填进 {@code tplDraft}。
+ *
+ * <p>交给服务端解析，而不是前端自己写一个：YAML 的写法太多，
+ * 自己写一个必然变成「两个解析器、两套行为」——切个视图就改一次内容的毛病只会更多。
+ *
+ * @return 解析成功返回真；失败时提示已经弹出，调用方应当留在源码视图
+ */
+async function syncDraftFromSource() {
+  let parsed;
+  try {
+    const response = await fetch('/api/template-parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: tplDraft ? tplDraft.name : '', source: $('tf-source').value }),
+    });
+    parsed = await response.json();
+    if (!response.ok) {
+      notice('error', (parsed.problems || [parsed.error || '源码解析失败']).join('\n'));
+      return false;
+    }
+  } catch (e) {
+    notice('error', '解析源码失败：' + e.message);
+    return false;
+  }
+  tplDraft = parsed;
+  return true;
+}
+
+/**
+ * 把编辑区的表单读成一个模板对象。
+ *
+ * <p>源码视图切换时也走这里，保证「表单改了 → 切到源码」看到的是改过的内容。
+ */
+function readTemplateDraft() {
+  return {
+    name: $('tf-name').value.trim(),
+    tags: [...$('tf-tags').querySelectorAll('.chip')].map(chip => chip.dataset.tag),
+    description: $('tf-desc').value.trim(),
+    system: $('tf-system').value,
+    context: (tplDraft && tplDraft.context) || [],
+  };
+}
+
+function renderTemplateDraft() {
+  const draft = tplDraft || blankTemplate();
+  $('tf-name').value = draft.name || '';
+  $('tf-desc').value = draft.description || '';
+  $('tf-system').value = draft.system || '';
+  renderTagChips(draft.tags || []);
+}
+
+/** 标签以 chip 形式呈现：点 × 删掉，输入框回车或点「添加」加一个。 */
+function renderTagChips(tags) {
+  const box = $('tf-tags');
+  box.innerHTML = '';
+  if (!tags.length) {
+    box.appendChild(emptyLine('（还没有标签）'));
+    return;
+  }
+  for (const tag of tags) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.dataset.tag = tag;
+    const text = document.createElement('span');
+    text.className = 'text';
+    text.textContent = tag;
+    const remove = document.createElement('span');
+    remove.className = 'x';
+    remove.textContent = '×';
+    remove.onclick = () => {
+      chip.remove();
+      if (!$('tf-tags').querySelector('.chip')) renderTagChips([]);
+    };
+    chip.append(text, remove);
+    box.appendChild(chip);
+  }
+}
+
+function addTag() {
+  const input = $('tf-tag-input');
+  const tag = input.value.trim();
+  if (!tag) return;
+  const existing = [...$('tf-tags').querySelectorAll('.chip')].map(chip => chip.dataset.tag);
+  input.value = '';
+  if (existing.includes(tag)) return;
+  renderTagChips([...existing, tag]);
+}
+
+function renderTagOptions(tags) {
+  const list = $('tf-tag-options');
+  list.innerHTML = '';
+  for (const tag of tags) {
+    const option = document.createElement('option');
+    option.value = tag;
+    list.appendChild(option);
+  }
+}
+
+/**
+ * 把模板对象转成 YAML 源码。
+ *
+ * <p>这一层是为数不多在前端做序列化的地方，而且只用于<b>展示</b>——
+ * 真正落盘的是后端解析后的对象。所以这里容忍排版上的不精确，
+ * 但字段值必须原样带上，否则切到源码视图会看到一份「被吃掉一半」的模板。
+ */
+function templateToYaml(template) {
+  const lines = [];
+  const quoted = value => JSON.stringify(value ?? '');
+  lines.push('name: ' + quoted(template.name));
+  if ((template.tags || []).length) {
+    lines.push('tags: [' + template.tags.map(tag => JSON.stringify(tag)).join(', ') + ']');
+  }
+  if (template.description) lines.push('description: ' + quoted(template.description));
+  lines.push('system: ' + block(template.system));
+  if ((template.context || []).length) {
+    lines.push('context:');
+    for (const item of template.context) {
+      if (item.ref) lines.push('  - ref: ' + quoted(item.ref));
+      else lines.push('  - name: ' + quoted(item.name));
+      if (!item.ref && item.text) lines.push('    text: ' + block(item.text));
+      if (item.note) lines.push('    note: ' + quoted(item.note));
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
+/** 多行文本用 YAML 的块标量，保留换行且不转义。 */
+function block(text) {
+  const body = (text ?? '').replace(/\s+$/, '');
+  return '|\n' + body.split('\n').map(line => '  ' + line).join('\n');
+}
+
+/**
+ * 把弹层切到某个模板；{@code NEW_TEMPLATE} 表示切到「新建」。
+ *
+ * <p>找不到那个模板时（比如它刚被别处删掉）退回新建，而不是留一个没有名字的空壳。
+ */
+function loadDraft(name) {
+  const existing = name && name !== NEW_TEMPLATE
+      ? state.templates.find(t => t.name === name)
+      : null;
+  if (!existing) {
+    startNewTemplate();
+    return;
+  }
+  tplDraft = { ...existing };
+  $('tf-pick').value = name;
+  $('tf-delete').disabled = false;
+  switchTemplateView('form');
+}
+
+function blankTemplate() {
+  return {
+    name: '', tags: [], description: '',
+    system: '你是一名严谨的工程师。只修改需求要求的部分，不要顺手重构。',
+    context: [],
+  };
+}
+
+/**
+ * 新建模板：把编辑区清成一张白纸。
+ *
+ * <p>弹层里的「新建」按钮和顶部下拉框里的「＋ 新建模板…」都走这里，不各写一份。
+ */
+function startNewTemplate() {
+  tplDraft = blankTemplate();
+  $('tf-pick').value = NEW_TEMPLATE;
+  // 还没落盘的模板没什么可删的，把按钮禁掉比点了再告诉你要好
+  $('tf-delete').disabled = true;
+  switchTemplateView('form');
+  $('tf-name').focus();
+}
+
+async function saveTemplate() {
+  const view = document.querySelector('#tplmgr .tabs span.on').dataset.view;
+  clearNotice();
+
+  const editingName = tplDraft ? tplDraft.name : '';
+
+  if (view === 'yaml') {
+    let body;
+    try {
+      body = JSON.stringify({ name: $('tf-name').value.trim(), source: $('tf-source').value });
+    } catch (e) {
+      notice('error', e.message);
+      return;
+    }
+    const result = await sendJson('POST', '/api/template-source', body);
+    if (!result.ok) return;
+    notice('ok', '模板源码已保存');
+    await afterTemplateChange();
+    return;
+  }
+
+  // 表单视图：用表单里的名字；改名等同于「存成新名字」，旧的留在磁盘上由你决定删不删
+  tplDraft = { ...readTemplateDraft(), name: $('tf-name').value.trim() };
+  const result = await sendJson('POST', '/api/templates', JSON.stringify(tplDraft));
+  if (!result.ok) return;
+  if (editingName && editingName !== tplDraft.name && state.templates.some(t => t.name === editingName)) {
+    notice('warn', '模板已另存为「' + tplDraft.name + '」。原来的「' + editingName + '」还在，需要的话手动删掉。');
+  } else {
+    notice('ok', '模板「' + tplDraft.name + '」已保存');
+  }
+  await afterTemplateChange(tplDraft.name);
+}
+
+async function deleteTemplate() {
+  const name = tplDraft ? tplDraft.name : '';
+  if (!name) {
+    notice('warn', '还没保存过的模板没有可删的东西');
+    return;
+  }
+  const result = await sendJson('DELETE', '/api/templates?name=' + encodeURIComponent(name));
+  if (!result.ok) return;
+  notice('ok', '模板「' + name + '」已删除');
+  await afterTemplateChange();
+}
+
+/**
+ * 模板改完之后刷新界面。
+ *
+ * @param select 刚刚动过的模板名。存了新模板就顺手选中它；删了模板就传空，
+ *               下拉框会自己发现原来选的那个没了、退回第一个。
+ */
+async function afterTemplateChange(select) {
+  await reloadConfig();
+  if (select) {
+    selectTemplate(select, FREE);
+  }
+  fillTemplatePicker(select || (state.templates[0] && state.templates[0].name));
+}
+
+/** 统一的写接口收口：失败时把后端的说明摆出来，不吞掉。 */
+async function sendJson(method, path, body) {
+  // 没有请求体时就不要带 body：fetch 对 GET 只要求「不能有 body」，
+  // 而空字符串也算 body——带上它就抛异常，调用方会误以为这次请求失败了。
+  // 实测过：轮询 /api/pick-folder 的 GET 因为这一条整个失败，
+  // 界面于是把按钮解锁，用户再点一次就又弹出一个系统窗口。
+  const hasBody = body !== undefined && body !== null && body !== '';
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: hasBody ? { 'Content-Type': 'application/json' } : undefined,
+      body: hasBody ? body : undefined,
+    });
+  } catch (e) {
+    notice('error', '请求失败：' + e.message);
+    return { ok: false };
+  }
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!response.ok) {
+    notice(response.status === 409 ? 'warn' : 'error',
+        (payload.problems || [payload.error || ('HTTP ' + response.status)]).join('\n'));
+    return { ok: false, payload };
+  }
+  return { ok: true, payload };
+}
+
+// ---------- 任务草稿 ----------
+async function openTaskManager() {
+  $('taskmgr').hidden = false;
+  clearNotice();
+  await reloadTaskList();
+}
+
+async function reloadTaskList() {
+  let body;
+  const box = $('task-list');
+  try {
+    body = await getJson('/api/tasks');
+  } catch (e) {
+    // 弹层已经开了，里面得说清楚为什么是空的。
+    // 只在顶上飘一条错误、内容区一片空白，看着就像「草稿全没了」。
+    box.innerHTML = '';
+    box.appendChild(emptyLine('读取任务草稿失败：' + e.message));
+    return;
+  }
+  box.innerHTML = '';
+  const names = body.tasks || [];
+  if (!names.length) {
+    box.appendChild(emptyLine('还没有草稿。填好需求之后在上面起个名字保存。'));
+    return;
+  }
+  for (const name of names) {
+    const row = document.createElement('div');
+    row.className = 'list-row';
+    const label = document.createElement('span');
+    label.className = 'name';
+    label.textContent = name;
+    row.append(label, actionButton('载入', 'ghost', () => loadTask(name)),
+        actionButton('删除', 'danger', () => removeTask(name)));
+    box.appendChild(row);
+  }
+}
+
+function actionButton(text, kind, onClick) {
+  const button = document.createElement('button');
+  button.className = kind;
+  button.textContent = text;
+  button.onclick = onClick;
+  return button;
+}
+
+async function saveTask() {
+  const name = $('task-name').value.trim();
+  if (!name) {
+    notice('warn', '先给这次需求起个名字');
+    return;
+  }
+  const missing = validateForm();
+  if (missing.length) {
+    notice('warn', '还差这些信息：\n- ' + missing.join('\n- '));
+    return;
+  }
+  const result = await sendJson('POST', '/api/tasks',
+      JSON.stringify({ name, spec: payload() }));
+  if (!result.ok) return;
+  $('task-name').value = '';
+  notice('ok', '草稿「' + name + '」已保存');
+  await reloadTaskList();
+}
+
+async function loadTask(name) {
+  let data;
+  try {
+    data = await getJson('/api/task?name=' + encodeURIComponent(name));
+  } catch (e) {
+    notice('error', '载入草稿失败：' + e.message);
+    return;
+  }
+  applyRunRequest(data);
+  $('taskmgr').hidden = true;
+  // 「载入的是哪一份草稿」只有这里知道；applyRunRequest 只管把数据填回表单
+  notice('warn', '已载入草稿「' + name + '」，确认之后点运行。');
+}
+
+async function removeTask(name) {
+  const result = await sendJson('DELETE', '/api/tasks?name=' + encodeURIComponent(name));
+  if (result.ok) {
+    await reloadTaskList();
+  }
+}
+
+/**
+ * 把一份载入的组装填回表单。
+ *
+ * <p>顺序要紧：先切模板（那一步会把上下文重置成模板默认），
+ * 再用草稿里的上下文覆盖掉——否则草稿里手动加的那几条会被冲没。
+ */
+function applyRunRequest(data) {
+  // 草稿可能是旧的，里面的模板早被删了——selectTemplate 会退回「自由输入」
+  selectTemplate(data.template, FREE);
+
+  $('demand').value = data.prompt || '';
+  renderAcceptance(data.acceptance || []);
+  $('requirement-id').value = data.requirementId || '';
+
+  state.selected = new Set(data.targets || []);
+  state.context = (data.context || []).map(item => ({ ...item, from: 'manual' }));
+  $('constraints').value = (data.constraints || []).join('\n');
+  if (typeof data.verifyCompile === 'boolean') $('compile').checked = data.verifyCompile;
+  if (data.maxRetry) $('maxretry').value = data.maxRetry;
+  state.plan = null;
+  renderPlan();
+  renderFiles();
+  renderContext();
+  // 载入的是另一份组装，上一份留下的提示就不该还挂着
+  clearNotice();
+}
+
+// ---------- 运行历史 ----------
+// 失败的那几次尤其值得翻：代码已经回滚了，磁盘上看不出模型做了什么，
+// 那份「它改了什么、为什么停」只存在于这里。
+const STATUS_LABEL = {
+  SUCCESS: ['ok', '成功'],
+  SUCCESS_UNVERIFIED: ['mid', '未校验'],
+  FAILED: ['bad', '失败'],
+  NEEDS_ENVIRONMENT: ['bad', '待你处理环境'],
+  CANCELLED: ['mid', '中断'],
+  NEEDS_CONTEXT: ['bad', '缺依赖'],
+};
+
+async function openHistory() {
+  $('history').hidden = false;
+  clearNotice();
+  $('rundetail').innerHTML = '';
+  $('historystats').textContent = '';
+  try {
+    const body = await getJson('/api/runs');
+    renderRunList(body.runs || []);
+    renderMissingStats(body.missingStats);
+  } catch (e) {
+    $('runlist').innerHTML = '';
+    $('runlist').appendChild(emptyLine('读取历史失败：' + e.message));
+  }
+}
+
+/**
+ * 「它标的阻断，最后真的阻断了吗」。
+ *
+ * <p>检查阶段最容易被忽略的问题：模型为了显得谨慎，把什么都标成阻断，
+ * 于是每一条都要用户停下来回答。这一行是它唯一会被证伪的地方——
+ * 标了阻断、用户硬跑、最后还是成功了，那一条多半就是报重了。
+ */
+function renderMissingStats(stats) {
+  const box = $('historystats');
+  // 一条缺失项都没报过时这行没有信息量，不如不显示（实测：老记录的 missing 基本都是空的）
+  if (!stats || !stats.runs || !stats.items) {
+    return;
+  }
+  const parts = ['检查阶段一共报过 ' + stats.items + ' 条缺失项，其中 ' + stats.blockingItems
+      + ' 条标了「阻断」'];
+  if (stats.runsWithBlocking) {
+    parts.push('标着阻断的 ' + stats.runsWithBlocking + ' 次运行里，有 '
+        + stats.runsWithBlockingSucceeded + ' 次最后还是成功了（那几次多半是报重了）');
+  }
+  box.textContent = parts.join('；') + '。';
+}
+
+function renderRunList(runs) {
+  const box = $('runlist');
+  box.innerHTML = '';
+  $('historymeta').textContent = runs.length + ' 次运行';
+  if (!runs.length) {
+    box.appendChild(emptyLine('还没有运行记录。跑一次之后就会出现在这里。'));
+    return;
+  }
+  for (const run of runs) {
+    const [kind, label] = STATUS_LABEL[run.status] || ['bad', run.status];
+    const row = document.createElement('div');
+    row.className = 'run-row';
+
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = formatRunId(run.id);
+
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + kind;
+    badge.textContent = label;
+
+    const what = document.createElement('span');
+    what.className = 'what';
+    what.textContent = (run.template ? '[' + run.template + '] ' : '')
+        + (run.targets || []).join('、') + '　' + (run.detail || '');
+    what.title = what.textContent;
+
+    row.append(when, badge, what);
+    row.onclick = () => showRun(run.id);
+    box.appendChild(row);
+  }
+}
+
+async function showRun(id) {
+  let record;
+  try {
+    record = await getJson('/api/run-detail?id=' + encodeURIComponent(id));
+  } catch (e) {
+    notice('error', '读取运行记录失败：' + e.message);
+    return;
+  }
+
+  const box = $('rundetail');
+  box.className = 'run-detail';
+  box.innerHTML = '';
+
+  const heading = document.createElement('h3');
+  heading.textContent = '这次运行做了什么';
+  box.appendChild(heading);
+
+  const timeline = document.createElement('div');
+  timeline.className = 'timeline';
+  for (const line of record.timeline || []) {
+    const div = document.createElement('div');
+    if (line.level !== 'info') div.className = line.level;
+    if (line.round) {
+      const round = document.createElement('span');
+      round.className = 'round';
+      round.textContent = '第 ' + line.round + ' 轮';
+      div.appendChild(round);
+    }
+    div.appendChild(document.createTextNode(line.text));
+    timeline.appendChild(div);
+  }
+  if (!timeline.childElementCount) {
+    timeline.appendChild(emptyLine('（没有过程记录）'));
+  }
+  box.appendChild(timeline);
+
+  for (const change of record.changes || []) {
+    box.appendChild(changePanel(change));
+  }
+}
+
+function formatRunId(id) {
+  const match = String(id).match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+  return match
+      ? match[1] + '-' + match[2] + '-' + match[3] + ' ' + match[4] + ':' + match[5] + ':' + match[6]
+      : id;
+}
+
+function emptyLine(text) {
+  const div = document.createElement('div');
+  div.className = 'empty';
+  div.textContent = text;
+  return div;
+}
+
+// ---------- 结果 ----------
+const STATUS_TEXT = {
+  SUCCESS: ['ok', '成功：改动已写入并通过校验'],
+  SUCCESS_UNVERIFIED: ['mid', '改动已写入，但没有执行任何校验'],
+  FAILED: ['bad', '失败：已回滚到运行前'],
+  NEEDS_ENVIRONMENT: ['bad', '这不是改代码能解决的：依赖或环境问题，已回滚到运行前'],
+  CANCELLED: ['mid', '已中断：改动已回滚到运行前'],
+  NEEDS_CONTEXT: ['mid', '模型要求补充信息，未改动任何文件'],
+  ERROR: ['bad', '运行中断'],
+};
+
+function renderResult(result) {
+  const [kind, text] = STATUS_TEXT[result.status] || ['bad', result.status];
+  const box = $('result');
+  box.innerHTML = '';
+
+  const status = document.createElement('div');
+  status.className = 'status ' + kind;
+  status.textContent = text + '（共 ' + result.attempts + ' 轮）';
+  box.appendChild(status);
+
+  const detail = document.createElement('div');
+  detail.className = 'detail';
+  detail.textContent = result.detail || '';
+  box.appendChild(detail);
+
+  for (const change of result.changes || []) {
+    box.appendChild(changePanel(change));
+  }
+
+  // 新建的文件要出现在树里，否则下一轮想改它还得手输路径
+  if (result.changes && result.changes.length && result.status === 'SUCCESS') {
+    refreshFiles().catch(e => notice('warn', '刷新文件列表失败：' + e.message));
+  }
+}
+
+function changePanel(change) {
+  const details = document.createElement('details');
+  details.className = 'change';
+  details.open = true;
+  const summary = document.createElement('summary');
+  summary.textContent = (change.created ? '新建 ' : '修改 ') + change.path
+      + '  (' + change.bytes + ' 字节)';
+  details.appendChild(summary);
+
+  const diff = document.createElement('div');
+  diff.className = 'diff';
+  if (change.diff) {
+    for (const raw of change.diff.split('\n')) {
+      const line = document.createElement('div');
+      if (raw.startsWith('+')) line.className = 'add';
+      else if (raw.startsWith('-')) line.className = 'del';
+      line.textContent = raw || ' ';
+      diff.appendChild(line);
+    }
+  } else {
+    diff.textContent = '（内容无变化）';
+  }
+  details.appendChild(diff);
+  return details;
+}
+
+/**
+ * 弹一条提示。
+ *
+ * <p>写进固定的 <code>#notice</code> 浮层，而不是主面板里的某个位置——
+ * 模板管理、任务草稿这些弹层打开时会把主面板整个盖住，
+ * 提示写在那里等于没写：用户看到的是「点了保存没反应」，其实后端已经把原因说清楚了。
+ * 浮层的 z-index 高于弹层，所以两种情况都看得见。
+ */
+function notice(kind, text) {
+  clearNotice();
+  const div = document.createElement('div');
+  div.className = 'notice ' + kind;
+  div.textContent = text;
+  $('notice').appendChild(div);
+  // 成功只是「收到了」，没必要一直挂着占地方；
+  // 失败和警告要留到你处理它为止，所以不自动收。
+  if (kind === 'ok') {
+    noticeTimer = setTimeout(clearNotice, 4000);
+  }
+}
+
+/** 清掉当前提示。动作开始前先清，免得上一次的失败信息还挂着误导人。 */
+function clearNotice() {
+  clearTimeout(noticeTimer);
+  noticeTimer = 0;
+  $('notice').innerHTML = '';
+}
+
+function setRunning(running) {
+  state.running = running;
+  $('review').disabled = running;
+  $('run').disabled = running;
+  $('run').textContent = running ? '运行中…' : '运行';
+}
+
+/** 检查阶段是同步调用，只换按钮文案；两个按钮都不能同时点。 */
+function setReviewing(reviewing) {
+  state.running = reviewing;
+  $('review').disabled = reviewing;
+  $('run').disabled = reviewing;
+  $('review').textContent = reviewing ? '检查中…' : '先检查';
+}
+
+boot();
+</script>
+</body>
+</html>

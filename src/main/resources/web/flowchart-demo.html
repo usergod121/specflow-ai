@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>specflow · 流程图渲染自检</title>
+<style>
+  :root { --bg: #f6f7f9; --panel: #fff; --line: #e3e6ea; --text: #1f2328; --muted: #6b7280; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 14px 24px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0 0 4px; font-size: 16px; }
+  header p { margin: 0; color: var(--muted); font-size: 12px; }
+  main { max-width: 940px; margin: 0 auto; padding: 20px 24px 60px; }
+  .case {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 18px;
+    overflow: hidden;
+  }
+  .case h2 {
+    margin: 0;
+    padding: 10px 14px;
+    font-size: 13px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+  }
+  .case .why { padding: 10px 14px 0; color: var(--muted); font-size: 12px; }
+  .stage { padding: 16px; text-align: center; overflow-x: auto; }
+  .flow svg { max-width: 100%; height: auto; }
+  .flow-fallback {
+    text-align: left;
+    white-space: pre;
+    font: 12px/1.6 ui-monospace, Consolas, monospace;
+    background: var(--bg);
+    padding: 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+  }
+  details { padding: 0 16px 14px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  details pre {
+    margin: 8px 0 0;
+    padding: 10px;
+    background: var(--bg);
+    border-radius: 6px;
+    font: 12px/1.6 ui-monospace, Consolas, monospace;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>流程图渲染自检</h1>
+  <p>这一页不调用模型、不花钱。它只把几种典型图形喂给渲染器，用来肉眼确认画得对不对。
+     真正跑起来时，图形由模型按同样的语法写出来。</p>
+</header>
+
+<main id="cases"></main>
+
+<script src="flowchart.js"></script>
+<script>
+const CASES = [
+  {
+    title: '① 带分支的线性流程（最常见的一种）',
+    why: '判断节点画成菱形，两个分支的箭头各自带标签。',
+    flow: `flowchart TD
+    A[GET /orders] --> B{page 是否合法}
+    B -->|否| C[返回 400 参数错误]
+    B -->|是| D[OrderService 分页查询]
+    D --> E[OrderMapper 查库]
+    E --> F[组装 DTO 并返回]`,
+  },
+  {
+    title: '② 纯线性流程（节点多、无分支）',
+    why: '检查长链条会不会越画越歪、文字会不会溢出框。',
+    flow: `flowchart TD
+    A[用户提交表单] --> B[校验必填项]
+    B --> C[校验格式]
+    C --> D[写入数据库]
+    D --> E[发送通知]
+    E --> F[返回成功]`,
+  },
+  {
+    title: '③ 长文字与英文混排',
+    why: '估宽算法对中英混排的处理。名字太长的节点应该被撑宽，而不是让文字溢出边框。',
+    flow: `flowchart TD
+    A[接收 HttpServletRequest] --> B{是否有 accessToken}
+    B -->|没有| C[返回 401 未授权]
+    B -->|有| D[校验令牌并解析出用户身份]`,
+  },
+  {
+    title: '④ 链式写法 A --> B --> C',
+    why: '模型有时会把一整条链写在一行里。',
+    flow: 'flowchart TD\n    X[开始] --> Y[处理] --> Z[结束]',
+  },
+  {
+    title: '⑤ 语法不对时的兜底',
+    why: '这段没有 flowchart 关键字，渲染器应当**原样显示源码**，而不是留一片空白。',
+    flow: '这就是一段普通文字，不是流程图。',
+  },
+  {
+    title: '⑥ 分组（subgraph）：框里只能有自己的组员',
+    why: '模型爱用 subgraph 表达「这几步属于同一个模块」。以前 subgraph/end 会变成两个'
+        + '名叫 subgraph、end 的方块；现在画成带标题的框。注意「返回缺货」在框外——'
+        + '分组各占一竖条就是为了这个：框绝不能把旁边的节点框进来，那会让图撒谎。',
+    flow: `flowchart TD
+    A[收到下单请求] --> B{库存够不够}
+    B -->|够| C[创建订单]
+    B -->|不够| D[返回缺货]
+    subgraph 订单模块
+      C --> E[扣减库存]
+    end
+    E --> F[发通知]`,
+  },
+  {
+    title: '⑦ 样式指令：忽略，但要说出来',
+    why: 'style / classDef / linkStyle / click 这些以前会变成名叫 style、classDef 的幻影节点。'
+        + '现在它们被忽略并记一笔，界面会在图下面写「有 4 行没能画进图里」。',
+    flow: `flowchart TD
+    A[入口] --> B{判断}
+    B -->|是| C[处理]
+    style B fill:#f9f,stroke:#333
+    classDef big font-size:20px
+    linkStyle 0 stroke:#f00
+    click B "http://example.com"`,
+  },
+  {
+    title: '⑧ 边的花样：虚线、粗线、无箭头、叉、圈',
+    why: '以前只认 -->，其余写法会让节点全变成孤立的。现在虚线画成虚线、粗线画粗一点，'
+        + '--x 和 --o 的收尾记号照画（画成箭头就是另一个意思了）。',
+    flow: `flowchart TD
+    A[请求] -.-> B[异步补偿]
+    B ==> C[重要步骤]
+    C --- D[普通连线]
+    D --x E[失败终止]
+    E --o F[循环回来]`,
+  },
+  {
+    title: '⑨ 标签里的引号、竖线与换行',
+    why: '标签里出现 | 会被逐行解析的写法切开，所以要用引号括起来；<br/> 该换行就换行，'
+        + '而不是把 <br/> 当文字念出来。',
+    flow: `flowchart TD
+    A["带 | 竖线 的标签"] --> B[第一行<br/>第二行]
+    B --> C[普通标签]`,
+  },
+  {
+    title: '⑩ 一对多与老式标签写法',
+    why: 'A --> B & C 以前会把 C 整个丢掉；`A -- 标签 --> B` 这种老写法以前取不到标签。',
+    flow: `flowchart TD
+    A[入口] --> B[分支一] & C[分支二]
+    B -- 顺序 --> D[汇总]
+    C -. 异步 .-> D`,
+  },
+];
+
+const box = document.getElementById('cases');
+for (const item of CASES) {
+  const card = document.createElement('section');
+  card.className = 'case';
+
+  const title = document.createElement('h2');
+  title.textContent = item.title;
+  const why = document.createElement('div');
+  why.className = 'why';
+  why.textContent = item.why;
+
+  const stage = document.createElement('div');
+  stage.className = 'stage';
+  const report = renderFlowchart(item.flow, stage);
+
+  // 和真实界面一样：没画进图里的东西要写在旁边，不能只留在控制台里
+  const lines = [];
+  if (report.ignored.length) {
+    lines.push('有 ' + report.ignored.length + ' 行没能画进图里：'
+        + report.ignored.map(i => i.line + '（' + i.reason + '）').join('；'));
+  }
+  if (report.isolated.length) {
+    lines.push('没有任何连线的节点：' + report.isolated.join('、'));
+  }
+  card.append(title, why);
+  if (lines.length) {
+    const note = document.createElement('div');
+    note.className = 'why';
+    note.textContent = lines.join(' ');
+    card.appendChild(note);
+  }
+  card.appendChild(stage);
+
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = '看模型的原始输入';
+  const pre = document.createElement('pre');
+  pre.textContent = item.flow;
+  details.append(summary, pre);
+
+  card.appendChild(details);
+  box.appendChild(card);
+}
+</script>
+</body>
+</html>

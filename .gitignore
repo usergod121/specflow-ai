@@ -1,0 +1,56 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### Specflow ###
+# 快照是本地回滚用的，运行记录是本地历史，都不入库
+.specflow/snapshots/
+.specflow/runs/
+# 编译失败时留下来的日志（排查依赖/环境问题要看它），也不入库
+.specflow/logs/
+# 任务草稿是本地随手存的，和运行记录同一性质，不入库
+.specflow/tasks/
+# 密钥写在这里，永远不入库
+.specflow/local.env
+# 项目根下顺手放的密钥文件（key.env 之类）同样不入库
+*.env
+# 服务自己的 pid，每次启动都会重写
+.specflow/web.pid
+spec.yaml
+
+### IntelliJ IDEA ###
+# 整个 .idea 都是本机 IDE 状态（含最近打开的路径、workspace.xml），不入库
+.idea/
+.idea/modules.xml
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/libraries/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
