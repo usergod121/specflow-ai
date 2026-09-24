@@ -12,8 +12,10 @@ import com.specflow.llm.LlmClient;
 import com.specflow.llm.OpenAiCompatibleClient;
 import com.specflow.patch.PatchApplier;
 import com.specflow.project.ProjectConfig;
+import com.specflow.review.PlanAudit;
 import com.specflow.review.PlanReview;
 import com.specflow.review.PlanReviewer;
+import com.specflow.review.ReviewOutcome;
 import com.specflow.spec.Spec;
 import com.specflow.spec.SpecValidator;
 import com.specflow.template.TemplateRegistry;
@@ -123,12 +125,23 @@ public final class RunService implements AgentListener {
      *
      * <p>和开发阶段走异步轮询不同，这里没有多轮重试要推送，界面显示一个
      * 「检查中」就够了。为它再建一套进度通道得不偿失。
+     *
+     * <p>回来之后机器再过一遍：方案里提到的文件凡是不在目标清单里的，就是执行不了的地方。
+     * 这件事不靠模型自评——它连"清单是白名单"都看不见（那是开发阶段的协议），
+     * 所以它给出的方案必须由引擎自己核一遍。
      */
-    public PlanReview review(RunRequest request) {
+    public ReviewOutcome review(RunRequest request) {
         Spec spec = toValidSpec(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
-        return new PlanReviewer(new ContextAssembler(new SafePathResolver(projectRoot)),
+        PlanReview plan = new PlanReviewer(new ContextAssembler(new SafePathResolver(projectRoot)),
                 templates(), llm).review(spec);
+
+        // 顺手扫一遍项目：判「方案里的文件在不在清单里」得知道项目里都有什么。
+        // 一次检查只有一次模型调用（好几秒），这点扫树的功夫可以忽略；
+        // 为此把 ProjectIndex 塞进构造函数反而让这个类多背一个依赖。
+        ProjectIndex.Entries entries = new ProjectIndex(projectRoot).entries();
+        return new ReviewOutcome(plan,
+                PlanAudit.check(plan, spec.targets(), entries.files(), entries.directories()));
     }
 
     /** 界面与 CLI 走同一套校验：这里过不了的 spec，命令行那边同样过不了。 */

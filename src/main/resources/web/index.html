@@ -116,6 +116,20 @@
   .newpath { display: flex; gap: 6px; margin-top: 8px; }
   .newpath input { flex: 1; font: 12px/1.5 ui-monospace, Consolas, monospace; }
   .newpath button { padding: 6px 12px; font-size: 13px; flex: none; }
+  /* 后缀提示：一行，带几个候选按钮，随时可以「不用了」 */
+  .suffix-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+    font-size: 12px;
+    color: #6b5b2e;
+  }
+  .suffix-hint:empty { display: none; }
+  .suffix-hint button { padding: 2px 8px; font-size: 12px; }
+  .suffix-hint .dismiss { cursor: pointer; color: var(--muted); }
+  .suffix-hint .dismiss:hover { color: #b91c1c; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
   .chip {
     display: inline-flex;
@@ -454,6 +468,25 @@
     white-space: pre;
   }
   .missing { margin-top: 12px; }
+  /* 机器查出来的「执行不了」：比模型自评的缺失项更硬，所以更靠前、也更显眼 */
+  .audit { margin-bottom: 12px; }
+  .audit h3 { margin: 0 0 6px; font-size: 13px; color: #b91c1c; }
+  .audit .item {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border: 1px solid #fca5a5;
+    border-radius: 6px;
+    background: #fff5f5;
+    font-size: 13px;
+  }
+  .audit .what {
+    font-weight: 600;
+    font-family: ui-monospace, Consolas, monospace;
+    word-break: break-all;
+  }
+  .audit .why { color: #b91c1c; font-size: 12px; margin-top: 2px; }
+  .audit .how { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .audit .action { margin-top: 6px; }
   .missing h3 {
     margin: 0 0 6px;
     font-size: 13px;
@@ -470,7 +503,6 @@
   .missing .item-head { display: flex; align-items: center; gap: 6px; }
   .missing .what { font-weight: 600; }
   .missing .why, .missing .how { color: #6b5b2e; font-size: 12px; margin-top: 2px; }
-  .missing .blocking-hint { color: #b91c1c; }
   /* 严重度标签：三档颜色要一眼分得开，否则「严重度」等于没写 */
   .sev {
     flex: none;
@@ -760,6 +792,7 @@
       <input type="text" id="newpath" placeholder="src/main/java/demo/Foo.java">
       <button id="addpath">添加</button>
     </div>
+    <div class="suffix-hint" id="newpath-hint"></div>
     <div class="chips" id="newchips"></div>
     <div class="counts" id="picked"></div>
   </aside>
@@ -947,7 +980,9 @@ const state = {
   templateChoice: null, // 模板下拉框里上一次真实选中的项；null = 还没选过
   context: [],          // 本次的上下文依赖；模板默认项带 from='template' 标记
   plan: null,           // 检查阶段确认过的实现方案，会随运行一起发回去
-  forced: false,        // 用户是否点了「我知道，仍然继续」（有阻断项时的一次性放行）
+  audit: [],            // 机器查出来的「方案执行不了的地方」；只有它拦人
+  forced: false,        // 用户是否点了「我知道，仍然继续」（有执行不了的地方时的一次性放行）
+  suffixDismissed: null, // 用户说过「不用了」的那条路径，本次会话不再提醒后缀
   running: false,
   cursor: 0,
   runId: '',
@@ -1441,6 +1476,8 @@ function wireWorkspace() {
   $('refreshfiles').onclick = refreshFiles;
   $('tpl').onchange = onTemplateChoice;
   $('addpath').onclick = addNewPath;
+  $('newpath').oninput = scheduleSuffixHint;
+  $('newpath').onblur = renderSuffixHint;
   $('newpath').onkeydown = event => {
     if (event.key === 'Enter') addNewPath();
   };
@@ -1684,6 +1721,9 @@ function cleanPath(raw) {
   return raw.trim().replace(/\\/g, '/').replace(/^\/+/, '');
 }
 
+/** 后缀提示的防抖定时器；0 表示没有挂着的。 */
+let suffixHintTimer = 0;
+
 function fileNode(path, depth, label) {
   const row = document.createElement('label');
   row.className = 'node file';
@@ -1704,12 +1744,114 @@ function fileNode(path, depth, label) {
 }
 
 /** 手动粘整条路径的老入口：树里没显示的地方（比如项目根下的文件）还得靠它。 */
+/**
+ * 目标路径输入完之后，看一眼**同目录已有文件的扩展名**，不一致就提示一句。
+ *
+ * <p>为什么只提示不拦：人家可能就是要写个文本文件、或者建个 Makefile 那种没有后缀的东西。
+ * 拦下去是替用户做决定；但什么都不说也不行——清单里少一个 `.java`，
+ * 白名单就会把它当成另一个文件，模型写对的反而被拒，最后它退而求其次写出个没后缀的东西。
+ *
+ * <p>判断依据全部来自项目自己（同目录现有文件），不内置任何语言表，所以 `.py`、`.c` 一样适用；
+ * 拿不准就什么都不说。
+ */
+function suffixHint(raw) {
+  const path = cleanPath(raw);
+  const slash = path.lastIndexOf('/');
+  if (slash < 0) {
+    return null;
+  }
+  const directory = path.substring(0, slash);
+  const name = path.substring(slash + 1);
+  const extension = name.includes('.') ? name.substring(name.lastIndexOf('.')) : '';
+
+  const counts = new Map();
+  let total = 0;
+  for (const file of state.files) {
+    const at = file.lastIndexOf('/');
+    if (at < 0 || file.substring(0, at) !== directory) {
+      continue;
+    }
+    const other = file.substring(at + 1);
+    const dot = other.lastIndexOf('.');
+    const suffix = dot > 0 ? other.substring(dot) : '';
+    counts.set(suffix, (counts.get(suffix) || 0) + 1);
+    total++;
+  }
+  if (!total) {
+    return null;
+  }
+
+  // 目录里只有一种扩展名，而且和这条不一样 → 直接建议补上
+  if (counts.size === 1 && !counts.has(extension)) {
+    const [only] = counts.keys();
+    return only ? { suggestion: path + only, why: '这个目录里的文件都是 ' + only } : null;
+  }
+  // 几种并存：不替用户挑，把候选列出来
+  if (counts.size > 1 && !counts.has(extension)) {
+    const options = [...counts.keys()].filter(suffix => suffix);
+    return options.length ? { candidates: options.map(suffix => path + suffix), why: '这个目录里既有 '
+        + options.join(' 也有 ') } : null;
+  }
+  return null;
+}
+
+/**
+ * 把上面那个提示画出来。
+ *
+ * <p>边打边提示（输入时防抖 250ms），而不是等提交了再说——等提交完再提示，
+ * 用户还得先把刚加的那条删掉，等于马后炮。
+ */
+function renderSuffixHint() {
+  const box = $('newpath-hint');
+  const raw = $('newpath').value;
+  box.innerHTML = '';
+  if (!raw.trim() || raw.trim() === state.suffixDismissed) {
+    return;
+  }
+  const hint = suffixHint(raw);
+  if (!hint) {
+    return;
+  }
+
+  const text = document.createElement('span');
+  text.textContent = hint.why + '：';
+  box.appendChild(text);
+
+  for (const option of hint.candidates || [hint.suggestion]) {
+    const button = document.createElement('button');
+    button.className = 'ghost small';
+    button.textContent = option.substring(option.lastIndexOf('/') + 1);
+    button.onclick = () => {
+      $('newpath').value = option;
+      box.innerHTML = '';
+    };
+    box.appendChild(button);
+  }
+
+  const dismiss = document.createElement('span');
+  dismiss.className = 'dismiss';
+  dismiss.textContent = '不用了';
+  dismiss.onclick = () => {
+    // 记下这一条，本次会话不再为它唠叨——「我就是要写个没后缀的文件」是合法需求
+    state.suffixDismissed = raw.trim();
+    box.innerHTML = '';
+  };
+  box.appendChild(dismiss);
+}
+
+/** 输入时防抖：每敲一个字都算一遍太吵，停手 250 毫秒再看。 */
+function scheduleSuffixHint() {
+  clearTimeout(suffixHintTimer);
+  suffixHintTimer = setTimeout(renderSuffixHint, 250);
+}
+
 function addNewPath() {
   const input = $('newpath');
   const path = cleanPath(input.value);
   if (!path) return;
   state.selected.add(path);
   input.value = '';
+  $('newpath-hint').innerHTML = '';
   renderFiles();
 }
 
@@ -1987,14 +2129,80 @@ function retryBudget(raw) {
 }
 
 /**
- * 这份方案里有没有「不补上就只能靠它猜」的项。
+ * 这份方案里有没有「机器查出来的、执行不了的地方」。
  *
- * <p>只认模型明确标成「阻断」的。它没标、或标了个认不出来的词，都不算——
- * 反过来说，只要有一项是阻断，运行前就得让用户点一次确认。
+ * <p>只认这一类：方案要动的文件不在目标清单里——那是算出来的事实，改不了就是改不了。
+ * 模型自己标的「阻断」不拦人：它标歪过好几次（真模型试跑里 6 条阻断全都自己写了默认值），
+ * 拿它当开关，等于让用户替模型的措辞买单。
  */
-function blockingItems() {
-  const items = (state.plan && state.plan.missing) || [];
-  return items.filter(item => item.severity === 'BLOCKING');
+function auditFindings() {
+  return state.audit || [];
+}
+
+/**
+ * 机器查出来的「执行不了的地方」。
+ *
+ * <p>它和模型自评的「阻断」是两回事：这边是<b>算</b>出来的——方案要动的文件不在目标清单里，
+ * 那它就永远写不进去，跟你补不补信息无关。所以只有这一类拦人，也只有它配拦人。
+ *
+ * <p>能落到具体文件上的（那文件本来就在项目里），给一个「加进目标文件」按钮，
+ * 一键解决；给不出准确路径的（要新建的文件、只知道类名），只说明情况，让用户自己填——
+ * 塞一个错路径进去，下次跑起来更莫名其妙。
+ */
+function auditBlock(findings) {
+  const box = document.createElement('div');
+  box.className = 'audit';
+
+  const heading = document.createElement('h3');
+  heading.textContent = '这套方案有 ' + findings.length + ' 处执行不了（清单外的文件改不了）';
+  box.appendChild(heading);
+
+  for (const finding of findings) {
+    const row = document.createElement('div');
+    row.className = 'item';
+
+    const path = document.createElement('div');
+    path.className = 'what';
+    path.textContent = finding.path;
+    row.appendChild(path);
+
+    const reason = document.createElement('div');
+    reason.className = 'why';
+    reason.textContent = finding.reason;
+    row.appendChild(reason);
+
+    if (finding.suggest) {
+      const add = document.createElement('button');
+      add.className = 'ghost action';
+      add.textContent = '加进目标文件';
+      add.onclick = () => {
+        state.selected.add(finding.suggest);
+        renderFiles();
+        notice('ok', '已加进目标文件：' + finding.suggest);
+      };
+      row.appendChild(add);
+    } else {
+      const hint = document.createElement('div');
+      hint.className = 'how';
+      hint.textContent = '它还不存在：要让它能写，请把这个文件的完整路径加进目标文件';
+      row.appendChild(hint);
+    }
+    box.appendChild(row);
+  }
+
+  const gate = document.createElement('div');
+  gate.className = 'gate';
+  gate.textContent = '不解决就点「运行」的话，这几处它写不进去。';
+  const force = document.createElement('button');
+  force.className = 'ghost force-run';
+  force.textContent = '我知道，仍然继续';
+  force.onclick = () => {
+    state.forced = true;
+    run();
+  };
+  gate.appendChild(force);
+  box.appendChild(gate);
+  return box;
 }
 
 async function run() {
@@ -2008,14 +2216,13 @@ async function run() {
     return;
   }
 
-  // 有阻断项时先拦一下。不是不让跑，是别让它「悄悄猜」——
-  // 用户点一下「我知道，仍然继续」之后，那次运行的记录里就带着这些缺失项，
-  // 事后翻历史能看出「当时是在知道缺什么的情况下继续的」。
-  const blocking = blockingItems();
-  if (blocking.length && !state.forced) {
-    notice('warn', '这份方案里有 ' + blocking.length + ' 项被标成「阻断」：'
-        + blocking.map(item => item.what).join('、')
-        + '\n要么先补上，要么点方案里的「我知道，仍然继续」让它按默认值猜。');
+  // 方案里有执行不了的地方时先拦一下。不是不让跑，是别让它「悄悄写不进去」——
+  // 用户点一下「我知道，仍然继续」之后，那次运行的记录里照样带着这份方案。
+  const audit = auditFindings();
+  if (audit.length && !state.forced) {
+    notice('warn', '这份方案有 ' + audit.length + ' 处执行不了：\n- '
+        + audit.map(finding => finding.path).join('\n- ')
+        + '\n要么把它们加进目标文件，要么点方案里的「我知道，仍然继续」。');
     return;
   }
   state.forced = false;
@@ -2134,7 +2341,14 @@ async function review() {
       setReviewing(false);
       return;
     }
-    plan = body;
+    // 服务端把两样东西分开发：模型说的方案，和机器查出来的「执行不了的地方」
+    if (!body || !body.plan) {
+      notice('error', '检查结果里没有方案，可能是版本不匹配；重启一下服务再试');
+      setReviewing(false);
+      return;
+    }
+    plan = body.plan;
+    state.audit = body.audit || [];
   } catch (e) {
     notice('error', '检查失败：' + e.message);
     setReviewing(false);
@@ -2173,6 +2387,12 @@ function renderPlan() {
   const body = document.createElement('div');
   body.className = 'plan-body';
 
+  // 机器查出来的问题排在最前面：它决定这次能不能直接跑
+  const audit = auditFindings();
+  if (audit.length) {
+    body.appendChild(auditBlock(audit));
+  }
+
   if (plan.summary) {
     const summary = document.createElement('div');
     summary.className = 'plan-summary';
@@ -2194,8 +2414,8 @@ function renderPlan() {
     const heading = document.createElement('h3');
     heading.className = blocking.length ? 'blocking' : '';
     heading.textContent = blocking.length
-        ? '有 ' + blocking.length + ' 项阻断：不补上，它就只能猜（共 ' + items.length + ' 项）'
-        : '没有阻断项：下面 ' + items.length + ' 项它按自己的默认值处理';
+        ? '模型自己觉得这 ' + blocking.length + ' 条比较要紧（它不拦你，会按默认值写，注释里会写明假设）'
+        : '模型觉得没有要紧的：下面 ' + items.length + ' 项它按自己的默认值处理';
     missing.appendChild(heading);
 
     for (const item of items) {
@@ -2221,13 +2441,8 @@ function renderPlan() {
       if (item.business) {
         row.appendChild(missingLine('业务影响', item.business));
       }
-      if (item.severity === 'BLOCKING') {
-        const hint = missingLine('没补会怎样', '它可能会写出编不过、或者看着对但查不到数据的代码');
-        hint.className = 'why' + ' blocking-hint';
-        row.appendChild(hint);
-      } else {
-        row.appendChild(missingLine('它打算这么写', item.fallback || '按常规做法处理（它没给具体默认值）'));
-      }
+      // 严重度只影响左边那个标签；措辞一样——不管哪一档，它都会按默认值往下写
+      row.appendChild(missingLine('它打算这么写', item.fallback || '按常规做法处理（它没给具体默认值）'));
       missing.appendChild(row);
     }
 
@@ -2239,22 +2454,6 @@ function renderPlan() {
       missing.appendChild(tip);
     }
     body.appendChild(missing);
-
-    if (blocking.length) {
-      const gate = document.createElement('div');
-      gate.className = 'gate';
-      gate.textContent = '这 ' + blocking.length + ' 项没补之前，点「运行」会先被拦一下——'
-          + '你确认了才往下走。';
-      const force = document.createElement('button');
-      force.className = 'ghost force-run';
-      force.textContent = '我知道，仍然继续';
-      force.onclick = () => {
-        state.forced = true;
-        run();
-      };
-      gate.appendChild(force);
-      body.appendChild(gate);
-    }
   } else {
     const ok = document.createElement('div');
     ok.className = 'ok-plan';
@@ -2967,7 +3166,9 @@ function emptyLine(text) {
 
 // ---------- 结果 ----------
 const STATUS_TEXT = {
-  SUCCESS: ['ok', '成功：改动已写入并通过校验'],
+  // 「成功」说的是哪一步通过：编译校验通过 ≠ 需求做完了（验收标准没人管，那是另一回事）。
+  // 把话说准，用户才不会把「编译过了」读成「活干完了」。
+  SUCCESS: ['ok', '改动已写入，编译校验通过'],
   SUCCESS_UNVERIFIED: ['mid', '改动已写入，但没有执行任何校验'],
   FAILED: ['bad', '失败：已回滚到运行前'],
   NEEDS_ENVIRONMENT: ['bad', '这不是改代码能解决的：依赖或环境问题，已回滚到运行前'],

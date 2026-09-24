@@ -54,6 +54,30 @@ class PlanReviewerTest {
     }
 
     @Test
+    @DisplayName("检查阶段的提示词里必须有「清单外的文件你动不了」这条事实，并给出对应样例")
+    void instructionsStateTheTargetWhitelist() {
+        assertThat(ReviewProtocol.INSTRUCTIONS)
+                .contains("清单之外的文件你动不了")
+                .contains("需要把 X 加进目标文件");
+        assertThat(ReviewProtocol.INSTRUCTIONS.lines().filter(line -> line.contains("| 阻断 |")))
+                .as("样例里要有一条「清单里没有它所以做不了」")
+                .anySatisfy(example -> assertThat(example).contains("目标文件里没有它"));
+    }
+
+    @Test
+    @DisplayName("两阶段共用的「目标文件」段落里也把白名单说成事实")
+    void contextSectionStatesTheSameFact() throws IOException {
+        Files.writeString(root.resolve("OrderService.java"), "class OrderService {}");
+
+        String userMessage = new ContextAssembler(new SafePathResolver(root))
+                .userMessage(TestSpecs.spec(List.of("OrderService.java")), TemplateRegistry.empty());
+
+        assertThat(userMessage).contains("## 目标文件")
+                .contains("唯一")
+                .contains("清单之外的文件你动不了");
+    }
+
+    @Test
     @DisplayName("缺失清单要喂回开发阶段，但换了个说法：按默认值直接写，别再停下来问")
     void renderFeedsFallbacksIntoDevelopment() {
         PlanReview review = PlanReview.of("摘要文字", "flowchart TD\n    A-->B",

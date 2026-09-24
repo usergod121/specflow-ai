@@ -109,6 +109,35 @@ class SearchReplaceStrategyTest {
                 .isEqualTo(Kind.TARGET_NOT_ALLOWED);
     }
 
+    /**
+     * 真模型的现场：清单里写的是没带后缀的 `SummaryDTO`，模型老老实实去写 `SummaryDTO.java`，
+     * 被判越界；它于是退而求其次，写出了三个没有后缀的文件（javac 不看，编译还"通过"了）。
+     * 所以被拒的时候必须把最像的那个点出来——人和模型都得一眼看出差在哪。
+     */
+    @Test
+    @DisplayName("越界时点出白名单里最接近的那个：只差一个后缀也要说")
+    void pointsAtNearestTargetWhenOnlySuffixDiffers() {
+        Spec spec = TestSpecs.spec(List.of("src/main/java/com/demo/SummaryDTO"));
+
+        assertThatThrownBy(() -> plan(spec,
+                block("src/main/java/com/demo/SummaryDTO.java", "", "class SummaryDTO {}")))
+                .isInstanceOf(PatchConflictException.class)
+                .hasMessageContaining("最接近的是")
+                .hasMessageContaining("src/main/java/com/demo/SummaryDTO");
+    }
+
+    @Test
+    @DisplayName("完全不像的越界路径不猜：只列允许清单，不硬点一个最像的")
+    void doesNotGuessWhenNothingIsClose() {
+        Spec spec = TestSpecs.spec(List.of("src/main/java/com/demo/Foo.java"));
+
+        assertThatThrownBy(() -> plan(spec,
+                block("src/other/SomethingElse.java", "", "class SomethingElse {}")))
+                .isInstanceOf(PatchConflictException.class)
+                .hasMessageContaining("本次允许改动的文件是")
+                .hasMessageNotContaining("最接近的是");
+    }
+
     @Test
     @DisplayName("绝对路径与越界路径都被拒绝")
     void rejectsEscapingPath() {

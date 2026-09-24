@@ -5,6 +5,7 @@ import com.specflow.exception.SpecflowException;
 import com.specflow.project.ProjectInitializer;
 import com.specflow.project.ProjectScanner;
 import com.specflow.project.RecentProjects;
+import com.specflow.review.ReviewOutcome;
 import com.specflow.template.PromptTemplate;
 import com.specflow.template.Tags;
 import com.specflow.template.TemplateStore;
@@ -500,14 +501,20 @@ public final class WebServer implements AutoCloseable {
         return body;
     }
 
-    /** 检查阶段：同步返回一份实现方案。 */
+    /**
+     * 检查阶段：同步返回一份实现方案。
+     *
+     * <p>分成两块发出去：{@code plan} 是模型说的，{@code audit} 是机器查出来的
+     * 「执行不了的地方」。界面上只有 {@code audit} 有资格拦人——模型的自评只配当提示。
+     */
     private void review(OpenProject project, HttpExchange exchange) throws IOException {
         RunRequest request = Http.readJson(exchange, RunRequest.class);
         if (request == null) {
             return;
         }
         project.requireOpen();
-        Http.sendJson(exchange, 200, project.runs().review(request));
+        ReviewOutcome outcome = project.runs().review(request);
+        Http.sendJson(exchange, 200, Map.of("plan", outcome.plan(), "audit", outcome.audit()));
     }
 
     private void startRun(OpenProject project, HttpExchange exchange) throws IOException {

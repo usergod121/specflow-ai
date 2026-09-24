@@ -79,6 +79,35 @@ async function evaluate(expression) {
   return r.result.value;
 }
 
+/**
+ * 把 /api/run 拦住。
+ *
+ * <p>好几条链会去点「运行」，它们验的是"该不该被拦住"，不是真要跑一次——
+ * 真跑会调模型、改磁盘上的文件，那是拿用户的项目当试验田。
+ * 所以桩只此一份，各链只管数 `__runCalls`。
+ *
+ * <p><b>每次整页刷新之后都要重装</b>（换项目那条链会 location.reload()，
+ * 刷新会把 window 上这些东西全冲掉）。之前就是装一次、还在链尾还原，
+ * 结果下一条链的「放行」落到了真服务上——那次侥幸只崩在模板名上、没走到模型调用，
+ * 但那是运气，不是设计。
+ */
+async function installRunStub() {
+  await evaluate(`(() => {
+    window.__realFetch = window.fetch;
+    window.__runCalls = 0;
+    window.fetch = (url, opts) => {
+      if (String(url).endsWith('/api/run')) {
+        window.__runCalls++;
+        window.__lastRunBody = (opts && opts.body) || '';
+        return Promise.resolve(new Response(JSON.stringify({ runId: 'probe' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return window.__realFetch(url, opts);
+    };
+    return 'ok';
+  })()`);
+}
+
 /** 反复求值直到条件成立；超时就把最后一次的值报出来。 */
 async function waitFor(expression, message, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
@@ -267,6 +296,9 @@ async function main() {
     check(!(await visible('welcome')), '有项目时欢迎页不显示');
     check((await hiddenButVisible()).length === 0,
         '没有「标着 hidden 却还占着地方」的元素：' + JSON.stringify(await hiddenButVisible()));
+
+    // 把 /api/run 的桩装上（每次整页刷新之后都得重装一遍，见 installRunStub 的说明）
+    await installRunStub();
 
     // ---------- 链 1：下拉框入口新建 ----------
     console.log('\n链 1　下拉框「＋ 新建模板…」新建并保存：');
@@ -496,11 +528,13 @@ async function main() {
     })()`);
     await ensureOpen('src');
     await ensureOpen('src/main');
-    const deepDir = 'src/main/java';
-    const dirTitles = `[...document.querySelectorAll('#files .node.dir .name')].map(n => n.title).join(' | ')`;
-    check(await evaluate(`!!${findDirRow(deepDir)}`),
-        '展开 src / src/main 之后能看到深一层的目录：' + deepDir
-            + '（现在树里是：' + (await evaluate(dirTitles)) + '）');
+    // 不写死目录名：树的合并规则会随项目里有没有文件而变（少一个文件，两层就并成一行），
+    // 写死了迟早误报。这里只要求「能找到一个够深的目录行」。
+    const deepDir = await evaluate(`(() => {
+      const titles = [...document.querySelectorAll('#files .node.dir .name')].map(n => n.title);
+      return titles.filter(t => t.split('/').length > 2).sort((a, b) => b.length - a.length)[0] || null;
+    })()`);
+    check(deepDir !== null, '展开之后能找到深一层的目录：' + deepDir);
     await evaluate(`${findDirRow(deepDir)}.querySelector('.plus').click(); 'ok'`);
     check(await newpathValue() === deepDir + '/',
         '深目录上的「＋」填的是完整那一段（行上只显示后半截）：' + (await newpathValue()));
@@ -725,12 +759,12 @@ async function main() {
         '「手动输入路径…」是次要样式，不和主按钮抢眼');
 
     await evaluate(`
-      window.__realFetch = window.fetch;
+      window.__realPickFetch = window.fetch;
       window.__json = (body, status) => new Response(JSON.stringify(body),
           { status: status || 200, headers: { 'Content-Type': 'application/json' } });
       window.fetch = (url, opts) =>
           String(url).includes('/api/pick-folder') ? window.__pick(url, opts)
-                                                   : window.__realFetch(url, opts);
+                                                   : window.__realPickFetch(url, opts);
       'ok'`);
 
     // ① 窗口开着的时候：按钮禁用 + 写明在等你；再点也不会变成「可以再点」
@@ -942,6 +976,10 @@ async function main() {
     check((await hiddenButVisible()).length === 0,
         '切回项目后也没有「标着 hidden 却还占着地方」的元素：' + JSON.stringify(await hiddenButVisible()));
 
+    // 换项目是整页刷新，刚才装在 window 上的东西全没了：桩得重装一遍，
+    // 否则后面点「运行」就落到真服务上去了（真跑会调模型、动文件）。
+    await installRunStub();
+
     // ---------- 链 13：文件树刷新（在 IDE 里加了包/文件，切回来要看得见） ----------
     // 这是用户报的那个 bug 的正面复现：他在 IDEA 里新建了一个包，页面上看不见、也刷新不出来。
     // 两个原因：树是从「文件路径」推出来的（空包推不出来），而且界面上根本没有刷新入口。
@@ -1134,10 +1172,11 @@ async function main() {
         '回退之后原文开关里的内容还是原样');
     await evaluate(`state.plan = null; renderPlan(); 'ok'`);
 
-    // ---------- 链 15：缺失信息的严重度，以及「阻断」这一道闸 ----------
+    // ---------- 链 15：缺失信息的严重度（只显示，不拦人） ----------
     // 用户的现场：模型列一堆缺失项追着问，分不出哪条真要紧。
-    // 现在每条都带严重度，而且只有「阻断」会拦人。
-    console.log('\n链 15　缺失信息：分严重度、只有阻断拦人：');
+    // 现在每条都带严重度；但**模型自评的严重度不再拦人**——它标歪过，
+    // 真正拦人的是机器算出来的「方案执行不了」（见链 16）。
+    console.log('\n链 15　缺失信息：分严重度、模型自评不拦人：');
     // 顺序由引擎定（PlanParser 按严重度排好），界面只负责照着画。
     // 这里按「服务端会发过来的样子」给：阻断在前，然后是影响质量、可选、未标。
     const planWithMissing = {
@@ -1174,43 +1213,27 @@ async function main() {
     check(planText.includes('它打算这么写：按现有代码的驼峰写'),
         '非阻断项写出它打算用的默认值');
     check(planText.includes('它没给具体默认值'), '没给默认值的那条也不是一片空白');
-    check(planText.includes('有 1 项阻断'), '标题直接点出有几项阻断');
-    check(await evaluate(`!!document.querySelector('#plan .gate .force-run')`),
-        '有阻断项时旁边给出「我知道，仍然继续」');
+    check(planText.includes('模型自己觉得这 1 条比较要紧'), '标题说清了这是「模型自己觉得」');
+    check(planText.includes('它不拦你'), '并且明说它不拦人');
+    check(await evaluate(`!document.querySelector('#plan .missing .gate')`),
+        '缺失清单里没有闸门——模型自评不该挡住运行');
 
-    // 这一链绝不能真跑起来（真跑会调模型、动文件），所以把 /api/run 拦下来
-    await evaluate(`(() => {
-      window.__realFetch = window.fetch;
-      window.__runCalls = 0;
-      window.fetch = (url, opts) => {
-        if (String(url).endsWith('/api/run')) {
-          window.__runCalls++;
-          window.__lastRunBody = (opts && opts.body) || '';
-          return Promise.resolve(new Response(JSON.stringify({ runId: 'probe' }),
-              { status: 200, headers: { 'Content-Type': 'application/json' } }));
-        }
-        return window.__realFetch(url, opts);
-      };
-      return 'ok';
-    })()`);
+    // 这一链绝不能真跑起来（真跑会调模型、动文件）：/api/run 的桩在最前面就装好了，
+    // 这里只把计数清零，看这一链点了没有。
+    await evaluate(`window.__runCalls = 0; 'ok'`);
     await setField('demand', '缺失信息的严重度联动');
     await evaluate(`state.selected.add('src/test/zz-severity-probe.java'); updatePicked(); 'ok'`);
 
+    await evaluate(`state.forced = false; 'ok'`);
     await clickButton('run');
-    await sleep(600);
-    check(await evaluate(`window.__runCalls`) === 0, '有阻断项时点「运行」被拦下，没有真发出去');
-    check((await noticeText()).includes('阻断'),
-        '而且说清了为什么被拦：' + (await noticeText()));
-
-    await evaluate(`state.forced = true; 'ok'`);
-    await clickButton('run');
-    await sleep(800);
-    check(await evaluate(`window.__runCalls`) === 1, '点过「仍然继续」之后放行');
+    await sleep(700);
+    check(await evaluate(`window.__runCalls`) === 1,
+        '模型标了阻断也不拦人：运行照常发出去');
     check(await evaluate(`window.__lastRunBody.includes('orders 表结构')`),
-        '确认之后，那份方案（含缺失项）跟着请求一起发出去');
+        '那份方案（含缺失项）跟着请求一起发出去');
     check(await evaluate(`window.__lastRunBody.includes('BLOCKING')`),
         '严重度也在请求里，不是只发个名字');
-    check(await evaluate(`state.forced === false`), '放行是一次性的，跑完就复位');
+    check(await evaluate(`state.forced === false`), '没点过「仍然继续」时这个放行标记不生效');
 
     // 只有非阻断项时不该拦人，否则「严重度」等于白标
     await evaluate(`(() => {
@@ -1249,13 +1272,113 @@ async function main() {
         '并且点出「标了阻断最后还是成功」的次数——那几次多半是报重了：' + statsText);
     check((await hiddenButVisible()).length === 0, '历史弹层里也没有「标着 hidden 却占地方」的元素');
 
-    // 收拾干净：关弹层、恢复 fetch、撤掉这一链造的痕迹
+    // 收拾干净：关弹层、撤掉这一链造的痕迹。
+    // 注意**不要**在这里恢复 fetch：/api/run 的桩要一直挂到测试结束，
+    // 后面的链还要点「运行」看它有没有被拦住。
     await evaluate(`(() => {
       document.getElementById('history').hidden = true;
-      window.fetch = window.__realFetch;
       state.plan = null;
       state.forced = false;
       state.selected.delete('src/test/zz-severity-probe.java');
+      renderPlan();
+      updatePicked();
+      return 'ok';
+    })()`);
+
+    // ---------- 链 16：机器查出来的「方案执行不了」 ----------
+    // 用户的现场：目标清单只给了 service 和 mapper，检查阶段却给出「新建
+    // com.library.controller.HealthController」——那种方案永远写不进去。
+    // 现在由机器（PlanAudit）算出来，而且只有它拦人。
+    console.log('\n链 16　方案执行不了：机器算出来的那一份才拦人：');
+    const auditPlan = {
+      summary: '加一个按订单号查询的接口。',
+      flowchart: 'flowchart TD\n    A[加接口] --> B[写 Controller]',
+      missing: [{ what: '接口路径前缀', severity: 'QUALITY', impact: '可能不一致',
+                  business: '前端要改路径', fallback: '照现有的写' }],
+    };
+    const auditFindings = [
+      { path: 'src/main/java/com/library/controller/HealthController.java',
+        reason: '它在项目里，但不在本次的目标文件清单里：清单外的文件改不了',
+        suggest: 'src/main/java/com/library/controller/HealthController.java' },
+      { path: 'com/library/dto/SummaryDTO', reason: '清单里没有它（看起来是要新建）：清单外的文件建不了',
+        suggest: null },
+    ];
+    await evaluate(`(() => {
+      state.plan = ${JSON.stringify(auditPlan)};
+      state.audit = ${JSON.stringify(auditFindings)};
+      state.forced = false;
+      renderPlan();
+      return 'ok';
+    })()`);
+
+    const auditText = await evaluate(`document.querySelector('#plan .audit').textContent`);
+    check(auditText.includes('2 处执行不了'), '机器查出来的问题排在最前，并说清有几处：' + auditText);
+    check(auditText.includes('HealthController.java') && auditText.includes('清单外的文件改不了'),
+        '把具体文件和不改的后果都写出来了');
+    check(auditText.includes('它还不存在'), '给不出准确路径的那条改说「要自己填」，而不是塞个错路径');
+    check(await evaluate(`document.querySelectorAll('#plan .audit .action').length`) === 1,
+        '能落到具体文件上的那条，给一个「加进目标文件」按钮');
+    check(await evaluate(`!!document.querySelector('#plan .audit .gate .force-run')`),
+        '这一处才配拦人：旁边有「我知道，仍然继续」');
+
+    // 点「加进目标文件」：路径真的进了清单（chip 出现），而且有回音
+    await setField('demand', '机器检查的执行不了');
+    await evaluate(`state.selected.delete('src/test/zz-severity-probe.java'); updatePicked(); 'ok'`);
+    const beforeAdd = await evaluate(`state.selected.size`);
+    await evaluate(`document.querySelector('#plan .audit .action').click(); 'ok'`);
+    await sleep(300);
+    check(await evaluate(`state.selected.size`) === beforeAdd + 1,
+        '「加进目标文件」把它加进清单了：' + (await evaluate(`[...state.selected].join(',')`)));
+    check((await noticeText()).includes('已加进目标文件'), '并且给了回音：' + (await noticeText()));
+
+    // 闸门：有 audit 时先挡一下，点了「仍然继续」才放行
+    await evaluate(`(() => { window.__runCalls = 0; state.forced = false; return 'ok'; })()`);
+    await clickButton('run');
+    await sleep(600);
+    check(await evaluate(`window.__runCalls`) === 0, '有执行不了的地方时点「运行」被拦下');
+    check((await noticeText()).includes('执行不了'),
+        '拦下来的话里说的是「执行不了」，不是模型的自评：' + (await noticeText()));
+
+    await evaluate(`document.querySelector('#plan .audit .force-run').click(); 'ok'`);
+    await sleep(800);
+    check(await evaluate(`window.__runCalls`) === 1, '点「我知道，仍然继续」之后放行');
+    check(await evaluate(`state.forced === false`), '而且放行是一次性的');
+
+    // 结果区：措辞说准 + 落盘的文件路径列出来
+    await evaluate(`(() => {
+      state.plan = null; state.audit = []; renderPlan();
+      renderResult({ status: 'SUCCESS', attempts: 1, detail: '改动已落盘，校验通过',
+        changes: [{ path: 'src/main/java/com/demo/Foo.java', created: false, bytes: 10, diff: '' }] });
+      return 'ok';
+    })()`);
+    const resultText = await evaluate(`document.getElementById('result').textContent`);
+    check(resultText.includes('编译校验通过'),
+        '结果说的是「编译校验通过」，不让人读成「任务完成」：' + resultText);
+    check(resultText.includes('src/main/java/com/demo/Foo.java'),
+        '落盘的文件路径列出来了：' + resultText);
+
+    // 目标路径的后缀提示：同目录都是 .js，只因少写后缀就提示一句（不拦）
+    await setField('newpath', 'src/test/js/zz-probe');
+    await sleep(500);
+    const hintText = await evaluate(`document.getElementById('newpath-hint').textContent`);
+    check(hintText.includes('.js'), '少了后缀时提示了同目录的惯例：' + hintText);
+    await evaluate(`document.querySelector('#newpath-hint button').click(); 'ok'`);
+    check(await evaluate(`document.getElementById('newpath').value`) === 'src/test/js/zz-probe.js',
+        '点一下就补全成完整路径（目录没丢）：' + (await evaluate(`document.getElementById('newpath').value`)));
+    await setField('newpath', 'src/test/js/zz-probe');
+    await sleep(500);
+    await evaluate(`document.querySelector('#newpath-hint .dismiss').click(); 'ok'`);
+    check(await evaluate(`document.getElementById('newpath-hint').textContent`) === '',
+        '点「不用了」就不再唠叨');
+    await evaluate(`document.getElementById('newpath-hint').innerHTML = '';
+                    document.getElementById('newpath').value = ''; 'ok'`);
+
+    // 收拾干净（fetch 的桩不还原：挂到测试结束为止，见前面装桩处的说明）
+    await evaluate(`(() => {
+      state.plan = null;
+      state.audit = [];
+      state.forced = false;
+      state.selected.delete('src/main/java/com/library/controller/HealthController.java');
       renderPlan();
       updatePicked();
       return 'ok';

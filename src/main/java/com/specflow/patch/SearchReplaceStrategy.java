@@ -145,11 +145,55 @@ public final class SearchReplaceStrategy implements PatchStrategy {
         }
 
         if (!allowed.contains(file)) {
+            String nearest = nearest(block.path(), allowed, pathResolver);
             throw new PatchConflictException(Kind.TARGET_NOT_ALLOWED,
                     "第 " + ordinal + " 个补丁块指向了 targets 之外的文件：" + block.path(),
-                    List.of("本次允许改动的文件是：" + describeTargets(allowed, pathResolver)));
+                    List.of(nearest == null
+                                    ? "本次允许改动的文件是：" + describeTargets(allowed, pathResolver)
+                                    : "最接近的是：" + nearest + "（是名字写得不完全一样吗？）",
+                            "本次允许改动的文件是：" + describeTargets(allowed, pathResolver)));
         }
         return file;
+    }
+
+    /**
+     * 白名单里和它最像的那个。
+     *
+     * <p>为什么值得算一下：绝大多数越界不是「想改别人的文件」，而是<b>同一个文件名字写差了一点</b>
+     * （少个后缀、多了段目录）。只回一句「允许改的是这些」，模型和人都得自己盯着两个长路径找差异；
+     * 把最像的那个点出来，一眼就看见了。
+     *
+     * <p>只在「同目录 + 同名（忽略后缀差异）」或「一个是另一个的后缀」时才算最像，
+     * 不做模糊匹配——点错了比不点更糟。
+     */
+    private String nearest(String written, Set<Path> allowed, SafePathResolver pathResolver) {
+        String target = normalize(written);
+        String targetStem = stem(target);
+        for (Path candidate : allowed) {
+            String shown = normalize(pathResolver.relativize(candidate));
+            String stem = stem(shown);
+            if (stem.equals(targetStem)
+                    || shown.endsWith(target) || target.endsWith(shown)
+                    || stem.endsWith(targetStem) || targetStem.endsWith(stem)) {
+                return shown;
+            }
+        }
+        return null;
+    }
+
+    private static String normalize(String path) {
+        String value = path.replace('\\', '/').strip();
+        while (value.startsWith("./")) {
+            value = value.substring(2);
+        }
+        return value.startsWith("/") ? value.substring(1) : value;
+    }
+
+    /** 去掉最后一段的后缀：`a/b/C.java` → `a/b/C`。 */
+    private static String stem(String path) {
+        int slash = path.lastIndexOf('/');
+        int dot = path.lastIndexOf('.');
+        return dot > slash ? path.substring(0, dot) : path;
     }
 
     private void assertNoOverlap(List<PlannedEdit> edits, SafePathResolver pathResolver) {

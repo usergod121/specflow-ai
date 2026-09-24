@@ -28,6 +28,9 @@ function load(file, names, fromMarker, toMarker) {
   return eval(source.slice(from, to) + '\n({' + names.join(',') + '})');
 }
 
+/** 页面里的 state 是全局的，被测函数会读它；这里放一份假的，纯逻辑测试就不用开浏览器。 */
+globalThis.state = { files: [], selected: new Set() };
+
 let failed = 0;
 function check(condition, message) {
   if (condition) {
@@ -257,12 +260,36 @@ check((indexHtml.match(/\$\('tpl'\)\.value = /g) || []).length === 1,
 // ---------- 目标路径 ----------
 // 从目录行上的「＋」和手动输入都走这里：用户粘进来的路径什么样都有，
 // 收不干净就会多出一个「src//Foo.java」这样的目标，运行时报找不到。
-const { cleanPath } = load('index.html', ['cleanPath'], 'function cleanPath', 'function fileNode');
+const { cleanPath, suffixHint } = load('index.html', ['cleanPath', 'suffixHint'],
+    'function cleanPath', 'function renderSuffixHint');
 console.log('目标路径清洗：');
 check(cleanPath('  src/main/java/Foo.java  ') === 'src/main/java/Foo.java', '两边空格去掉');
 check(cleanPath('src\\main\\java\\Foo.java') === 'src/main/java/Foo.java', '反斜杠换成斜杠');
 check(cleanPath('/src/Foo.java') === 'src/Foo.java', '开头的斜杠去掉（粘进来的绝对路径）');
 check(cleanPath('') === '', '空串还是空串，交给调用方去判断');
+
+// ---------- 目标路径的后缀提示 ----------
+// 现场：清单里写的是 `…/dto/SummaryDTO`（少打了 .java），白名单按字符串比，
+// 模型写对的 `SummaryDTO.java` 反被判越界，它只好写出三个没有后缀的文件。
+// 这条提示不拦人，只在输入时拿"同目录已有文件"提醒一句。
+console.log('目标路径后缀提示：');
+state.files = ['src/main/java/com/demo/Foo.java', 'src/main/java/com/demo/Bar.java'];
+
+const hinted = suffixHint('src/main/java/com/demo/Baz');
+check(hinted && hinted.suggestion === 'src/main/java/com/demo/Baz.java',
+    '同目录里都是 .java 而这条没后缀：直接建议补上：' + JSON.stringify(hinted));
+check(suffixHint('src/main/java/com/demo/Baz.java') === null, '已经写了 .java 就不唠叨');
+check(suffixHint('src/main/java/com/other/Baz') === null, '那个目录里没有文件可参照：不说话');
+
+state.files = ['src/impl/A.cpp', 'src/impl/B.py'];
+const ambiguous = suffixHint('src/impl/C');
+check(ambiguous && ambiguous.candidates.length === 2 && !ambiguous.suggestion,
+    '两种扩展名并存：只列候选，不替用户挑：' + JSON.stringify(ambiguous));
+check(ambiguous.candidates.join() === 'src/impl/C.cpp,src/impl/C.py', '候选是完整路径，点了就能用');
+
+state.files = ['README.md'];
+check(suffixHint('src/nope/Thing') === null, '目录对不上：不说话（不猜）');
+check(suffixHint('没有斜杠的名字') === null, '连目录都没有：不说话');
 
 // ---------- 模板源码视图 ----------
 // 这段是手写的 YAML 序列化，唯一的用处是「切到源码视图时让你看到当前内容」。

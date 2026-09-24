@@ -161,7 +161,13 @@ public final class ContextAssembler {
     }
 
     private void appendTargets(Spec spec, StringBuilder out, CharBudget budget) {
+        // 这句是**事实**，不是要求。检查阶段和开发阶段都看得到这一段，所以只写一遍：
+        // 不写清楚，检查阶段会给出「新建 xxx/HealthController.java」这种根本执行不了的方案，
+        // 而开发阶段要等到补丁被拒才发现——那时已经白跑了一轮。
         out.append("## 目标文件\n");
+        out.append("下面这些是你**唯一**可以改动的文件；清单之外的文件你动不了，新建也不行。\n")
+                .append("如果这件事必须动清单外的文件，就直说「需要把某个文件加进目标文件」，")
+                .append("不要换个做法硬做。\n\n");
         for (String target : spec.targets()) {
             Path file = pathResolver.resolve(target);
             String shown = pathResolver.relativize(file);
