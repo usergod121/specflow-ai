@@ -5,7 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>specflow · 流程图渲染自检</title>
 <style>
-  :root { --bg: #f6f7f9; --panel: #fff; --line: #e3e6ea; --text: #1f2328; --muted: #6b7280; }
+  :root { --bg: #f6f7f9; --panel: #fff; --line: #e3e6ea; --text: #1f2328; --muted: #6b7280;
+    /* 图标那几个颜色：和 index.html 浅色那套一致（这一页不跟随系统暗色，
+       所以它拿到的就是"浅色下的图"长什么样） */
+    --flow-node-bg: #ffffff;
+    --flow-node-line: #c7ccd4;
+    --flow-decision-bg: #fff8e1;
+    --flow-decision-line: #e0b64a;
+    --flow-text: #1f2328;
+    --flow-edge: #9aa4b2;
+    --flow-edge-label: #6b7280;
+    --flow-group-bg: #fafbfc;
+    --flow-group-line: #d7dce3;
+    --flow-group-title: #6b7280;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0;

@@ -1651,6 +1651,104 @@ async function main() {
     await send('Emulation.setEmulatedMedia', { features: [] });
     await sleep(200);
 
+    // ---------- 链 19：状态感、日志分级、图跟随暗色、减少动态效果 ----------
+    console.log('\n链 19　状态感与动效：');
+
+    // 这台机器的系统就是暗色，所以先定死浅色基线——不定死的话
+    // 「浅色下节点是白底」这条会在暗色下跑，读起来莫名其妙（刚踩过一次）。
+    await send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value: 'light' }],
+    });
+    await sleep(200);
+
+    // ① 跑起来时要说清"现在到哪一步"（以前只有按钮变成"运行中…"，中间几十秒没信号）
+    await evaluate(`(() => {
+      setRunning(true);
+      document.getElementById('log').innerHTML = '';
+      return 'ok';
+    })()`);
+    check((await evaluate(`document.getElementById('runstage').textContent`)) === '正在开工…',
+        '刚开始跑时给一句「正在开工…」');
+    await evaluate(`appendLog({ id: 1, round: 2, level: 'info', text: '第 2 轮：调用模型…' }); 'ok'`);
+    check((await evaluate(`document.getElementById('runstage').textContent`)) === '第 2 轮',
+        '有轮次事件之后显示第几轮：' + (await evaluate(`document.getElementById('runstage').textContent`)));
+    await evaluate(`appendLog({ id: 2, round: 2, level: 'info', text: '编译校验：通过' }); 'ok'`);
+    check((await evaluate(`document.getElementById('runstage').textContent`)) === '编译校验中…',
+        '走到编译校验时显示对应阶段：' + (await evaluate(`document.getElementById('runstage').textContent`)));
+    check(!(await evaluate(`document.getElementById('runstage').hidden`)),
+        '这一句是看得见的（不是标着 hidden 还在那儿）');
+
+    // ② 日志分级：级别靠左侧色条，而不是只换个字色
+    await evaluate(`(() => {
+      appendLog({ id: 3, round: 1, level: 'warn', text: '补丁被拒绝，文件未改动' });
+      appendLog({ id: 4, round: 1, level: 'error', text: '编译校验：未通过' });
+      return 'ok';
+    })()`);
+    const levels = await evaluate(`(() => {
+      const lines = [...document.querySelectorAll('#log .line')];
+      const pick = cls => {
+        const el = lines.find(l => l.className.includes(cls));
+        const s = getComputedStyle(el);
+        return { border: s.borderLeftColor, bg: s.backgroundColor };
+      };
+      return { warn: pick('warn'), error: pick('error'), calm: getComputedStyle(lines[0]).borderLeftColor };
+    })()`);
+    check(levels.warn.border !== levels.calm || levels.warn.bg !== levels.calm,
+        '警告行和普通行长得不一样（色条或底色）：' + JSON.stringify(levels.warn));
+    check(levels.error.border !== levels.warn.border,
+        '错误行和警告行也分得开：' + levels.error.border + ' vs ' + levels.warn.border);
+
+    // ③ 流程图跟着暗色走（图是画上去的，不认普通 token，得单独验）
+    const lightFill = await evaluate(`(() => {
+      const flow = document.createElement('div');
+      renderFlowchart('flowchart TD\\n    A[入口] --> B{判断}', flow);
+      document.body.appendChild(flow);
+      window.__probeFlow = flow;
+      return flow.querySelector('.flow-node').getAttribute('fill');
+    })()`);
+    check(lightFill === 'rgb(255, 255, 255)' || lightFill === '#ffffff',
+        '浅色下节点是白底：' + lightFill);
+
+    await send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value: 'dark' }],
+    });
+    await sleep(300);
+    const darkFill = await evaluate(`(() => {
+      const flow = document.createElement('div');
+      renderFlowchart('flowchart TD\\n    A[入口] --> B{判断}', flow);
+      document.body.appendChild(flow);
+      return flow.querySelector('.flow-node').getAttribute('fill');
+    })()`);
+    check(darkFill !== lightFill, '暗色下同一张图换了颜色（不再是一块刺眼的浅色卡片）：'
+        + lightFill + ' → ' + darkFill);
+
+    // ④ 系统开了"减少动态效果"就真的没有动画
+    const motion = await evaluate(`(() => {
+      const el = document.querySelector('#log .line');
+      const normal = getComputedStyle(el).animationName;
+      return normal;
+    })()`);
+    check(motion !== 'none', '默认是有淡入动效的：' + motion);
+    await send('Emulation.setEmulatedMedia', {
+      features: [
+        { name: 'prefers-color-scheme', value: 'light' },
+        { name: 'prefers-reduced-motion', value: 'reduce' },
+      ],
+    });
+    await sleep(300);
+    const reduced = await evaluate(`getComputedStyle(document.querySelector('#log .line')).animationName`);
+    check(reduced === 'none', '开了「减少动态效果」之后动效全关：' + reduced);
+
+    // 收拾干净
+    await send('Emulation.setEmulatedMedia', { features: [] });
+    await sleep(200);
+    await evaluate(`(() => {
+      setRunning(false);
+      document.getElementById('log').innerHTML = '';
+      if (window.__probeFlow) { window.__probeFlow.remove(); window.__probeFlow = null; }
+      return 'ok';
+    })()`);
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,

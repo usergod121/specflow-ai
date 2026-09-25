@@ -189,10 +189,23 @@
   .sev-blocking { background: var(--error); border-color: var(--error-line); color: var(--error-text); }
   .sev-quality { background: var(--warn); border-color: var(--warn-line); color: var(--warn-text); }
   .sev-optional, .sev-unknown { background: var(--chip); border-color: var(--line-strong); color: var(--muted); }
-  .log-line { padding: 2px 8px; border-left: 3px solid var(--line); font: 12px/1.7 ui-monospace, Consolas, monospace; }
-  .log-line.info { border-color: var(--accent-line); }
-  .log-line.warn { border-color: var(--warn-line); background: var(--warn); }
-  .log-line.error { border-color: var(--error-line); background: var(--error); }
+  /* 分级靠左侧一道细色条 + 极浅底色，而不是整行染成大红大绿 */
+  .line {
+    padding: 2px 8px;
+    border-left: 3px solid var(--line);
+    border-radius: 0 4px 4px 0;
+    font: 12px/1.7 ui-monospace, Consolas, monospace;
+  }
+  .line.warn { color: var(--warn-text); border-left-color: var(--warn-line); background: var(--warn); }
+  .line.error { color: var(--error-text); border-left-color: var(--error-line); background: var(--error); }
+  .stage { color: var(--accent); font-size: 12px; font-weight: 500; }
+  .stage:empty { display: none; }
+  /* 动效：只淡入，不动布局属性 */
+  @keyframes sf-fade-in { from { opacity: 0; } to { opacity: 1; } }
+  .anim { animation: sf-fade-in .16s ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
   .diff { font: 12px/1.6 ui-monospace, Consolas, monospace; }
   .diff .add { background: var(--add); }
   .diff .del { background: var(--del); }
@@ -238,12 +251,25 @@
     </div>
 
     <div class="stage">
+      <h2>跑起来的状态感</h2>
+      <div class="row">
+        <button>运行中…</button>
+        <button class="ghost">停止</button>
+        <span class="stage">第 2 轮</span>
+      </div>
+      <div class="tip">
+        运行中那一句会从「正在开工…」→「第 2 轮」→「编译校验中…」跟着走。
+        刻意**不做进度条**：轮次上限是你自己定的、模型可能提前收工，画一条"到 60%"的条就是在编一个我们并不知道的数。
+      </div>
+    </div>
+
+    <div class="stage">
       <h2>日志分级</h2>
-      <div class="log-line info">第 1 轮：调用模型…</div>
-      <div class="log-line">已写入 2 个文件：HealthMapper.java、HealthService.java</div>
-      <div class="log-line warn">补丁被拒绝，文件未改动——补丁落盘失败[TARGET_NOT_ALLOWED]</div>
-      <div class="log-line error">编译校验：未通过</div>
-      <div class="tip">级别靠左侧色条 + 极浅底色区分，不整行染成大红大绿。</div>
+      <div class="line anim">第 1 轮：调用模型…</div>
+      <div class="line anim">已写入 2 个文件：HealthMapper.java、HealthService.java</div>
+      <div class="line warn anim">补丁被拒绝，文件未改动——补丁落盘失败[TARGET_NOT_ALLOWED]</div>
+      <div class="line error anim">编译校验：未通过</div>
+      <div class="tip">级别靠左侧色条 + 极浅底色区分，不整行染成大红大绿（新出现的行会淡入 160ms）。</div>
     </div>
 
     <div class="stage">

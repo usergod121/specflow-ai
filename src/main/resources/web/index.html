@@ -41,6 +41,19 @@
     /* 中性块（比如「未标」的标签底） */
     --chip: #eef1f5;
 
+    /* 流程图那几张颜色（flowchart.js 读这几个画 SVG）：
+       图是画上去的，不认普通 token，所以单独一组，暗色下再给一套值 */
+    --flow-node-bg: #ffffff;
+    --flow-node-line: #c7ccd4;
+    --flow-decision-bg: #fff8e1;
+    --flow-decision-line: #e0b64a;
+    --flow-text: #1f2328;
+    --flow-edge: #9aa4b2;
+    --flow-edge-label: #6b7280;
+    --flow-group-bg: #fafbfc;
+    --flow-group-line: #d7dce3;
+    --flow-group-title: #6b7280;
+
     --shadow: 0 6px 20px rgba(31, 35, 40, .14);
     --overlay: rgba(15, 23, 42, .35);
   }
@@ -75,6 +88,18 @@
       --del: #341a1c;
 
       --chip: #232a34;
+
+      /* 流程图：暗色下节点改成深底浅框，线也换成能看清的灰蓝 */
+      --flow-node-bg: #1c222b;
+      --flow-node-line: #46505e;
+      --flow-decision-bg: #2f2a18;
+      --flow-decision-line: #8a7440;
+      --flow-text: #e6e9ef;
+      --flow-edge: #6b7686;
+      --flow-edge-label: #9aa4b2;
+      --flow-group-bg: #191f27;
+      --flow-group-line: #333c48;
+      --flow-group-title: #8b93a1;
 
       --shadow: 0 6px 20px rgba(0, 0, 0, .5);
       --overlay: rgba(0, 0, 0, .6);
@@ -152,7 +177,7 @@
   }
   .node {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     align-items: center;
     padding: 2px 4px;
     font: 12px/1.6 ui-monospace, Consolas, monospace;
@@ -184,9 +209,9 @@
   .suffix-hint {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     flex-wrap: wrap;
-    margin-top: 6px;
+    margin-top: 8px;
     font-size: 12px;
     color: var(--warn-text-soft);
   }
@@ -198,9 +223,9 @@
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     max-width: 100%;
-    padding: 2px 6px;
+    padding: 2px 8px;
     border: 1px solid var(--accent-line);
     border-radius: 4px;
     background: var(--accent-weak);
@@ -223,7 +248,7 @@
   .field > label .key {
     font: 11px ui-monospace, Consolas, monospace;
     color: var(--muted-weak);
-    margin-left: 6px;
+    margin-left: 8px;
   }
   .tpl-head {
     display: flex;
@@ -240,7 +265,7 @@
   }
   .tpl-head .type {
     font: 11px/1.6 ui-monospace, Consolas, monospace;
-    padding: 1px 6px;
+    padding: 1px 8px;
     border-radius: 4px;
     background: var(--accent-weak);
     border: 1px solid var(--accent-line);
@@ -308,16 +333,56 @@
   #log {
     margin-top: 16px;
     border-top: 1px solid var(--line);
-    padding-top: 10px;
+    padding-top: 12px;
     font: 12px/1.7 ui-monospace, Consolas, monospace;
     max-height: 220px;
     overflow: auto;
   }
   #log:empty { display: none; }
-  .line { white-space: pre-wrap; word-break: break-all; }
-  .line.warn { color: var(--warn-text); }
-  .line.error { color: var(--error-text); }
-  .line .round { color: var(--muted); margin-right: 6px; }
+  /* 分级靠左侧一道细色条 + 极浅底色，而不是整行染成大红大绿：
+     一屏里往往十几行，整行染色会变成一片糊，读不出重点。 */
+  .line {
+    white-space: pre-wrap;
+    word-break: break-all;
+    padding: 2px 8px;
+    border-left: 3px solid var(--line);
+    border-radius: 0 4px 4px 0;
+  }
+  .line.warn { color: var(--warn-text); border-left-color: var(--warn-line); background: var(--warn); }
+  .line.error { color: var(--error-text); border-left-color: var(--error-line); background: var(--error); }
+  .line .round { color: var(--muted); margin-right: 8px; }
+
+  /* ---------- 动效 ---------- */
+  /* 只服务「状态变化」：新出现的东西淡进来。刻意**不**动 transform——
+     这个页面里多处靠 getBoundingClientRect 定位（流程图、文件树），
+     transform 会把它量到的位置挪走，动画期间量出来就是错的。 */
+  @keyframes sf-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  #log .line,
+  #plan:not(:empty),
+  #result:not(:empty),
+  #notice:not(:empty),
+  details[open] > .ctx-body,
+  .flow-raw[open] > pre {
+    animation: sf-fade-in .16s ease-out;
+  }
+  /* 系统开了「减少动态效果」就全关：动效是锦上添花，不该跟用户较劲 */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+
+  /* 跑起来时的那句「现在到哪一步」：贴着按钮，不抢眼但一直在 */
+  .stage {
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .stage:empty { display: none; }
 
   #result:empty { display: none; }
   #result { margin-top: 16px; }
@@ -333,7 +398,7 @@
     overflow: hidden;
   }
   details.change summary {
-    padding: 7px 10px;
+    padding: 8px 12px;
     cursor: pointer;
     font: 12px/1.5 ui-monospace, Consolas, monospace;
     background: var(--bg);
@@ -352,7 +417,7 @@
   }
   .ctx-kind {
     flex: none;
-    padding: 1px 5px;
+    padding: 1px 4px;
     border: 1px solid var(--line);
     border-radius: 3px;
     background: var(--bg);
@@ -378,8 +443,8 @@
   .ctx-tools {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-top: 6px;
+    gap: 12px;
+    margin-top: 8px;
     font-size: 12px;
   }
   .ctx-tools span:not(.meta) { cursor: pointer; color: var(--muted); }
@@ -394,7 +459,7 @@
   .ctx-import-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     font-size: 12px;
     margin-top: 4px;
   }
@@ -431,7 +496,7 @@
   .overlay-head {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: 12px;
     padding: 12px 16px;
     border-bottom: 1px solid var(--line);
   }
@@ -441,8 +506,8 @@
   .run-row {
     display: flex;
     align-items: baseline;
-    gap: 10px;
-    padding: 7px 8px;
+    gap: 12px;
+    padding: 8px 8px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 13px;
@@ -469,7 +534,7 @@
   .mgr-bar button { flex: none; padding: 7px 14px; font-size: 13px; }
   .tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
   .tabs span {
-    padding: 6px 12px;
+    padding: 8px 12px;
     cursor: pointer;
     font-size: 13px;
     color: var(--muted);
@@ -480,9 +545,9 @@
   .field-row {
     display: grid;
     grid-template-columns: 1fr 1fr 90px 60px 1fr 34px;
-    gap: 6px;
+    gap: 8px;
     align-items: center;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
   }
   .field-row.head { color: var(--muted); font-size: 11px; }
   .field-row input, .field-row select { padding: 5px 7px; font-size: 12px; }
@@ -491,8 +556,8 @@
   .list-row {
     display: flex;
     align-items: baseline;
-    gap: 10px;
-    padding: 7px 8px;
+    gap: 12px;
+    padding: 8px 8px;
     border-radius: 6px;
     font-size: 13px;
   }
@@ -517,8 +582,8 @@
   .plan-head {
     display: flex;
     align-items: baseline;
-    gap: 10px;
-    padding: 9px 12px;
+    gap: 12px;
+    padding: 8px 12px;
     background: var(--bg);
     border-bottom: 1px solid var(--line);
   }
@@ -534,14 +599,14 @@
     text-align: left;
     white-space: pre;
     background: var(--bg);
-    padding: 10px;
+    padding: 12px;
     border-radius: 6px;
     overflow-x: auto;
   }
   /* 图旁边那几行说明：哪几行没画进图里、哪些节点孤立、以及看原文的开关 */
   .flow-notes { margin-top: 8px; }
   .flow-note {
-    padding: 6px 8px;
+    padding: 8px 8px;
     border: 1px solid var(--warn-line);
     border-radius: 6px;
     background: var(--warn);
@@ -553,7 +618,7 @@
   .flow-raw summary { cursor: pointer; }
   .flow-raw summary:hover { color: var(--accent); }
   .flow-raw pre {
-    margin: 6px 0 0;
+    margin: 8px 0 0;
     padding: 8px;
     border: 1px solid var(--line);
     border-radius: 6px;
@@ -567,8 +632,8 @@
   .audit { margin-bottom: 12px; }
   .audit h3 { margin: 0 0 6px; font-size: 13px; color: var(--error-text); }
   .audit .item {
-    padding: 8px 10px;
-    margin-bottom: 6px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
     border: 1px solid var(--error-line);
     border-radius: 6px;
     background: var(--error);
@@ -583,14 +648,14 @@
   .audit .how { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .audit .action { margin-top: 6px; }
   .missing h3 {
-    margin: 0 0 6px;
+    margin: 0 0 8px;
     font-size: 13px;
     color: var(--warn-text);
   }
   .missing h3.blocking { color: var(--error-text); }
   .missing .item {
-    padding: 8px 10px;
-    margin-bottom: 6px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
     border-radius: 6px;
     background: var(--warn);
     font-size: 13px;
@@ -601,7 +666,7 @@
   /* 严重度标签：三档颜色要一眼分得开，否则「严重度」等于没写 */
   .sev {
     flex: none;
-    padding: 0 5px;
+    padding: 0 4px;
     border-radius: 3px;
     border: 1px solid transparent;
     font-size: 11px;
@@ -614,8 +679,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 10px;
-    padding: 8px 10px;
+    margin-top: 12px;
+    padding: 8px 12px;
     border: 1px solid var(--error-line);
     border-radius: 6px;
     background: var(--error);
@@ -625,7 +690,7 @@
   .gate button { flex: none; }
   .ok-plan {
     margin-top: 12px;
-    padding: 8px 10px;
+    padding: 8px 12px;
     border-radius: 6px;
     background: var(--ok);
     color: var(--ok-text);
@@ -678,7 +743,7 @@
   .open-row > .hit {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: 12px;
     flex: 1;
     min-width: 0;
     padding: 8px;
@@ -733,7 +798,7 @@
   #browser-scan .scan-line .lang { color: var(--muted); }
   #browser-scan .scan-command {
     margin-top: 8px;
-    padding: 8px 10px;
+    padding: 8px 12px;
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: 6px;
@@ -755,8 +820,8 @@
     align-items: center;
     gap: 12px;
     flex-wrap: wrap;
-    padding: 10px 12px;
-    margin-bottom: 14px;
+    padding: 12px 12px;
+    margin-bottom: 16px;
     background: var(--warn);
     border: 1px solid var(--warn-line);
     border-radius: 6px;
@@ -777,7 +842,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 10px;
+    padding: 8px 12px;
     margin-bottom: 4px;
     background: var(--warn);
     border: 1px solid var(--warn-line);
@@ -981,6 +1046,7 @@
       <button id="run">运行</button>
       <button id="stop" class="ghost" hidden>停止</button>
       <button id="taskmanage" class="ghost">任务草稿</button>
+      <span class="stage" id="runstage"></span>
       <span class="note" id="actionnote"></span>
     </div>
 
@@ -2651,6 +2717,7 @@ async function poll() {
 }
 
 function appendLog(event) {
+  updateStage(event);
   const div = document.createElement('div');
   div.className = 'line ' + (event.level === 'info' ? '' : event.level);
   if (event.round) {
@@ -2665,6 +2732,27 @@ function appendLog(event) {
 }
 
 // ---------- 检查阶段 ----------
+
+/**
+ * 跑的时候告诉用户"现在到哪一步"。
+ *
+ * <p>在此之前，跑起来只有按钮变成「运行中…」——一次运行可能几十秒、好几轮，
+ * 中间没有任何"它在动"的信号，用户只能盯着日志猜。这里按事件把当前阶段翻译成一句话。
+ *
+ * <p>刻意不做进度条：轮次上限是用户自己定的、模型可能提前收工，
+ * 画一条"进度到 60%"的条就是在编一个我们并不知道的数。
+ */
+function updateStage(event) {
+  if (event.type === 'result') {
+    $('runstage').textContent = '';
+    return;
+  }
+  if (/编译校验/.test(event.text || '')) {
+    $('runstage').textContent = '编译校验中…';
+    return;
+  }
+  $('runstage').textContent = event.round > 0 ? '第 ' + event.round + ' 轮' : '正在开工…';
+}
 
 /**
  * 严重度的三个档次：这是缺信息的「该不该停下来」的唯一判据。
@@ -3663,6 +3751,9 @@ function setRunning(running) {
   $('run').textContent = running ? '运行中…' : '运行';
   // 停止只在跑的时候有用；引擎是在「轮与轮之间」看这个请求，所以文案说清它不会立刻断
   $('stop').hidden = !running;
+  // 「现在到哪一步」这句也跟着进出：进了运行态就先给一句，
+  // 出来的那一下要清掉，否则会留着一句过期的「第 2 轮」挂在那儿
+  $('runstage').textContent = running ? '正在开工…' : '';
 }
 
 /** 检查阶段是同步调用，只换按钮文案；两个按钮都不能同时点。 */

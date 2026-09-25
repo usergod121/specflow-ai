@@ -27,7 +27,8 @@
  * 画不出来时不抛异常、不留空白——直接把原文交给调用方显示。
  */
 
-// 颜色只有这一处，和界面上那几个 CSS 变量是同一套值
+// 颜色的**兜底**值。真正用的是页面上的 --flow-* token（见 palette()），
+// 这样暗色模式下图会跟着一起变，而不是留一块刺眼的浅色卡片。
 const PALETTE = {
   nodeFill: '#ffffff',
   nodeStroke: '#c7ccd4',
@@ -40,6 +41,34 @@ const PALETTE = {
   groupStroke: '#d7dce3',
   groupTitle: '#6b7280',
 };
+
+/**
+ * 这次画图要用的颜色。
+ *
+ * <p>页面里定义了 `--flow-*` 一组 token（浅色一套、暗色一套），这里读出来用；
+ * 读不到就退回上面那份兜底值。所以这个函数只在真要画图时调用——
+ * 纯逻辑测试（node 里跑、没有 DOM）走的是 parseFlow / place 那几个，不碰它。
+ */
+function palette() {
+  const root = typeof document === 'undefined' ? null : document.documentElement;
+  const style = root && typeof getComputedStyle === 'function' ? getComputedStyle(root) : null;
+  const read = (name, fallback) => {
+    const value = style ? style.getPropertyValue('--flow-' + name).trim() : '';
+    return value || fallback;
+  };
+  return {
+    nodeFill: read('node-bg', PALETTE.nodeFill),
+    nodeStroke: read('node-line', PALETTE.nodeStroke),
+    decisionFill: read('decision-bg', PALETTE.decisionFill),
+    decisionStroke: read('decision-line', PALETTE.decisionStroke),
+    text: read('text', PALETTE.text),
+    edge: read('edge', PALETTE.edge),
+    edgeLabel: read('edge-label', PALETTE.edgeLabel),
+    groupFill: read('group-bg', PALETTE.groupFill),
+    groupStroke: read('group-line', PALETTE.groupStroke),
+    groupTitle: read('group-title', PALETTE.groupTitle),
+  };
+}
 
 const NODE_HEIGHT = 34;
 const LINE_HEIGHT = 17;
@@ -316,21 +345,22 @@ function renderFlowchart(text, container) {
 
   const { positions, totalWidth, totalHeight } = place(nodes, edges, groups);
 
+  const colors = palette();
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', '0 0 ' + totalWidth + ' ' + totalHeight);
   svg.setAttribute('width', totalWidth);
   svg.setAttribute('height', totalHeight);
-  svg.appendChild(arrowMarker());
+  svg.appendChild(arrowMarker(colors));
 
   // 分组框画在最底下：它只是「这几步属于同一个模块」的底衬，不该压住线
   for (const group of groups) {
-    drawGroup(svg, group, positions);
+    drawGroup(svg, group, positions, colors);
   }
   for (const edge of edges) {
-    drawEdge(svg, edge, positions);
+    drawEdge(svg, edge, positions, colors);
   }
   for (const node of nodes.values()) {
-    drawNode(svg, node, positions.get(node.id));
+    drawNode(svg, node, positions.get(node.id), colors);
   }
 
   container.className = 'flow';
@@ -409,11 +439,11 @@ function place(nodes, edges, groups) {
   return { positions, totalWidth, totalHeight };
 }
 
-function arrowMarker() {
+function arrowMarker(colors) {
   const defs = document.createElementNS(SVG_NS, 'defs');
   defs.innerHTML = '<marker id="sf-arrow" viewBox="0 0 10 10" refX="9" refY="5" '
       + 'markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
-      + '<path d="M 0 0 L 10 5 L 0 10 z" fill="' + PALETTE.edge + '"/></marker>';
+      + '<path d="M 0 0 L 10 5 L 0 10 z" fill="' + colors.edge + '"/></marker>';
   return defs;
 }
 
@@ -430,7 +460,7 @@ function groupBox(group, positions) {
 }
 
 /** 分组框：包住成员节点的圆角矩形 + 左上角的组名。 */
-function drawGroup(svg, group, positions) {
+function drawGroup(svg, group, positions, colors) {
   const box = groupBox(group, positions);
   if (!box) return;
 
@@ -440,8 +470,8 @@ function drawGroup(svg, group, positions) {
   rect.setAttribute('width', box.right - box.left);
   rect.setAttribute('height', box.bottom - box.top);
   rect.setAttribute('rx', 10);
-  rect.setAttribute('fill', PALETTE.groupFill);
-  rect.setAttribute('stroke', PALETTE.groupStroke);
+  rect.setAttribute('fill', colors.groupFill);
+  rect.setAttribute('stroke', colors.groupStroke);
   rect.setAttribute('stroke-width', '1');
   rect.setAttribute('stroke-dasharray', '4 3');
   rect.setAttribute('class', 'flow-group');
@@ -451,12 +481,12 @@ function drawGroup(svg, group, positions) {
   title.setAttribute('x', box.left + 8);
   title.setAttribute('y', box.top + 13);
   title.setAttribute('font-size', '11.5');
-  title.setAttribute('fill', PALETTE.groupTitle);
+  title.setAttribute('fill', colors.groupTitle);
   title.textContent = group.title;
   svg.appendChild(title);
 }
 
-function drawEdge(svg, edge, positions) {
+function drawEdge(svg, edge, positions, colors) {
   const from = positions.get(edge.from);
   const to = positions.get(edge.to);
   if (!from || !to) return;
@@ -473,7 +503,7 @@ function drawEdge(svg, edge, positions) {
   path.setAttribute('d', 'M ' + x1 + ' ' + y1
       + ' C ' + x1 + ' ' + midY + ', ' + x2 + ' ' + midY + ', ' + x2 + ' ' + y2);
   path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', PALETTE.edge);
+  path.setAttribute('stroke', colors.edge);
   path.setAttribute('stroke-width', kind.style === 'thick' ? '2.6' : '1.4');
   if (kind.style === 'dashed') path.setAttribute('stroke-dasharray', '5 4');
   if (kind.end === 'arrow' || kind.end === 'both') path.setAttribute('marker-end', 'url(#sf-arrow)');
@@ -486,7 +516,7 @@ function drawEdge(svg, edge, positions) {
     glyph.setAttribute('x', x2);
     glyph.setAttribute('y', y2 + 3);
     glyph.setAttribute('font-size', '11');
-    glyph.setAttribute('fill', PALETTE.edge);
+    glyph.setAttribute('fill', colors.edge);
     glyph.setAttribute('text-anchor', 'middle');
     glyph.textContent = kind.end === 'cross' ? '×' : '○';
     svg.appendChild(glyph);
@@ -497,13 +527,13 @@ function drawEdge(svg, edge, positions) {
   tag.setAttribute('x', (x1 + x2) / 2 + (x2 >= x1 ? 6 : -6));
   tag.setAttribute('y', midY + 4);
   tag.setAttribute('font-size', '11');
-  tag.setAttribute('fill', PALETTE.edgeLabel);
+  tag.setAttribute('fill', colors.edgeLabel);
   tag.setAttribute('text-anchor', x2 >= x1 ? 'start' : 'end');
   tag.textContent = edge.label;
   svg.appendChild(tag);
 }
 
-function drawNode(svg, node, at) {
+function drawNode(svg, node, at, colors) {
   const decision = node.shape === 'decision';
   const shape = document.createElementNS(SVG_NS, 'polygon');
   const cx = at.x + at.w / 2;
@@ -529,8 +559,8 @@ function drawNode(svg, node, at) {
     shape.setAttribute('points', roundedPoints(at.x, at.y, at.w, at.h,
         node.shape === 'database' || node.shape === 'subroutine' ? at.h / 2 : 7));
   }
-  shape.setAttribute('fill', decision ? PALETTE.decisionFill : PALETTE.nodeFill);
-  shape.setAttribute('stroke', decision ? PALETTE.decisionStroke : PALETTE.nodeStroke);
+  shape.setAttribute('fill', decision ? colors.decisionFill : colors.nodeFill);
+  shape.setAttribute('stroke', decision ? colors.decisionStroke : colors.nodeStroke);
   shape.setAttribute('stroke-width', '1.2');
   shape.setAttribute('class', decision ? 'flow-node flow-decision' : 'flow-node');
   svg.appendChild(shape);
@@ -540,7 +570,7 @@ function drawNode(svg, node, at) {
   text.setAttribute('x', cx);
   text.setAttribute('y', cy - (lines.length - 1) * LINE_HEIGHT / 2 + 4);
   text.setAttribute('font-size', '12.5');
-  text.setAttribute('fill', PALETTE.text);
+  text.setAttribute('fill', colors.text);
   text.setAttribute('text-anchor', 'middle');
   lines.forEach((line, index) => {
     const span = document.createElementNS(SVG_NS, 'tspan');
