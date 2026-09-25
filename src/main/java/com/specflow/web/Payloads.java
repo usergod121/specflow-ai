@@ -3,7 +3,10 @@ package com.specflow.web;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.specflow.spec.ContextItem;
 import com.specflow.template.PromptTemplate;
+
+import java.util.List;
 
 /**
  * CRUD 接口的请求体。
@@ -54,6 +57,28 @@ public final class Payloads {
         public static TaskSave of(@JsonProperty("name") String name,
                                   @JsonProperty("spec") RunRequest spec) {
             return new TaskSave(name, spec);
+        }
+    }
+
+    /**
+     * 导出一套上下文。
+     *
+     * <p>{@code items} 缺省成空列表而不是 {@code null}：空列表会被
+     * {@link com.specflow.project.ContextLibrary#save} 拒绝并给出一句人话，
+     * 而 {@code null} 只会在更后面的地方变成一次 NPE。
+     *
+     * @param name  上下文名，同时也是导出文件名
+     * @param items 这套上下文里的条目，形态与 spec 里的 {@code context} 完全一致
+     */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    public record ContextSave(
+            String name,
+            List<ContextItem> items
+    ) {
+        @JsonCreator
+        public static ContextSave of(@JsonProperty("name") String name,
+                                     @JsonProperty("items") List<ContextItem> items) {
+            return new ContextSave(name, items == null ? List.of() : items);
         }
     }
 

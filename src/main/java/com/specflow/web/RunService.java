@@ -55,6 +55,19 @@ public final class RunService implements AgentListener {
     private final Path templatesDir;
     private final RunStore store;
     private final RunHub hub = new RunHub();
+
+    /**
+     * 有没有人按了「停止」。
+     *
+     * <p>由运行线程读、HTTP 线程写，所以是 {@code volatile}。
+     *
+     * <p>它拦不住正在飞的那次模型调用——引擎只在<b>轮与轮之间</b>问一次
+     * （见 {@link DevelopmentAgent}），收到请求后的表现是「这一轮跑完就停」。
+     * 让一个已经发出去的请求半路作废，只会留下一个说不清状态的连接，
+     * 而真正的代价并不大：停下之前的所有改动都会被回滚。
+     */
+    private volatile boolean cancelRequested;
+
     private final ExecutorService runner = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "specflow-run");
         thread.setDaemon(true);
@@ -112,12 +125,30 @@ public final class RunService implements AgentListener {
         if (hub.running()) {
             throw new IllegalStateException("已有任务正在运行，请等它结束");
         }
+        // 清掉上一次留下的停止请求。放在并发判断<b>之后</b>：
+        // 这次提交被拒的时候，上一次运行可能正跑到一半，它的停止请求不该被顺手抹掉
+        cancelRequested = false;
         Spec spec = toValidSpec(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
 
         String runId = hub.startRun(UUID.randomUUID().toString());
         runner.submit(() -> execute(spec, llm, request.approvedPlan()));
         return runId;
+    }
+
+    /**
+     * 请求停止当前这次运行。
+     *
+     * <p>它只置一个标志，不做任何等待，也不抛异常——界面点完「停止」要立刻有反馈，
+     * 而真正的停止时刻由引擎决定：它在<b>下一轮开始之前</b>问一次
+     * （{@link AgentListener#cancelled()}），为真就停下并把工作区回滚。
+     *
+     * <p>所以「点了停止」到「真的停下」之间隔着当前这一轮的剩余时间，
+     * 可能还有一次模型调用在飞。不能真正打断的理由见
+     * {@link AgentListener#cancelled()} 的说明。
+     */
+    public void cancel() {
+        cancelRequested = true;
     }
 
     /**
@@ -169,6 +200,12 @@ public final class RunService implements AgentListener {
     }
 
     // ---------- Agent 回调 → 界面事件 ----------
+
+    /** 引擎每轮开头问的那一句，见 {@link #cancel()}。 */
+    @Override
+    public boolean cancelled() {
+        return cancelRequested;
+    }
 
     @Override
     public void roundStarted(int round) {

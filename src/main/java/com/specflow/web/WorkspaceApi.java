@@ -1,12 +1,15 @@
 package com.specflow.web;
 
 import com.specflow.exception.SpecflowException;
+import com.specflow.project.ContextLibrary;
 import com.specflow.task.TaskStore;
 import com.specflow.template.PromptTemplate;
 import com.specflow.template.TemplateStore;
 import com.sun.net.httpserver.HttpExchange;
 
 import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +32,7 @@ final class WorkspaceApi {
 
     private final TemplateStore templates;
     private final TaskStore tasks;
+    private final ContextLibrary context;
 
     /**
      * 「这个项目还是当前那个吗」——写之前问一句，见 {@link OpenProject#requireOpen()}。
@@ -38,9 +42,11 @@ final class WorkspaceApi {
      */
     private final Runnable requireOpen;
 
-    WorkspaceApi(TemplateStore templates, TaskStore tasks, Runnable requireOpen) {
+    WorkspaceApi(TemplateStore templates, TaskStore tasks, ContextLibrary context,
+                 Runnable requireOpen) {
         this.templates = templates;
         this.tasks = tasks;
+        this.context = context;
         this.requireOpen = requireOpen;
     }
 
@@ -179,6 +185,43 @@ final class WorkspaceApi {
     void task(HttpExchange exchange) throws IOException {
         String name = Http.query(exchange, "name", "");
         Http.sendJson(exchange, 200, RunRequest.from(tasks.load(name)));
+    }
+
+    // ---------- 上下文 ----------
+
+    /**
+     * 上下文的导出与读回。
+     *
+     * <p>{@code GET} 一次给出<b>每份的全部条目</b>，而不是只给名字：
+     * 界面要拿它做导入预览——「这一套里有哪几条、引用的文件还在不在」。
+     * 名字列表在预览里什么都说明不了，而条目本来也就在同一个 yaml 文件里，
+     * 再为「按需取一份」开一个接口只是多一次往返。
+     */
+    void contextLibrary(HttpExchange exchange) throws IOException {
+        switch (exchange.getRequestMethod().toUpperCase()) {
+            case "GET" -> {
+                List<ContextLibrary.Bundle> bundles = new ArrayList<>();
+                for (String name : context.names()) {
+                    bundles.add(context.load(name));
+                }
+                Http.sendJson(exchange, 200, Map.of("bundles", bundles));
+            }
+            case "POST" -> {
+                Payloads.ContextSave request = Http.readJson(exchange, Payloads.ContextSave.class);
+                if (request == null) {
+                    return;
+                }
+                requireOpen.run();
+                Path written = context.save(request.name(), request.items());
+                Http.sendJson(exchange, 200, Map.of(
+                        "name", request.name(),
+                        // 相对项目根的 POSIX 路径，界面直接显示成「已导出到 …」。
+                        // 文件名来自用户输入，但 save 已经挡掉了分隔符与 ..，
+                        // 而写出的位置永远是 library 自己的目录
+                        "path", ContextLibrary.DEFAULT_DIR + "/" + written.getFileName()));
+            }
+            default -> Http.sendJson(exchange, 405, Map.of("error", "该接口只接受 GET / POST"));
+        }
     }
 
     /** 供配置接口复用的模板清单，连同读不回来的那几份。 */

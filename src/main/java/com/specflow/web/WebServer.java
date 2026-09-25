@@ -200,6 +200,7 @@ public final class WebServer implements AutoCloseable {
                                 "runs", now.runs().history().list(),
                                 // 「它标的阻断最后真的阻断了吗」那一行汇总要的数据
                                 "missingStats", now.runs().history().missingStats()));
+                case "/api/cancel" -> cancelRun(now, exchange);
                 case "/api/run-detail" -> Http.sendJson(exchange, 200,
                         now.runs().history().load(Http.query(exchange, "id", "")));
                 case "/api/templates" -> now.workspace().templates(exchange);
@@ -207,6 +208,7 @@ public final class WebServer implements AutoCloseable {
                 case "/api/template-parse" -> now.workspace().templateParse(exchange);
                 case "/api/tasks" -> now.workspace().tasks(exchange);
                 case "/api/task" -> now.workspace().task(exchange);
+                case "/api/context" -> now.workspace().contextLibrary(exchange);
                 case "/api/init" -> initializeProject(now, exchange);
                 default -> Http.sendJson(exchange, 404, Map.of("error", "未知路径 " + path));
             }
@@ -531,6 +533,26 @@ public final class WebServer implements AutoCloseable {
             runId = project.runs().start(request);
         }
         Http.sendJson(exchange, 200, Map.of("runId", runId));
+    }
+
+    /**
+     * 叫停当前这次运行。
+     *
+     * <p>没有任务时报 409 而不是 200：界面据此能确定「现在没有东西可停」，
+     * 而不是显示一个永远不会兑现的「正在停止」。
+     *
+     * <p>返回 200 只表示「叫停这件事收到了」。真正的停止发生在<b>下一轮开始之前</b>
+     * ——正在飞行的模型调用没法干净地掐掉，见 {@link RunService#cancel()}。
+     */
+    private void cancelRun(OpenProject project, HttpExchange exchange) throws IOException {
+        if (!Http.requirePost(exchange)) {
+            return;
+        }
+        if (!project.runs().hub().running()) {
+            throw new IllegalStateException("现在没有在跑的任务");
+        }
+        project.runs().cancel();
+        Http.sendJson(exchange, 200, Map.of("cancelling", true));
     }
 
     private RunHub.RunView events(OpenProject project, HttpExchange exchange) {

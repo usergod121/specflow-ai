@@ -6,6 +6,7 @@ import com.specflow.agent.ProgressMessages;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanReview;
+import com.specflow.spec.ContextItem;
 import com.specflow.spec.Spec;
 import com.specflow.verify.VerificationResult;
 import org.slf4j.Logger;
@@ -34,6 +35,9 @@ public final class RunRecorder implements AgentListener {
 
     private static final Logger log = LoggerFactory.getLogger(RunRecorder.class);
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
+
+    /** 内联上下文在留档里最多保留多少个字；够认出是哪一段，又不至于把记录撑成几 MB。 */
+    private static final int MAX_TEXT_SOURCE = 200;
 
     private final RunStore store;
     private final AgentListener delegate;
@@ -118,7 +122,8 @@ public final class RunRecorder implements AgentListener {
                         change.bytes(), change.diff()))
                 .toList();
         RunRecord record = new RunRecord(id, startedAt, result.status().name(), spec.template(),
-                spec.prompt(), spec.acceptance(), spec.trace().requirementId(), spec.targets(), result.attempts(), result.detail(),
+                spec.prompt(), spec.acceptance(), contextOf(spec), spec.trace().requirementId(),
+                spec.targets(), result.attempts(), result.detail(),
                 approved == null ? List.of() : approved.missing(),
                 changes, List.copyOf(timeline));
         try {
@@ -127,5 +132,32 @@ public final class RunRecorder implements AgentListener {
         } catch (RuntimeException e) {
             log.warn("运行记录写入失败，不影响本次结果：{}", e.getMessage());
         }
+    }
+
+    /**
+     * 记下这次运行带了哪些上下文。
+     *
+     * <p>长文本要截断：内联上下文常常是一整段建表语句、几千字，
+     * 原样存进去会让每一次运行都留下一份几 MB 的记录——而历史列表要在界面上列出来，
+     * 「翻一次历史」就变成了读几十兆磁盘。
+     *
+     * <p>截断而不是整条丢掉：留档要回答的是「这次依据的是什么」，
+     * 前 200 字加上总字数够还原出它是哪一段；整条丢掉则会让
+     * 「它当时到底看没看到那份表结构」重新变成无从查证。
+     */
+    private static List<ContextItem> contextOf(Spec spec) {
+        return spec.context().stream()
+                .map(item -> item.text() == null
+                        ? item
+                        : ContextItem.of(item.name(), item.ref(), shorten(item.text()), item.note()))
+                .toList();
+    }
+
+    /** 超长时留下前 {@value #MAX_TEXT_SOURCE} 字，并注明原文共多少字。 */
+    private static String shorten(String text) {
+        if (text.length() <= MAX_TEXT_SOURCE) {
+            return text;
+        }
+        return text.substring(0, MAX_TEXT_SOURCE) + "…（共 " + text.length() + " 字）";
     }
 }

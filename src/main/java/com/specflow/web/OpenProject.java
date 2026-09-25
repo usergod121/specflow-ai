@@ -1,5 +1,6 @@
 package com.specflow.web;
 
+import com.specflow.project.ContextLibrary;
 import com.specflow.project.ProjectConfig;
 import com.specflow.project.ProjectConfigLoader;
 import com.specflow.task.TaskStore;
@@ -43,7 +44,8 @@ public final class OpenProject implements AutoCloseable {
         this.root = root;
         this.config = config;
         this.templates = templates;
-        this.workspace = new WorkspaceApi(templates, new TaskStore(root), this::requireOpen);
+        this.workspace = new WorkspaceApi(templates, new TaskStore(root),
+                new ContextLibrary(root), this::requireOpen);
         this.index = index;
         this.runs = runs;
     }

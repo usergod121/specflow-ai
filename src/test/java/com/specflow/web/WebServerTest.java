@@ -557,6 +557,81 @@ class WebServerTest {
     }
 
     @Test
+    @DisplayName("还没导出过上下文时清单是空的，不是报错")
+    void contextListStartsEmpty() throws Exception {
+        HttpResponse<String> response = get("/api/context");
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(body(response).path("bundles")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("导出上下文：返回名字与相对路径，文件真的落到磁盘上，再读回来条目还在")
+    void contextExportWritesTheFile() throws Exception {
+        HttpResponse<String> saved = post("/api/context", """
+                {"name":"订单上下文","items":[
+                  {"name":"UserController.java","ref":"README.md","note":"照它的风格写"},
+                  {"name":"订单表结构","text":"CREATE TABLE orders (id BIGINT)"}]}
+                """);
+
+        assertThat(saved.statusCode()).isEqualTo(200);
+        assertThat(body(saved).path("name").asText()).isEqualTo("订单上下文");
+        // 相对项目根的 POSIX 路径，界面直接显示成「已导出到 …」
+        assertThat(body(saved).path("path").asText())
+                .isEqualTo(".specflow/context/订单上下文.yaml");
+        assertThat(Files.isRegularFile(root.resolve(".specflow/context/订单上下文.yaml"))).isTrue();
+
+        // 界面要拿这一份做导入预览，所以 GET 必须带上条目本身
+        JsonNode bundles = body(get("/api/context")).path("bundles");
+        assertThat(bundles).singleElement().satisfies(bundle -> {
+            assertThat(bundle.path("name").asText()).isEqualTo("订单上下文");
+            assertThat(bundle.path("project").asText()).isEqualTo(root.getFileName().toString());
+            assertThat(bundle.path("items")).hasSize(2);
+            assertThat(bundle.path("items").get(0).path("ref").asText()).isEqualTo("README.md");
+            assertThat(bundle.path("items").get(1).path("text").asText())
+                    .contains("CREATE TABLE orders");
+        });
+    }
+
+    @Test
+    @DisplayName("导出上下文时名字非法返回 400 与人话，磁盘上不会多出文件")
+    void contextExportRejectsBadName() throws Exception {
+        HttpResponse<String> response = post("/api/context", """
+                {"name":"../../evil","items":[{"name":"a","text":"文本"}]}
+                """);
+
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.body()).contains("上下文名非法");
+        // Jackson 的包装层对用户没有任何意义
+        assertThat(response.body())
+                .doesNotContain("Cannot construct instance")
+                .doesNotContain("StreamReadFeature");
+        assertThat(root.resolve("evil.yaml")).doesNotExist();
+        assertThat(body(get("/api/context")).path("bundles")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("上下文接口只接受 GET / POST")
+    void contextRejectsOtherMethods() throws Exception {
+        HttpResponse<String> response = put("/api/context",
+                "{\"name\":\"x\",\"items\":[{\"name\":\"a\",\"text\":\"文本\"}]}");
+
+        assertThat(response.statusCode()).isEqualTo(405);
+        assertThat(response.body()).contains("该接口只接受 GET / POST");
+    }
+
+    @Test
+    @DisplayName("没有任务在跑时「停止」返回 409——界面据此知道没有东西可停")
+    void cancelWithoutRunningTaskReturns409() throws Exception {
+        HttpResponse<String> response = post("/api/cancel", "");
+
+        assertThat(response.statusCode()).isEqualTo(409);
+        assertThat(response.body()).contains("现在没有在跑的任务");
+        // 没有东西可停的时候，GET 也不该被当成一次叫停
+        assertThat(get("/api/cancel").statusCode()).isEqualTo(405);
+    }
+
+    @Test
     @DisplayName("「最近打开」里有一条 path 为 null 的记录时，欢迎页照常打得开")
     void aRecentEntryWithoutPathDoesNotTakeDownTheWelcomePage() throws Exception {
         // 这三种写法都会给出 null（条目本身或它的路径），而 Path.of(null) 是 NPE——
@@ -648,6 +723,14 @@ class WebServerTest {
 
     private HttpResponse<String> delete(String path) throws Exception {
         return http.send(HttpRequest.newBuilder(URI.create(server.url() + path)).DELETE().build(),
+                HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> put(String path, String jsonBody) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create(server.url() + path))
+                        .header("Content-Type", "application/json")
+                        .PUT(HttpRequest.BodyPublishers.ofString(jsonBody))
+                        .build(),
                 HttpResponse.BodyHandlers.ofString());
     }
 

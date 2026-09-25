@@ -303,6 +303,30 @@
   .ctx-item .x:hover { color: #b91c1c; }
   .ctx-add { margin-top: 6px; }
   .ctx-add summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  /* 全选/全不选 + 勾了几条 */
+  .ctx-tools {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+    font-size: 12px;
+  }
+  .ctx-tools span:not(.meta) { cursor: pointer; color: var(--muted); }
+  .ctx-tools span:not(.meta):hover { color: var(--accent); }
+  .ctx-tools .meta { margin-left: auto; color: var(--muted); }
+  /* 每条上下文：一行摘要（可点开），展开是内容与说明 */
+  .ctx-body { display: flex; flex-direction: column; gap: 4px; padding: 6px 0 2px 6px; }
+  .ctx-edit {
+    width: 100%;
+    font: 12px/1.5 ui-monospace, Consolas, monospace;
+  }
+  .ctx-import-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    margin-top: 4px;
+  }
   .ctx-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
   .ctx-form button { align-self: flex-start; padding: 6px 14px; font-size: 13px; }
 
@@ -832,6 +856,11 @@
     <div class="field">
       <label>上下文依赖</label>
       <div class="ctx-list" id="ctxlist"></div>
+      <div class="ctx-tools" id="ctxtools" hidden>
+        <span id="ctxall">全选</span>
+        <span id="ctxnone">全不选</span>
+        <span class="meta" id="ctxcount"></span>
+      </div>
       <details class="ctx-add">
         <summary>＋ 添加上下文依赖</summary>
         <div class="ctx-form">
@@ -844,6 +873,20 @@
           <textarea id="ctxtext" rows="4" placeholder="粘贴内容" hidden></textarea>
           <input type="text" id="ctxnote" placeholder="说明（可选）：例如「照这个已有接口的风格写」">
           <button id="ctxadd">添加</button>
+        </div>
+      </details>
+      <details class="ctx-add">
+        <summary>⇄ 导入 / 导出（给别人用，或从别人那里拿来）</summary>
+        <div class="ctx-form">
+          <div class="newpath">
+            <input type="text" id="ctx-export-name" placeholder="给这套上下文起个名字（会变成文件名）">
+            <button class="ghost" id="ctx-export">导出勾选的</button>
+          </div>
+          <div class="newpath">
+            <select id="ctx-import-pick"></select>
+            <button class="ghost" id="ctx-import-preview">预览</button>
+          </div>
+          <div id="ctx-import-box"></div>
         </div>
       </details>
     </div>
@@ -865,6 +908,7 @@
     <div class="actions">
       <button id="review" class="ghost">先检查</button>
       <button id="run">运行</button>
+      <button id="stop" class="ghost" hidden>停止</button>
       <button id="taskmanage" class="ghost">任务草稿</button>
       <span class="note" id="actionnote"></span>
     </div>
@@ -979,6 +1023,9 @@ const state = {
   brokenTemplates: [], // 目录里读不出来的那几份，附原因；照列出来并提供删除
   templateChoice: null, // 模板下拉框里上一次真实选中的项；null = 还没选过
   context: [],          // 本次的上下文依赖；模板默认项带 from='template' 标记
+  ctxUnchecked: new Set(),   // 上下文里没勾的那些（存"没勾的"：默认全勾，新加的天然勾上）
+  importBundle: null,        // 正在预览的那套上下文文件
+  importChecked: new Set(),  // 预览里勾中的下标
   plan: null,           // 检查阶段确认过的实现方案，会随运行一起发回去
   audit: [],            // 机器查出来的「方案执行不了的地方」；只有它拦人
   forced: false,        // 用户是否点了「我知道，仍然继续」（有执行不了的地方时的一次性放行）
@@ -1414,6 +1461,7 @@ function renderMeta() {
 function wireWorkspace() {
   $('switchproject').onclick = closeProject;
   $('run').onclick = run;
+  $('stop').onclick = stopRun;
   $('review').onclick = review;
   $('historylink').onclick = openHistory;
   $('historyclose').onclick = () => {
@@ -1481,9 +1529,10 @@ function wireWorkspace() {
   $('newpath').onkeydown = event => {
     if (event.key === 'Enter') addNewPath();
   };
-  $('ctxkind').onchange = toggleContextForm;
   $('ctxadd').onclick = addContextItem;
+  wireContextTools();
   toggleContextForm();
+  refreshContextLibrary();
   $('expandall').onclick = () => {
     state.expanded = new Set(state.dirPaths);
     renderFiles();
@@ -2006,18 +2055,44 @@ function applyTemplateContext(template) {
   renderContext();
 }
 
+/**
+ * 上下文清单。
+ *
+ * <p>每条都有勾选框：勾了才会跟着这次运行发出去，也才会被导出——「这一条我不想要」
+ * 以前只能整条删掉、再重新加回来，太笨。勾选状态记在 {@code state.ctxUnchecked} 里
+ * （存"没勾的"而不是"勾了的"）：默认全勾，于是新加进来的条目天然是勾上的，
+ * 载入草稿之后也一样，不需要每次重建列表都去补一遍状态。
+ *
+ * <p>每条还能展开看内容、就地改：以前内容只藏在鼠标悬停的 title 里，
+ * 加进去之后等于看不见了——粘贴的建表语句想改一个字都没有入口。
+ */
 function renderContext() {
   const box = $('ctxlist');
   box.innerHTML = '';
+  $('ctxtools').hidden = !state.context.length;
   if (!state.context.length) {
     box.className = 'ctx-list ctx-empty';
     box.textContent = '（暂无。目标文件会自动附上，这里只加它还需要额外参考的东西）';
     return;
   }
   box.className = 'ctx-list';
-  state.context.forEach((item, index) => {
-    const row = document.createElement('div');
-    row.className = 'ctx-item';
+
+  for (const item of state.context) {
+    const details = document.createElement('details');
+    details.className = 'ctx-item';
+
+    const head = document.createElement('summary');
+
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'ctx-check';
+    check.checked = !state.ctxUnchecked.has(item);
+    // 点勾选框不该顺带把这一条展开/收起
+    check.onclick = event => event.stopPropagation();
+    check.onchange = () => {
+      check.checked ? state.ctxUnchecked.delete(item) : state.ctxUnchecked.add(item);
+      renderContextCount();
+    };
 
     const kind = document.createElement('span');
     kind.className = 'ctx-kind';
@@ -2026,24 +2101,234 @@ function renderContext() {
     const name = document.createElement('span');
     name.className = 'ctx-name';
     name.textContent = item.name;
-    name.title = item.ref || item.text || item.name;
 
     const note = document.createElement('span');
     note.className = 'ctx-note';
     note.textContent = item.note || '';
-    note.title = item.note || '';
 
     const remove = document.createElement('span');
     remove.className = 'x';
     remove.textContent = '×';
-    remove.onclick = () => {
-      state.context.splice(index, 1);
+    remove.onclick = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      state.context.splice(state.context.indexOf(item), 1);
+      state.ctxUnchecked.delete(item);
       renderContext();
     };
 
-    row.append(kind, name, note, remove);
+    head.append(check, kind, name, note, remove);
+    details.append(head, contextEditor(item));
+    box.appendChild(details);
+  }
+  renderContextCount();
+}
+
+/** 展开之后那块：内容 + 说明，都能就地改。 */
+function contextEditor(item) {
+  const body = document.createElement('div');
+  body.className = 'ctx-body';
+
+  const isRef = Boolean(item.ref);
+  const content = document.createElement(isRef ? 'input' : 'textarea');
+  content.className = 'ctx-edit';
+  if (!isRef) {
+    content.rows = 5;
+  }
+  content.value = (isRef ? item.ref : item.text) || '';
+  content.placeholder = isRef ? '相对项目根的路径' : '内容';
+  content.onchange = () => {
+    const value = content.value.trim();
+    if (isRef) {
+      item.ref = value;
+      // 路径改了，名字还是老的会让人以为没改
+      if (!value) {
+        notice('warn', '引用不能是空的：要么填路径，要么把这条删掉');
+      }
+    } else {
+      item.text = content.value;
+    }
+  };
+
+  const noteLabel = document.createElement('div');
+  noteLabel.className = 'hint';
+  noteLabel.textContent = '说明（会跟内容一起发给模型，用来交代「照它怎么写」）';
+  const note = document.createElement('input');
+  note.className = 'ctx-edit';
+  note.value = item.note || '';
+  note.placeholder = '例如：照这个已有接口的风格写';
+  note.onchange = () => {
+    item.note = note.value.trim();
+    renderContext();
+  };
+
+  body.append(content, noteLabel, note);
+  return body;
+}
+
+/** 勾了几条、一共几条。 */
+function renderContextCount() {
+  const checked = state.context.filter(item => !state.ctxUnchecked.has(item)).length;
+  $('ctxcount').textContent = '已勾 ' + checked + ' / ' + state.context.length + ' 条（勾上的才会发给模型）';
+}
+
+/** 全选 / 全不选。 */
+function checkAllContext(checked) {
+  state.ctxUnchecked = new Set(checked ? [] : state.context);
+  renderContext();
+}
+
+/** 退出上下文清单那几样工具：勾选 + 导入导出。 */
+function wireContextTools() {
+  $('ctxall').onclick = () => checkAllContext(true);
+  $('ctxnone').onclick = () => checkAllContext(false);
+  $('ctx-export').onclick = exportContext;
+  $('ctx-import-preview').onclick = previewImportContext;
+  $('ctxkind').onchange = toggleContextForm;
+}
+
+/**
+ * 把勾中的上下文导出成一份文件（`.specflow/context/<名字>.yaml`）。
+ *
+ * <p>为什么是一份文件装多条：给人分享的时候，「这个项目要参考的那几样东西」
+ * 本来就是一套；一条一个文件，对方要收好几个附件。
+ */
+async function exportContext() {
+  const items = checkedContext().map(item => ({
+    name: item.name, ref: item.ref || null, text: item.text || null, note: item.note || null,
+  }));
+  const name = $('ctx-export-name').value.trim();
+  if (!items.length) {
+    notice('warn', '一条都没勾：先勾上要导出的');
+    return;
+  }
+  if (!name) {
+    notice('warn', '先给它起个名字（会变成文件名）');
+    return;
+  }
+  const result = await sendJson('POST', '/api/context', JSON.stringify({ name, items }));
+  if (!result.ok) {
+    return;
+  }
+  notice('ok', '已导出 ' + items.length + ' 条到 ' + result.payload.path + '，把这个文件发给别人就行');
+  $('ctx-export-name').value = '';
+  await refreshContextLibrary();
+}
+
+/** 勾上的那些条目。 */
+function checkedContext() {
+  return state.context.filter(item => !state.ctxUnchecked.has(item));
+}
+
+/** 已经导出过的那几套，填进下拉框。 */
+async function refreshContextLibrary() {
+  let body;
+  try {
+    body = await getJson('/api/context');
+  } catch (e) {
+    return; // 拉不到就先不填，不打扰用户
+  }
+  const select = $('ctx-import-pick');
+  select.innerHTML = '';
+  const bundles = body.bundles || [];
+  if (!bundles.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '（还没导出过）';
+    select.appendChild(option);
+    return;
+  }
+  for (const bundle of bundles) {
+    const option = document.createElement('option');
+    option.value = bundle.name;
+    option.textContent = bundle.name + '（' + bundle.items.length + ' 条，来自 '
+        + (bundle.project || '?') + '）';
+    select.appendChild(option);
+  }
+}
+
+/**
+ * 导入前先看一眼：把那份文件里的条目列出来，让你再勾一遍。
+ *
+ * <p>不直接灌进来：别人的一套上下文里，总有几条对这次没用——
+ * 不给人挑的机会，就只能导进来再一条条删。
+ */
+async function previewImportContext() {
+  const name = $('ctx-import-pick').value;
+  const box = $('ctx-import-box');
+  box.innerHTML = '';
+  state.importBundle = null;
+  if (!name) {
+    notice('warn', '先在上面选一套（还没导出过的话，就先导出一套）');
+    return;
+  }
+  let body;
+  try {
+    body = await getJson('/api/context');
+  } catch (e) {
+    notice('error', '读取上下文文件失败：' + e.message);
+    return;
+  }
+  const bundle = (body.bundles || []).find(item => item.name === name);
+  if (!bundle) {
+    notice('warn', '这套上下文不在了：' + name);
+    return;
+  }
+  state.importBundle = bundle;
+  state.importChecked = new Set(bundle.items.map((_, index) => index));
+
+  const hint = document.createElement('div');
+  hint.className = 'hint';
+  hint.textContent = '来自 ' + (bundle.project || '?') + '（' + (bundle.exportedAt || '') + '）：'
+      + '勾上要加进这次任务的';
+  box.appendChild(hint);
+
+  bundle.items.forEach((item, index) => {
+    const row = document.createElement('label');
+    row.className = 'ctx-import-row';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.checked = true;
+    check.onchange = () => {
+      check.checked ? state.importChecked.add(index) : state.importChecked.delete(index);
+    };
+    const text = document.createElement('span');
+    text.textContent = item.name + (item.ref ? '（引用 ' + item.ref + '）' : '（文本）');
+    row.append(check, text);
     box.appendChild(row);
   });
+
+  const add = document.createElement('button');
+  add.className = 'ghost';
+  add.textContent = '加进当前任务';
+  add.onclick = applyImportedContext;
+  box.appendChild(add);
+}
+
+/** 把预览里勾中的那些真正加进当前任务（同名同来源的不重复加）。 */
+function applyImportedContext() {
+  const bundle = state.importBundle;
+  if (!bundle) {
+    return;
+  }
+  let added = 0;
+  for (const index of state.importChecked) {
+    const item = bundle.items[index];
+    const exists = state.context.some(known =>
+        known.name === item.name && (known.ref || '') === (item.ref || ''));
+    if (exists) {
+      continue;
+    }
+    state.context.push({ name: item.name, ref: item.ref || null, text: item.text || null,
+                         note: item.note || null });
+    added++;
+  }
+  state.importBundle = null;
+  state.importChecked = new Set();
+  $('ctx-import-box').innerHTML = '';
+  renderContext();
+  notice(added ? 'ok' : 'warn',
+      added ? ('已加进 ' + added + ' 条上下文') : '这些条目当前任务里都有了，没重复加');
 }
 
 function toggleContextForm() {
@@ -2092,7 +2377,8 @@ function payload() {
     targets: [...state.selected],
     constraints: $('constraints').value.split('\n').map(s => s.trim()).filter(Boolean),
     // 只带该形态用得上的那个字段：后端见到 ref 和 text 同时存在会直接拒绝
-    context: state.context.map(item => item.ref
+    // 也只带勾上的：没勾的条目等于「这次先不用它」，删掉再加回来太笨，所以给个勾选框
+    context: checkedContext().map(item => item.ref
         ? { name: item.name, ref: item.ref, note: item.note }
         : { name: item.name, text: item.text, note: item.note }),
     verifyCompile: $('compile').checked,
@@ -2203,6 +2489,21 @@ function auditBlock(findings) {
   gate.appendChild(force);
   box.appendChild(gate);
   return box;
+}
+
+/**
+ * 请求停止。
+ *
+ * <p>引擎只在**轮与轮之间**看这个请求（正在飞的那次模型调用没法干净地掐断），
+ * 所以文案得说清：它不会立刻停，但一定会把磁盘回滚到运行前——
+ * 不说清楚，用户会以为点了没反应、然后去强杀进程。
+ */
+async function stopRun() {
+  const result = await sendJson('POST', '/api/cancel', '{}');
+  if (!result.ok) {
+    return;
+  }
+  notice('warn', '已请求停止：它会在这一轮结束时停下，并把磁盘回滚到运行前。');
 }
 
 async function run() {
@@ -3016,6 +3317,8 @@ function applyRunRequest(data) {
 
   state.selected = new Set(data.targets || []);
   state.context = (data.context || []).map(item => ({ ...item, from: 'manual' }));
+  // 换了一整套上下文，之前那些「没勾的」记的是旧对象，留着没意义
+  state.ctxUnchecked = new Set();
   $('constraints').value = (data.constraints || []).join('\n');
   if (typeof data.verifyCompile === 'boolean') $('compile').checked = data.verifyCompile;
   if (data.maxRetry) $('maxretry').value = data.maxRetry;
@@ -3145,6 +3448,32 @@ async function showRun(id) {
   }
   box.appendChild(timeline);
 
+  // 当时喂了什么上下文：记录里存了它，界面就得显示出来——
+  // 不然「它为什么会这么写」这个问题，过两天再翻记录时只能靠猜。
+  const context = record.context || [];
+  if (context.length) {
+    const details = document.createElement('details');
+    details.className = 'run-context';
+    const summary = document.createElement('summary');
+    summary.textContent = '当时参考了 ' + context.length + ' 条上下文';
+    details.appendChild(summary);
+    for (const item of context) {
+      const div = document.createElement('div');
+      div.className = 'run-context-item';
+      div.textContent = item.name + '（' + (item.ref ? '引用 ' + item.ref : '文本') + '）'
+          + (item.note ? '　' + item.note : '');
+      details.appendChild(div);
+      const body = (item.ref || item.text || '').trim();
+      if (body && !item.ref) {
+        const pre = document.createElement('pre');
+        pre.className = 'run-context-text';
+        pre.textContent = body;
+        details.appendChild(pre);
+      }
+    }
+    box.appendChild(details);
+  }
+
   for (const change of record.changes || []) {
     box.appendChild(changePanel(change));
   }
@@ -3261,6 +3590,8 @@ function setRunning(running) {
   $('review').disabled = running;
   $('run').disabled = running;
   $('run').textContent = running ? '运行中…' : '运行';
+  // 停止只在跑的时候有用；引擎是在「轮与轮之间」看这个请求，所以文案说清它不会立刻断
+  $('stop').hidden = !running;
 }
 
 /** 检查阶段是同步调用，只换按钮文案；两个按钮都不能同时点。 */

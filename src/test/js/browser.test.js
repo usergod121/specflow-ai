@@ -1384,6 +1384,188 @@ async function main() {
       return 'ok';
     })()`);
 
+    // ---------- 链 17：上下文能看、能挑、能拿走；跑着的时候能停 ----------
+    // 用户的现场：上下文加进去就"看不见"了（内容只藏在悬停的 title 里），
+    // 也没法给别人用（另一个团队要参考同样几样东西时只能重打一遍）。
+    console.log('\n链 17　上下文：看得见、挑得动、拿得走：');
+    await evaluate(`(() => {
+      state.context = [
+        { name: 'orders 表结构', text: 'CREATE TABLE orders (id BIGINT, status VARCHAR(16));', note: '照这个写', from: 'manual' },
+        { name: 'UserController', ref: 'src/main/java/demo/UserController.java', note: '', from: 'manual' },
+      ];
+      state.ctxUnchecked = new Set();
+      renderContext();
+      return 'ok';
+    })()`);
+
+    check(await evaluate(`document.querySelectorAll('#ctxlist .ctx-item').length`) === 2,
+        '两条上下文都画出来了');
+    check(await evaluate(`document.querySelectorAll('#ctxlist .ctx-check').length`) === 2,
+        '每条都带勾选框');
+    check((await evaluate(`document.getElementById('ctxcount').textContent`)).includes('已勾 2 / 2'),
+        '计数说清了勾了几条：' + (await evaluate(`document.getElementById('ctxcount').textContent`)));
+
+    const shownText = await evaluate(`(() => {
+      document.querySelector('#ctxlist .ctx-item summary').click();
+      return document.querySelector('#ctxlist .ctx-body .ctx-edit').value;
+    })()`);
+    check(shownText === 'CREATE TABLE orders (id BIGINT, status VARCHAR(16));',
+        '展开就能看到全文，不再是"看不着"：' + shownText);
+
+    await evaluate(`(() => {
+      const area = document.querySelector('#ctxlist .ctx-body textarea');
+      area.value = 'CREATE TABLE orders (id BIGINT, status VARCHAR(16), amount INT);';
+      area.dispatchEvent(new Event('change'));
+      return 'ok';
+    })()`);
+    check(await evaluate(`state.context[0].text.includes('amount INT')`),
+        '就地改内容会写回状态：' + (await evaluate(`state.context[0].text`)));
+
+    await evaluate(`document.getElementById('ctxnone').click(); 'ok'`);
+    check((await evaluate(`document.getElementById('ctxcount').textContent`)).includes('已勾 0 / 2'),
+        '「全不选」把勾都去掉');
+    await evaluate(`document.getElementById('ctxall').click(); 'ok'`);
+    check((await evaluate(`document.getElementById('ctxcount').textContent`)).includes('已勾 2 / 2'),
+        '「全选」能一次勾回来');
+
+    // 不勾的那条不该跟着运行发出去。
+    // 注意：这里得先有一个目标文件，否则点「运行」会被必填校验挡下、
+    // 请求根本没发出去，而下面读到的是上一条链留下的旧请求体（踩过一次）。
+    await evaluate(`(() => {
+      document.querySelectorAll('#ctxlist .ctx-check')[1].click();
+      state.selected.add('src/test/zz-ctx-probe.java');
+      updatePicked();
+      return 'ok';
+    })()`);
+    check((await evaluate(`document.getElementById('ctxcount').textContent`)).includes('已勾 1 / 2'),
+        '单独去掉一条也能生效：' + (await evaluate(`document.getElementById('ctxcount').textContent`)));
+    await evaluate(`window.__runCalls = 0; window.__lastRunBody = ''; 'ok'`);
+    const ctxDebug = await evaluate(`JSON.stringify({
+      items: state.context.map(i => i.name),
+      unchecked: state.ctxUnchecked.size,
+      checked: checkedContext().map(i => i.name),
+    })`);
+    check(ctxDebug.includes('"checked":["orders 表结构"]'), '勾选状态传得到 payload 那一步：' + ctxDebug);
+    await clickButton('run');
+    await sleep(700);
+    check(await evaluate(`window.__runCalls`) === 1, '运行请求确实发出去了');
+    const sentBody = await evaluate(`window.__lastRunBody`);
+    check(sentBody.includes('orders 表结构') && !sentBody.includes('UserController'),
+        '只有勾上的那条跟着请求发出去；实际发出的是：'
+            + String(sentBody).slice(String(sentBody).indexOf('"context"'), 200));
+    await evaluate(`state.selected.delete('src/test/zz-ctx-probe.java'); updatePicked(); 'ok'`);
+    await evaluate(`document.getElementById('ctxall').click(); 'ok'`);
+
+    // 导出 / 导入：接口按约定桩掉（真接口的 Java 侧由另一个 subagent 做，我随后一起验）
+    await evaluate(`(() => {
+      window.__ctxPosts = [];
+      window.__realCtxFetch = window.fetch;
+      window.fetch = (url, opts) => {
+        if (String(url).endsWith('/api/context')) {
+          if ((opts && opts.method) === 'POST') {
+            window.__ctxPosts.push((opts && opts.body) || '');
+            return Promise.resolve(new Response(JSON.stringify({ name: '订单相关约定',
+              path: '.specflow/context/订单相关约定.yaml' }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          }
+          return Promise.resolve(new Response(JSON.stringify({ bundles: [
+            { name: '订单相关约定', project: 'library-management-backend', exportedAt: '2026-09-25 01:30',
+              items: [
+                { name: 'orders 表结构', ref: null, text: 'CREATE TABLE orders (...);', note: '照这个写' },
+                { name: '别的项目的东西', ref: null, text: '与这次无关', note: '' },
+              ] },
+          ] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return window.__realCtxFetch(url, opts);
+      };
+      return 'ok';
+    })()`);
+    await setField('ctx-export-name', '订单相关约定');
+    await evaluate(`document.getElementById('ctx-export').click(); 'ok'`);
+    await sleep(500);
+    const posts = await evaluate(`window.__ctxPosts`);
+    check(posts.length === 1, '导出发了一次请求');
+    check(posts[0].includes('"name":"订单相关约定"') && posts[0].includes('orders 表结构'),
+        '请求里带着名字和勾中的条目：' + posts[0].slice(0, 120));
+    check((await noticeText()).includes('.specflow/context/'),
+        '导出后把落到哪儿说清楚了：' + (await noticeText()));
+
+    await evaluate(`document.getElementById('ctx-import-preview').click(); 'ok'`);
+    await sleep(500);
+    check(await evaluate(`document.querySelectorAll('#ctx-import-box .ctx-import-row').length`) === 2,
+        '预览把那份文件里的条目都列出来了');
+    // 第一条（orders 表结构）当前任务里已经有了，去掉勾；只把新那条加进来
+    await evaluate(`(() => {
+      const boxes = document.querySelectorAll('#ctx-import-box .ctx-import-row input');
+      boxes[0].click();
+      document.querySelector('#ctx-import-box button').click();
+      return 'ok';
+    })()`);
+    await sleep(300);
+    const ctxNames = await evaluate(`state.context.map(i => i.name).join('|')`);
+    check(ctxNames === 'orders 表结构|UserController|别的项目的东西',
+        '只加勾中的那条（没勾的那条不动）：' + ctxNames);
+    check((await noticeText()).includes('已加进'),
+        '加完有回音：' + (await noticeText()));
+
+    // 再导一次同一份：已经有了就别重复塞
+    await evaluate(`document.getElementById('ctx-import-preview').click(); 'ok'`);
+    await sleep(400);
+    await evaluate(`document.querySelector('#ctx-import-box button').click(); 'ok'`);
+    await sleep(300);
+    check(await evaluate(`state.context.length`) === 3, '重复导入不会再塞一份');
+    check((await noticeText()).includes('没重复加'), '而且说清了为什么没加：' + (await noticeText()));
+
+    // 停止按钮：跑着的时候才有，点了会说清"不会立刻断"
+    await evaluate(`(() => {
+      window.__cancelPosts = 0;
+      window.__realCancelFetch = window.fetch;
+      window.fetch = (url, opts) => String(url).endsWith('/api/cancel')
+        ? (window.__cancelPosts++, Promise.resolve(new Response(JSON.stringify({ cancelling: true }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } })))
+        : window.__realCancelFetch(url, opts);
+      return 'ok';
+    })()`);
+    check(await evaluate(`document.getElementById('stop').hidden`), '没在跑的时候「停止」是收起的');
+    await evaluate(`setRunning(true); 'ok'`);
+    check(!(await evaluate(`document.getElementById('stop').hidden`)), '跑起来之后「停止」才出现');
+    await evaluate(`document.getElementById('stop').click(); 'ok'`);
+    await sleep(400);
+    check(await evaluate(`window.__cancelPosts`) === 1, '点「停止」确实发了取消请求');
+    check((await noticeText()).includes('回滚'),
+        '而且说清了它不会立刻停、但会回滚：' + (await noticeText()));
+    await evaluate(`setRunning(false); window.fetch = window.__realCtxFetch; 'ok'`);
+
+    // 运行详情里要能看到"当时参考了什么"
+    await evaluate(`(() => {
+      window.__realDetailFetch = window.fetch;
+      window.fetch = (url, opts) => String(url).includes('/api/run-detail')
+        ? Promise.resolve(new Response(JSON.stringify({
+            id: '20260925-013000-000', status: 'SUCCESS', detail: '结束',
+            timeline: [{ round: 1, level: 'info', text: '第 1 轮：调用模型…' }],
+            changes: [],
+            context: [{ name: 'orders 表结构', ref: null, text: 'CREATE TABLE orders (...);', note: '照这个写' }],
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+        : window.__realDetailFetch(url, opts);
+      return 'ok';
+    })()`);
+    await evaluate(`showRun('20260925-013000-000'); 'ok'`);
+    await sleep(600);
+    const detailText = await evaluate(`document.getElementById('rundetail').textContent`);
+    check(detailText.includes('当时参考了 1 条上下文') && detailText.includes('orders 表结构'),
+        '运行详情里能看到当时喂了什么上下文：' + detailText.slice(0, 160));
+
+    // 收拾干净
+    await evaluate(`(() => {
+      window.fetch = window.__realFetch;
+      state.context = [];
+      state.ctxUnchecked = new Set();
+      renderContext();
+      document.getElementById('rundetail').innerHTML = '';
+      document.getElementById('history').hidden = true;
+      return 'ok';
+    })()`);
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,

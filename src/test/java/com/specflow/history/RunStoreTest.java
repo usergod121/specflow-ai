@@ -7,6 +7,7 @@ import com.specflow.exception.PatchConflictException;
 import com.specflow.exception.SpecflowException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanReview;
+import com.specflow.spec.ContextItem;
 import com.specflow.spec.Spec;
 import com.specflow.verify.VerificationResult;
 import org.junit.jupiter.api.DisplayName;
@@ -94,6 +95,101 @@ class RunStoreTest {
                 .map(store::load).orElseThrow();
         assertThat(record.prompt()).isEqualTo("给订单加一个状态字段");
         assertThat(record.acceptance()).containsExactly("老数据默认值不为 null", "不改动查询逻辑");
+    }
+
+    @Test
+    @DisplayName("留档里带着这次的上下文依赖——「它当时依据什么」和需求一样是资产")
+    void keepsContext() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        Spec spec = TestSpecs.builder()
+                .context(List.of(
+                        ContextItem.of("UserController.java", "README.md", null, "照它的风格写"),
+                        ContextItem.of("订单表结构", null, "CREATE TABLE orders (id BIGINT)", "库里的定义")))
+                .build();
+        RunRecorder recorder = RunRecorder.start(store, spec, null, AgentListener.NOOP);
+
+        recorder.finished(AgentResult.failed(1, List.of(), List.of(), "结束"));
+
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+        assertThat(record.context()).hasSize(2);
+        assertThat(record.context().get(0).ref()).isEqualTo("README.md");
+        assertThat(record.context().get(0).note()).isEqualTo("照它的风格写");
+        assertThat(record.context().get(1).text()).contains("CREATE TABLE orders");
+    }
+
+    /**
+     * 内联上下文常常是整段建表语句、几千字，原样存进去会让每次运行都留下一份几 MB 的
+     * 记录，而历史列表要把它读出来列在界面上。截断之后仍要能认出「是哪一段」，
+     * 所以留下总字数。
+     */
+    @Test
+    @DisplayName("超长的内联上下文被截成 200 字，并注明原文共多少字")
+    void truncatesOverlongContextText() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        Spec spec = TestSpecs.builder()
+                .context(List.of(ContextItem.of("订单表结构", null, "甲".repeat(350), "")))
+                .build();
+        RunRecorder recorder = RunRecorder.start(store, spec, null, AgentListener.NOOP);
+
+        recorder.finished(AgentResult.failed(1, List.of(), List.of(), "结束"));
+
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+        assertThat(record.context()).singleElement().satisfies(item ->
+                assertThat(item.text()).isEqualTo("甲".repeat(200) + "…（共 350 字）"));
+    }
+
+    @Test
+    @DisplayName("刚好 200 字的上下文原样保留，不加字数说明")
+    void keepsTextAtTheLimit() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        Spec spec = TestSpecs.builder()
+                .context(List.of(ContextItem.of("订单表结构", null, "乙".repeat(200), "")))
+                .build();
+        RunRecorder recorder = RunRecorder.start(store, spec, null, AgentListener.NOOP);
+
+        recorder.finished(AgentResult.failed(1, List.of(), List.of(), "结束"));
+
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+        assertThat(record.context()).singleElement()
+                .satisfies(item -> assertThat(item.text()).isEqualTo("乙".repeat(200)));
+    }
+
+    /**
+     * 加 {@code context} 字段之前写下的记录里没有这一项。读不出来会怎样：
+     * {@code RunStore.read} 把异常吃掉返回空 → <b>那些历史直接从列表里消失</b>，
+     * 用户只会觉得「怎么少了几条」，没有任何提示。
+     */
+    @Test
+    @DisplayName("没有 context 字段的老记录仍然读得出来")
+    void readsLegacyRecordWithoutContext() throws IOException {
+        Path dir = root.resolve(RunStore.DEFAULT_DIR);
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("20260102-000000-000.json"), """
+                {
+                  "id" : "20260102-000000-000",
+                  "startedAt" : "2026-01-02 00:00:00",
+                  "status" : "SUCCESS",
+                  "template" : "implement",
+                  "prompt" : "老需求",
+                  "acceptance" : [ "能跑起来" ],
+                  "requirementId" : "REQ-1",
+                  "targets" : [ "Foo.java" ],
+                  "attempts" : 1,
+                  "detail" : "结束"
+                }
+                """);
+        RunStore store = new RunStore(dir);
+
+        assertThat(store.list()).as("老记录不能消失").hasSize(1);
+        RunRecord record = store.load("20260102-000000-000");
+        assertThat(record.prompt()).isEqualTo("老需求");
+        assertThat(record.acceptance()).containsExactly("能跑起来");
+        assertThat(record.requirementId()).isEqualTo("REQ-1");
+        // 缺字段就是一个 null，不是读取失败
+        assertThat(record.context()).isNull();
     }
 
     @Test

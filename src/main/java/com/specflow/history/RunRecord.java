@@ -2,6 +2,7 @@ package com.specflow.history;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.specflow.review.PlanReview;
+import com.specflow.spec.ContextItem;
 
 import java.util.List;
 
@@ -22,6 +23,8 @@ import java.util.List;
  * @param template  使用的模板名；不用模板时为空
  * @param prompt    当时的<b>需求</b>——留档里最该有的一项
  * @param acceptance 当时的验收标准
+ * @param context   当时给模型的上下文依赖。它同样是「当时依据什么」的一部分：
+ *                  引用形态只记路径，文件早改了；内联文本则被截断过（见 {@link RunRecorder}）
  * @param targets   本次允许改动的文件
  * @param attempts  实际调用了模型几次
  * @param detail    面向人的结论
@@ -37,6 +40,7 @@ public record RunRecord(
         String template,
         String prompt,
         List<String> acceptance,
+        List<ContextItem> context,
         String requirementId,
         List<String> targets,
         int attempts,
