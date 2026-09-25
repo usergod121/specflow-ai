@@ -257,6 +257,38 @@ check((indexHtml.match(/state\.templateChoice = /g) || []).length === 1,
 check((indexHtml.match(/\$\('tpl'\)\.value = /g) || []).length === 1,
     '下拉框的 value 也只有一个写入点');
 
+// ---------- 样式约束 ----------
+// 把颜色收敛成 token 之后，最容易的退化就是在某个新规则里随手写个 #b91c1c：
+// 浅色下看不出来，暗色下那一块就是瞎的。所以拿测试钉住这几条。
+console.log('样式约束：');
+const styleBlock = indexHtml.slice(indexHtml.indexOf('<style>'), indexHtml.indexOf('</style>'));
+const lightTokens = new Set();
+const darkTokens = new Set();
+const darkAt = styleBlock.indexOf('@media (prefers-color-scheme: dark)');
+for (const match of styleBlock.slice(0, darkAt).matchAll(/^\s+(--[\w-]+):/gm)) lightTokens.add(match[1]);
+for (const match of styleBlock.slice(darkAt).matchAll(/^\s+(--[\w-]+):/gm)) darkTokens.add(match[1]);
+
+check(lightTokens.size >= 20, '浅色一套 token 定下来了：' + lightTokens.size + ' 个');
+check(darkTokens.size > 0 && [...darkTokens].every(name => lightTokens.has(name)),
+    '暗色每个 token 在浅色里都有对应（多出来的读不到值）：'
+        + [...darkTokens].filter(name => !lightTokens.has(name)).join(','));
+
+const rawColors = styleBlock.split('\n')
+    .map((line, index) => ({ text: line.trim(), no: index + 1 }))
+    .filter(item => !item.text.startsWith('--') && !item.text.startsWith('/*'))
+    .filter(item => /#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(item.text))
+    .filter(item => !/#[0-9a-fA-F]{3,8}-/.test(item.text)); // #add-acceptance 是 id 不是颜色
+check(rawColors.length === 0, '样式里没有裸色值（token 定义处除外）：' + JSON.stringify(rawColors));
+
+const usedTokens = new Set([...styleBlock.matchAll(/var\((--[\w-]+)\)/g)].map(m => m[1]));
+check([...usedTokens].every(name => lightTokens.has(name)),
+    '用到的 token 都定义过（拼错名字会静默失效：什么都没变，但就是不生效）：'
+        + [...usedTokens].filter(name => !lightTokens.has(name)).join(','));
+
+check(/button:focus-visible\s*\{[^}]*outline/.test(styleBlock), '按钮有键盘焦点样式');
+check(/input\[type=text\]:focus[^{]*\{[^}]*box-shadow/.test(styleBlock), '输入框聚焦有看得见的环');
+check(/@media \(prefers-color-scheme: dark\)/.test(styleBlock), '有跟随系统的暗色');
+
 // ---------- 目标路径 ----------
 // 从目录行上的「＋」和手动输入都走这里：用户粘进来的路径什么样都有，
 // 收不干净就会多出一个「src//Foo.java」这样的目标，运行时报找不到。

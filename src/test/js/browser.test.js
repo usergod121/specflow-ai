@@ -1566,6 +1566,91 @@ async function main() {
       return 'ok';
     })()`);
 
+    // ---------- 链 18：样式（颜色收敛、暗色、焦点环、不溢出） ----------
+    // 这一链量的是"看得见的东西"：颜色是不是真收敛了、暗色下读不读得清、
+    // 键盘焦点看不看得见、换字号之后有没有把界面撑出横向滚动条。
+    console.log('\n链 18　样式：颜色、暗色、焦点、溢出：');
+
+    // 先把颜色模式定死在浅色：这台机器的系统就是暗色的，不定死的话
+    // 后面每条断言都在暗色下跑，读起来会莫名其妙（我踩过一次）。
+    await send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value: 'light' }],
+    });
+    await sleep(200);
+
+    // ① 焦点环：点进输入框要有看得见的反馈（只换描边颜色对键盘用户不够）。
+    //    这里用真鼠标点：headless 里 `el.focus()` 不算"页面获得焦点"，
+    //    `:focus` 匹配不上，量出来永远是 none——那会是一条假红灯。
+    await send('Page.bringToFront');
+    const box = await evaluate(`(() => {
+      const r = document.getElementById('demand').getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    }
+    await sleep(200);
+    const focusRing = await evaluate(`(() => {
+      const style = getComputedStyle(document.getElementById('demand'));
+      return { focused: document.activeElement.id, shadow: style.boxShadow, border: style.borderColor };
+    })()`);
+    check(focusRing.focused === 'demand', '点一下输入框，它真的拿到了焦点：' + focusRing.focused);
+    check(focusRing.shadow && focusRing.shadow !== 'none',
+        '聚焦时有一圈看得见的光环：' + focusRing.shadow);
+    check(/rgb\(37, 99, 235\)/.test(focusRing.border),
+        '聚焦时描边变成强调色：' + focusRing.border);
+
+    // ② 不横向溢出：换字号/内边距最容易撑出横向滚动条
+    const overflow = await evaluate(`(() => {
+      const root = document.documentElement;
+      return { scroll: root.scrollWidth, client: root.clientWidth };
+    })()`);
+    check(overflow.scroll <= overflow.client + 2,
+        '页面没有横向溢出：' + JSON.stringify(overflow));
+
+    // ③ 切到系统暗色：文字要读得清、面板要和背景分得开
+    await send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value: 'dark' }],
+    });
+    await sleep(300);
+    const dark = await evaluate(`(() => {
+      const lum = color => {
+        const [r, g, b] = color.match(/\\d+/g).map(Number).slice(0, 3)
+            .map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      const body = getComputedStyle(document.body);
+      const panel = getComputedStyle(document.getElementById('main-panel'));
+      const text = getComputedStyle(document.getElementById('demand'));
+      const a = lum(body.backgroundColor), b = lum(body.color);
+      return {
+        bg: body.backgroundColor, text: body.color, panel: panel.backgroundColor,
+        contrast: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+        panelDiffers: panel.backgroundColor !== body.backgroundColor,
+      };
+    })()`);
+    check(dark.bg === 'rgb(15, 17, 21)',
+        '暗色确实生效了（背景变成了暗色那一套值）：' + dark.bg);
+    check(dark.contrast >= 4.5,
+        '暗色下正文对比度够读（≥4.5）：' + dark.contrast.toFixed(2));
+    check(dark.panelDiffers, '暗色下面板和背景分得开：' + dark.panel + ' vs ' + dark.bg);
+    check((await hiddenButVisible()).length === 0,
+        '暗色下也没有「标着 hidden 却占着地方」的元素');
+
+    // 暗色下焦点环也要在（同一个 token，两套值）
+    await send('Page.bringToFront');
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    }
+    await sleep(200);
+    const darkRing = await evaluate(`getComputedStyle(document.getElementById('demand')).borderColor`);
+    check(/rgb\(110, 168, 254\)/.test(darkRing),
+        '暗色下描边用的是暗色那一套强调色：' + darkRing);
+
+    // 切回系统自己的偏好，别把页面留在测试用的模式里
+    await send('Emulation.setEmulatedMedia', { features: [] });
+    await sleep(200);
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,

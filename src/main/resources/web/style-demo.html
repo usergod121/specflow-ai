@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>specflow · 样式自检</title>
+<style>
+  :root {
+    color-scheme: light dark;
+
+    /* 表面与文字：三级文字 + 两级边框，别处不许再写裸色值 */
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --line: #e3e6ea;
+    --line-strong: #d7dce3;
+    --text: #1f2328;
+    --text-2: #4b5563;
+    --muted: #6b7280;
+    --muted-weak: #9ca3af;
+    --hover: #eef1f5;
+
+    /* 强调色：主色、浅底、描边、禁用态 */
+    --accent: #2563eb;
+    --accent-weak: #eef4ff;
+    --accent-line: #bcd0f7;
+    --accent-off: #9db4e8;
+
+    /* 语义：好 / 警示 / 错（底 + 字 + 线），以及 diff 的加删底色 */
+    --ok: #e7f6ec;
+    --ok-text: #15803d;
+    --warn: #fff8e1;
+    --warn-text: #92400e;
+    --warn-text-soft: #6b5b2e;
+    --warn-line: #f0e2b8;
+    --error: #fff1f0;
+    --error-text: #b91c1c;
+    --error-line: #fca5a5;
+    --add: #e6ffec;
+    --del: #ffebe9;
+
+    /* 中性块（比如「未标」的标签底） */
+    --chip: #eef1f5;
+
+    --shadow: 0 6px 20px rgba(31, 35, 40, .14);
+    --overlay: rgba(15, 23, 42, .35);
+  }
+  /* 跟随系统。一个组件都不需要单独写暗色：它只认上面这些 token。 */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --panel: #161a20;
+      --line: #262c36;
+      --line-strong: #333c48;
+      --text: #e6e9ef;
+      --text-2: #b7c0cc;
+      --muted: #8b93a1;
+      --muted-weak: #6b7280;
+      --hover: #1e242c;
+
+      --accent: #6ea8fe;
+      --accent-weak: #17253c;
+      --accent-line: #2f4d80;
+      --accent-off: #33445f;
+
+      --ok: #12291c;
+      --ok-text: #5fd08d;
+      --warn: #2a2312;
+      --warn-text: #e8b866;
+      --warn-text-soft: #cbb98a;
+      --warn-line: #55491f;
+      --error: #2c1618;
+      --error-text: #ef8a8a;
+      --error-line: #6d2a2a;
+      --add: #10301f;
+      --del: #341a1c;
+
+      --chip: #232a34;
+
+      --shadow: 0 6px 20px rgba(0, 0, 0, .5);
+      --overlay: rgba(0, 0, 0, .6);
+    }
+  }
+  /* 下面这一整段是从 index.html 里一模一样抄过来的：自检页要能代表真界面。
+     两边只要有一样不一样，这个页面就是在骗人——所以能抄就抄，别改写。 */
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  [hidden] { display: none !important; }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  input[type=text], textarea, select {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+    background: var(--panel);
+    color: inherit;
+  }
+  textarea { resize: vertical; font-family: inherit; }
+  input[type=text]:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+    /* 键盘用户看不出「描边换了个蓝色」，所以再给一圈浅环 */
+    box-shadow: 0 0 0 3px var(--accent-weak);
+  }
+  button {
+    padding: 8px 20px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--accent);
+    color: var(--panel);
+    font: inherit;
+    font-weight: 500;
+    cursor: pointer;
+    /* 三态齐全：hover 提亮、按下沉 1px、键盘选中给一圈描边。
+       只动 filter/transform，不动会影响布局的属性——否则鼠标一过界面就抖。 */
+    transition: filter .12s ease-out, transform .06s ease-out;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { background: var(--accent-off); cursor: default; }
+  button.ghost {
+    background: var(--panel);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  button.ghost:hover:not(:disabled) { background: var(--accent-weak); filter: none; }
+  button.ghost:disabled {
+    background: var(--panel);
+    color: var(--accent-off);
+    border-color: var(--accent-line);
+    cursor: default;
+  }
+  .notice {
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    white-space: pre-wrap;
+    background: var(--panel);
+    box-shadow: var(--shadow);
+    margin-bottom: 8px;
+  }
+  .notice.error { background: var(--error); }
+  .notice.warn { background: var(--warn); }
+  .notice.ok { background: var(--ok); }
+
+  /* ---------- 自检页自己的摆法（真界面里没有这一段） ---------- */
+  .demo { flex: 1 1 380px; padding: 16px; }
+  .demo > * + * { margin-top: 12px; }
+  .demo .stage { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .demo .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .demo .tip { color: var(--muted); font-size: 12px; }
+  .demo pre { margin: 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 6px;
+    border: 1px solid var(--accent-line);
+    border-radius: 4px;
+    background: var(--accent-weak);
+    font: 11px/1.6 ui-monospace, Consolas, monospace;
+  }
+  .sev {
+    flex: none;
+    padding: 0 5px;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    font-size: 11px;
+    line-height: 1.7;
+  }
+  .sev-blocking { background: var(--error); border-color: var(--error-line); color: var(--error-text); }
+  .sev-quality { background: var(--warn); border-color: var(--warn-line); color: var(--warn-text); }
+  .sev-optional, .sev-unknown { background: var(--chip); border-color: var(--line-strong); color: var(--muted); }
+  .log-line { padding: 2px 8px; border-left: 3px solid var(--line); font: 12px/1.7 ui-monospace, Consolas, monospace; }
+  .log-line.info { border-color: var(--accent-line); }
+  .log-line.warn { border-color: var(--warn-line); background: var(--warn); }
+  .log-line.error { border-color: var(--error-line); background: var(--error); }
+  .diff { font: 12px/1.6 ui-monospace, Consolas, monospace; }
+  .diff .add { background: var(--add); }
+  .diff .del { background: var(--del); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>specflow · 样式自检</h1>
+  <span class="meta">这一页不跑任何逻辑，只把颜色、间距、各个状态摆出来看</span>
+</header>
+
+<main>
+  <section class="panel demo">
+    <h2>颜色与语义</h2>
+    <div class="row">
+      <span class="sev sev-blocking">阻断</span>
+      <span class="sev sev-quality">影响质量</span>
+      <span class="sev sev-optional">可选</span>
+      <span class="sev sev-unknown">未标</span>
+      <span class="chip">src/main/java/demo/Foo.java</span>
+    </div>
+    <div class="notice ok">改动已写入，编译校验通过</div>
+    <div class="notice warn">这份方案有 2 处执行不了：清单外的文件改不了</div>
+    <div class="notice error">无法连接后端：connection reset</div>
+
+    <div class="stage">
+      <h2>按钮三态</h2>
+      <div class="row">
+        <button>运行</button>
+        <button class="ghost">任务草稿</button>
+        <button disabled>运行中…</button>
+        <button class="ghost" disabled>读不出来</button>
+      </div>
+      <div class="tip">把鼠标移上去（提亮）、按住（下沉 1px）、按 Tab 键（外圈描边）——这三下都要有反应。</div>
+    </div>
+
+    <div class="stage">
+      <h2>输入</h2>
+      <input type="text" value="src/main/java/demo/Foo.java">
+      <div class="tip">点进来时描边变强调色，并且外圈有一圈浅色环——只变边框颜色，键盘用户看不出来。</div>
+      <textarea rows="2">CREATE TABLE orders (id BIGINT, status VARCHAR(16));</textarea>
+    </div>
+
+    <div class="stage">
+      <h2>日志分级</h2>
+      <div class="log-line info">第 1 轮：调用模型…</div>
+      <div class="log-line">已写入 2 个文件：HealthMapper.java、HealthService.java</div>
+      <div class="log-line warn">补丁被拒绝，文件未改动——补丁落盘失败[TARGET_NOT_ALLOWED]</div>
+      <div class="log-line error">编译校验：未通过</div>
+      <div class="tip">级别靠左侧色条 + 极浅底色区分，不整行染成大红大绿。</div>
+    </div>
+
+    <div class="stage">
+      <h2>差异行</h2>
+      <div class="diff"><span class="del">-    private String status;</span><br><span class="add">+    private OrderStatus status;</span></div>
+    </div>
+  </section>
+
+  <section class="panel demo">
+    <h2>怎么用这一页</h2>
+    <div class="tip">
+      1. 先看浅色：颜色是不是太杂、有没有哪块亮得刺眼；<br>
+      2. 再把系统的深浅色切到深色（Windows：设置 → 个性化 → 颜色 → 模式），这一页会跟着变；<br>
+      3. 深色下重点看这几处：文字还读得清吗？按钮和面板分得开吗？那个浅色的流程图卡片（真界面里有）是不是突兀？<br>
+      4. 按钮三态那三个动作都要有反馈，没反应就是我漏了。
+    </div>
+    <div class="stage">
+      <h2>已知的取舍</h2>
+      <div class="tip">
+        · 流程图在深色下**仍然是浅色卡片**（图里的颜色是画上去的，这一轮没动它）；<br>
+        · 动画这一轮还没加（下一轮：展开、日志淡入、面板出现）；<br>
+        · 真界面里那些散落的间距我只统一了一部分，剩下的下一轮再收。
+      </div>
+    </div>
+  </section>
+</main>
+
+</body>
+</html>

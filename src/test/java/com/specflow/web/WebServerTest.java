@@ -96,6 +96,21 @@ class WebServerTest {
     }
 
     @Test
+    @DisplayName("界面目录下的白名单文件能打开，别的一律 404")
+    void servesWhitelistedPagesOnly() throws Exception {
+        // 样式自检页：改完样式靠它肉眼过一遍，打不开就等于没有
+        HttpResponse<String> demo = get("/style-demo.html");
+        assertThat(demo.statusCode()).isEqualTo(200);
+        assertThat(demo.headers().firstValue("Content-Type").orElse("")).contains("text/html");
+        assertThat(demo.body()).as("自检页得是那一页，不是别的东西").contains("样式自检");
+
+        // 白名单是白名单：同目录下没登记的东西不给出去
+        assertThat(get("/nope.html").statusCode()).isEqualTo(404);
+        // 首页走的是自己那条路（/ 与 /index.html），不是静态白名单
+        assertThat(get("/index.html").statusCode()).isEqualTo(200);
+    }
+
+    @Test
     @DisplayName("请求体是 JSON 字面量 null 时返回 400，而不是 0 字节断连")
     void nullBodyGetsAResponse() throws Exception {
         // JSON 的 null 会被正常反序列化成 Java 的 null，不进 catch，

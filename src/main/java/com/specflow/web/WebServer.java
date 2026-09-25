@@ -51,7 +51,9 @@ public final class WebServer implements AutoCloseable {
     /** 界面目录下允许直接访问的文件。白名单而不是扫目录，避免把路径拼出界。 */
     private static final Map<String, String> STATIC_RESOURCES = Map.of(
             "/flowchart.js", "application/javascript; charset=utf-8",
-            "/flowchart-demo.html", "text/html; charset=utf-8");
+            "/flowchart-demo.html", "text/html; charset=utf-8",
+            // 样式自检页：把颜色、间距、各个状态摆一页，改样式之后用它肉眼过一遍
+            "/style-demo.html", "text/html; charset=utf-8");
 
     private final HttpServer server;
     private final ExecutorService httpPool;
