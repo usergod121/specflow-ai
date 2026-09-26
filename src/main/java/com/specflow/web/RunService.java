@@ -167,7 +167,8 @@ public final class RunService implements AgentListener {
      * 接着上一次跑：丢掉的那一轮不重发上下文，只补「它当时说了什么」和「接下来怎么办」。
      *
      * <p>为什么不干脆重开一轮：重开会把目标文件全文与上下文依赖再发一遍，
-     * 而这份上下文用户已经付过一次钱了。
+     * 而这份上下文用户已经付过一次钱了。施工单同理——挂着的那次已经定过单子，
+     * 就从那条留档里拿过来接着用，不再问一遍（见 {@link DevelopmentAgent.Resume}）。
      *
      * @param force {@code true} = 用户没补料、直接放行；{@code false} = 用户补过上下文了
      */
@@ -183,7 +184,8 @@ public final class RunService implements AgentListener {
         cancelRequested = false;
         Spec spec = toValidSpec(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
-        DevelopmentAgent.Resume origin = new DevelopmentAgent.Resume(suspended.detail(), force);
+        DevelopmentAgent.Resume origin =
+                new DevelopmentAgent.Resume(suspended.detail(), force, suspended.planSteps());
         String runId = hub.startRun(UUID.randomUUID().toString());
         runner.submit(() -> execute(spec, llm, request.approvedPlan(), origin));
         return runId;
@@ -303,7 +305,7 @@ public final class RunService implements AgentListener {
             if (resume == null) {
                 agent.run(spec, approved);
             } else {
-                agent.resume(spec, approved, resume.modelSaid(), resume.force());
+                agent.resume(spec, approved, resume.modelSaid(), resume.force(), resume.steps());
             }
         } catch (RuntimeException e) {
             log.warn("运行中断", e);

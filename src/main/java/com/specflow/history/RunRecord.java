@@ -2,6 +2,7 @@ package com.specflow.history;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.specflow.review.PlanReview;
+import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
 
 import java.util.List;
@@ -35,8 +36,14 @@ import java.util.List;
  *                  引擎为它不发步级事件，由录制器按运行结果补上（见 {@code RunRecorder}），
  *                  否则同一次运行在历史详情里会有两种说法。
  *                  老记录里没有这一项，读出来是 {@code null}
- * @param stepsSource 施工单是从哪来的（{@code APPROVED} / {@code GENERATED} / {@code SINGLE}）；
- *                    没有施工单这个概念的记录里是 {@code null}
+ * @param planSteps 这次运行定下来的<b>完整施工单</b>（引擎拿去走的那些步，一步不缺）。
+ *                  与 {@code steps} 的分工：那个是<b>跑完之后</b>的账（只记跑到了的步子、
+ *                  带着每步的终态与改动），这个是<b>开工时</b>的图。续跑要用的是它——
+ *                  挂起时磁盘已经回滚，只有这份留档还答得出「上次打算分几步做」，
+ *                  否则续跑会为同一份单子再付一次模型调用。
+ *                  老记录里没有这一项，读出来是 {@code null}（那一次续跑只能现生成）
+ * @param stepsSource 施工单是从哪来的（{@code APPROVED} / {@code GENERATED} / {@code RESUMED}
+ *                    / {@code SINGLE}）；没有施工单这个概念的记录里是 {@code null}
  * @param timeline  逐条的过程记录
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -55,6 +62,7 @@ public record RunRecord(
         List<PlanReview.MissingItem> missing,
         List<Change> changes,
         List<Step> steps,
+        List<PlanStep> planSteps,
         String stepsSource,
         List<Line> timeline
 ) {

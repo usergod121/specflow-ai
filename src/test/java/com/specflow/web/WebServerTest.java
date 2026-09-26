@@ -2,6 +2,7 @@ package com.specflow.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.specflow.history.RunRecord;
 import com.specflow.history.RunStore;
 import com.specflow.project.ProjectConfig;
 import com.specflow.project.RecentProjects;
@@ -465,6 +466,197 @@ class WebServerTest {
     void reviewRejectsNonPost() throws Exception {
         assertThat(get("/api/review").statusCode()).isEqualTo(405);
     }
+
+    /**
+     * 施工单那份机器审查必须真的发到界面上——这是<b>灰盒</b>的一条：
+     * 打真 HTTP 请求、走真的引擎、真的假模型，断言响应体里那一块在。
+     *
+     * <p>真试跑里就是这么漏掉的：引擎判出来了（{@code ReviewOutcome.stepAudit}）、
+     * 那一条链的测试也全绿（它只断言到 {@code RunService} 的返回值），
+     * 而 {@code /api/review} 只发了 {@code plan} 和 {@code audit}——界面永远读到空，
+     * 「施工单三条硬拦」于是完全不生效。修复前后差的只有这一个字段，
+     * 所以断言也必须落在响应体上。
+     *
+     * <p>这里给的是真试跑里那份<b>只有 2 步</b>的施工单：机器判它「执行不了」。
+     */
+    @Test
+    @DisplayName("检查接口把施工单那份机器审查一起发出去（少了它，界面那条硬拦就静默失效）")
+    void reviewSendsTheStepAuditToThePage() throws Exception {
+        try (StubModelServer model = StubModelServer.answering(TWO_STEP_ANSWER)) {
+            Path projectRoot = stubbedProject(model);
+            try (WebServer reviewed = WebServer.start(projectRoot, 0,
+                    new RecentProjects(root.resolve("review-recent.json")))) {
+                HttpClient client = HttpClient.newHttpClient();
+                HttpResponse<String> response = client.send(HttpRequest.newBuilder(
+                                URI.create(reviewed.url() + "/api/review"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("""
+                                {"prompt": "加一个按编号查询", "targets": ["src/main/java/com/demo/Foo.java"],
+                                 "verifyCompile": false}
+                                """))
+                        .build(), HttpResponse.BodyHandlers.ofString());
+
+                assertThat(response.statusCode()).isEqualTo(200);
+                JsonNode body = body(response);
+                assertThat(body.path("plan").path("steps")).as("方案照旧发").hasSize(2);
+                JsonNode stepAudit = body.path("stepAudit");
+                assertThat(stepAudit.isMissingNode())
+                        .as("响应体里必须有 stepAudit——没有它，界面上那三条硬拦一条都不会生效")
+                        .isFalse();
+                assertThat(stepAudit.path("findings")).as("两步的施工单：机器判它执行不了")
+                        .isNotEmpty();
+                assertThat(stepAudit.path("findings").get(0).path("step").asInt()).isZero();
+                assertThat(stepAudit.path("findings").get(0).path("reason").asText())
+                        .as("说清是「步数不够」这一类整份单子的问题")
+                        .contains("2 步");
+            }
+        }
+    }
+
+    /**
+     * 续跑那条链的灰盒：{@code /api/run} 挂起一次，{@code /api/continue?force=1} 接着跑。
+     *
+     * <p>两件事一起钉，因为它们在同一条路上：
+     * <ul>
+     *   <li><b>施工单不重生成</b>——挂起的那次已经花调用定过单子，留档里存着，
+     *       续跑再问一遍就是白花的钱（真试跑里花了 2 次）；</li>
+     *   <li><b>「直接放行」时提示词里没有那个出口</b>——回话那一句是硬的，
+     *       系统提示词却还带着「缺料就认输」那一段，它就会又停下来要料。</li>
+     * </ul>
+     *
+     * <p>两件事都只能从<b>假模型收到的请求</b>里看出来：运行结果上，「问了一遍施工单」
+     * 和「没问」长得一模一样，而那句狠话与协议自相矛盾时，两边各自的断言都还是绿的。
+     */
+    @Test
+    @DisplayName("续跑：不重新生成施工单，「直接放行」时提示词里也没有那个出口")
+    void continueReusesTheRecordedScheduleAndDropsTheOutlet() throws Exception {
+        try (StubModelServer model = StubModelServer.answering(
+                // 第一次运行：开工前现生成施工单 → 第 1 步第一轮就喊缺料，挂起
+                THREE_STEP_ANSWER, "NEED_CONTEXT: 缺东西",
+                // 接着跑：三步各一轮，不再有「只产施工单」那一次
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"),
+                patch("int a = 3;", "int a = 4;"))) {
+            Path projectRoot = stubbedProject(model);
+            RunStore store = new RunStore(projectRoot.resolve(RunStore.DEFAULT_DIR));
+            try (WebServer running = WebServer.start(projectRoot, 0,
+                    new RecentProjects(root.resolve("continue-recent.json")))) {
+                HttpClient client = HttpClient.newHttpClient();
+                String spec = """
+                        {"prompt": "把 a 改成 4", "targets": ["src/main/java/com/demo/Foo.java"],
+                         "verifyCompile": false}
+                        """;
+
+                post(client, running, "/api/run", spec);
+                waitUntilIdle(client, running);
+
+                assertThat(store.suspended()).as("模型说缺料：这次运行挂着等人").isPresent();
+                assertThat(store.suspended().orElseThrow().planSteps())
+                        .as("留档里存着那份完整施工单——这是续跑不必再问一遍的全部依据")
+                        .hasSize(3);
+
+                post(client, running, "/api/continue?force=1", spec);
+                waitUntilIdle(client, running);
+
+                assertThat(model.askedForStepsOnly(0)).as("第一次运行确实花了一次调用现生成施工单")
+                        .isTrue();
+                assertThat(model.askedForStepsOnly(1)).as("那一轮是给补丁的").isFalse();
+                assertThat(model.stepsOnlyCalls())
+                        .as("整条链上只生成过一次施工单：续跑直接用了留档里那一份")
+                        .isEqualTo(1);
+                assertThat(model.calls()).as("五次：生成施工单 1 次 + 喊缺料 1 次 + 三步各一轮")
+                        .isEqualTo(5);
+
+                assertThat(model.systemOf(1)).as("第一次运行没确认过方案：出口还在")
+                        .contains("NEED_CONTEXT");
+                assertThat(model.systemOf(2)).as("「直接放行」那一次的协议里不该再有那个出口——"
+                        + "回话却说着「不要再要求补充信息」，两句话不能自相矛盾")
+                        .contains("<<<<<<< SEARCH")
+                        .doesNotContain("NEED_CONTEXT")
+                        .doesNotContain("信息不足");
+
+                RunRecord resumed = store.load(store.list().get(0).id());
+                assertThat(resumed.stepsSource()).as("留档里说清这份单子是接着上一次的")
+                        .isEqualTo("RESUMED");
+                assertThat(resumed.planSteps()).as("续跑那次自己也留了一份，再续还能接着用")
+                        .hasSize(3);
+                assertThat(resumed.status()).isEqualTo("SUCCESS_UNVERIFIED");
+            }
+        }
+    }
+
+    /** 一个配好假模型的项目：检查与续跑两条链都要真的走到模型调用。 */
+    private Path stubbedProject(StubModelServer model) throws IOException {
+        Path projectRoot = root.resolve("stubbed");
+        Files.createDirectories(projectRoot.resolve("src/main/java/com/demo"));
+        Files.writeString(projectRoot.resolve("src/main/java/com/demo/Foo.java"), "class Foo {\n    int a = 1;\n}\n");
+        Files.createDirectories(projectRoot.resolve(".specflow"));
+        Files.writeString(projectRoot.resolve(".specflow/project.yaml"), """
+                llm:
+                  base-url: %s
+                  model: stub
+                  api-key-env: SPECFLOW_TEST_KEY
+                """.formatted(model.baseUrl()));
+        // 密钥走 .specflow/local.env：真模型密钥不进配置文件，这条规矩测试里也一样
+        Files.writeString(projectRoot.resolve(".specflow/local.env"), "SPECFLOW_TEST_KEY=sk-test\n");
+        return projectRoot;
+    }
+
+    private void post(HttpClient client, WebServer target, String path, String json)
+            throws Exception {
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder(
+                        URI.create(target.url() + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).as(path).isEqualTo(200);
+    }
+
+    /** 等到这次运行结束（界面也是这么轮询的）。 */
+    private void waitUntilIdle(HttpClient client, WebServer target) throws Exception {
+        long deadline = System.currentTimeMillis() + 20000;
+        while (System.currentTimeMillis() < deadline) {
+            HttpResponse<String> events = client.send(HttpRequest.newBuilder(
+                            URI.create(target.url() + "/api/events?from=0"))
+                    .GET().build(), HttpResponse.BodyHandlers.ofString());
+            if (!body(events).path("running").asBoolean()) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        throw new AssertionError("运行一直没结束");
+    }
+
+    private static String patch(String search, String replace) {
+        return "<<<<<<< SEARCH src/main/java/com/demo/Foo.java\n" + search + "\n=======\n"
+                + replace + "\n>>>>>>> REPLACE\n";
+    }
+
+    /** 真试跑里那份只有两步的施工单：少于 3 步，机器会拦。 */
+    private static final String TWO_STEP_ANSWER = """
+            <<<<<<< SUMMARY
+            分两步做。
+            >>>>>>> SUMMARY
+
+            <<<<<<< FLOW
+            flowchart TD
+                A[入口] --> B[出口]
+            >>>>>>> FLOW
+
+            <<<<<<< STEPS
+            1 | 先给 Foo 加一个方法 | src/main/java/com/demo/Foo.java | 能编译 | 自洽
+            2 | 再接上调用 | src/main/java/com/demo/Foo.java | 能编译 | 自洽
+            >>>>>>> STEPS
+            """;
+
+    /** 合法的一份三步施工单，给「开工前现生成」那条路用。 */
+    private static final String THREE_STEP_ANSWER = """
+            <<<<<<< STEPS
+            1 | 先给 Foo 加一个方法 | src/main/java/com/demo/Foo.java | 能编译 | 自洽
+            2 | 接着把 a 改成 3 | src/main/java/com/demo/Foo.java | 能编译 | 自洽
+            3 | 最后收尾 | src/main/java/com/demo/Foo.java | 能编译 | 自洽
+            >>>>>>> STEPS
+            """;
 
     @Test
     @DisplayName("检查接口同样先做 spec 校验，不合法时返回 400 与逐条问题")

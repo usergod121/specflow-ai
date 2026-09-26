@@ -72,7 +72,7 @@ class RunStoreTest {
     private static RunRecord record(String id, String status, String detail) {
         return new RunRecord(id, "2026-01-01T00:00", status, null, "改点东西", List.of(),
                 List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of(),
-                null, List.of());
+                List.of(), null, List.of());
     }
 
     @Test
@@ -419,6 +419,38 @@ class RunStoreTest {
                 .anySatisfy(text -> assertThat(text).contains("多花了 1 次模型调用"));
     }
 
+    /**
+     * 留档里要有一份<b>完整的</b>施工单，而且连「涉及哪些文件、怎么算做完」一起。
+     *
+     * <p>续跑就靠它：挂起时磁盘已经回滚，其它地方都没有这份单子了，
+     * 而每步的施工指令要从这两栏拼出来。只记 {@code steps} 是不够的——
+     * 那是跑完之后的账（只有跑到了的步子，而且没有 files/check 这两栏）。
+     */
+    @Test
+    @DisplayName("留档里存着完整施工单：跑挂之前没轮到的步子也在，files/check 两栏一个不少")
+    void recordsTheWholeSchedule() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+
+        recorder.stepsResolved(List.of(step(1, "先加接口", false), step(2, "接上实现", false),
+                        step(3, "收尾", false)),
+                AgentListener.StepsSource.GENERATED, 1);
+        recorder.stepStarted(step(1, "先加接口", false));
+        recorder.roundStarted(1);
+        recorder.stepFinished(step(1, "先加接口", false), AgentListener.StepState.SUCCESS);
+        // 第 2 步就挂起等人补料：第 3 步从来没轮到过
+        recorder.finished(AgentResult.needsContext(1, "NEED_CONTEXT: 缺东西"));
+
+        RunRecord record = store.load(store.list().get(0).id());
+
+        assertThat(record.steps()).as("跑完的账里只有跑到过的那一步").hasSize(1);
+        assertThat(record.planSteps()).as("施工单要整份留着").hasSize(3);
+        assertThat(record.planSteps().get(2).goal()).isEqualTo("收尾");
+        assertThat(record.planSteps().get(0).files()).containsExactly("Foo.java");
+        assertThat(record.planSteps().get(0).check()).isEqualTo("能编译");
+    }
+
     @Test
     @DisplayName("本步回滚之后，那一步的改动不再算在它名下")
     void forgetsChangesOfARolledBackRound() {
@@ -474,6 +506,7 @@ class RunStoreTest {
         assertThat(record.attempts()).isEqualTo(2);
         // 缺字段就是一个 null，不是读取失败
         assertThat(record.steps()).isNull();
+        assertThat(record.planSteps()).as("老记录里也没有施工单：续跑时只能现生成").isNull();
         assertThat(record.stepsSource()).isNull();
     }
 

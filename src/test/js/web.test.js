@@ -513,8 +513,11 @@ check(step.stepStateMeta('谁也没见过的值').join('|') === 'pending|未做'
 check(step.STEP_STATES.PENDING[1] !== step.STEP_STATES.RUNNING[1]
     && step.STEP_STATES.SUCCESS[1] !== step.STEP_STATES.INTERMEDIATE[1],
     '五档文案两两不同（同一个词出现在两档上，标签就等于没写）');
-check(Object.keys(step.STEP_SOURCE_LABEL).join(',') === 'APPROVED,GENERATED,SINGLE',
-    '施工单的三个来源都有对应的说法（现生成的那份必须说得出来）');
+check(Object.keys(step.STEP_SOURCE_LABEL).join(',') === 'APPROVED,GENERATED,RESUMED,SINGLE',
+    '施工单的四个来源都有对应的说法（续跑那份是从留档里拿的，不能和「现生成」混成一句）');
+check(step.STEP_SOURCE_LABEL.RESUMED !== step.STEP_SOURCE_LABEL.GENERATED
+    && step.STEP_SOURCE_LABEL.RESUMED !== step.STEP_SOURCE_LABEL.APPROVED,
+    '续跑那份的说法和另外两个都不一样：它既不是人确认的，也不是这次现生成的');
 // 事件里的步态就是这几个名字：Java 那边发的是 StepState 的枚举名加一个 RUNNING，
 // 界面多认或少认一档都会让某一步静默停在别的状态上
 check(Object.keys(step.STEP_STATES).join(',') === 'PENDING,RUNNING,SUCCESS,INTERMEDIATE,FAILED',

@@ -75,7 +75,8 @@ public final class ContinueCommand implements Callable<Integer> {
                 TemplateRegistry.load(root.resolve(TemplateRegistry.DEFAULT_DIR)),
                 OpenAiCompatibleClient.from(project.llm(), root),
                 List.of(new CompileVerifier()), recorder);
-        AgentResult result = agent.resume(spec, null, suspended.detail(), force);
+        AgentResult result = agent.resume(spec, null, suspended.detail(), force,
+                suspended.planSteps());
 
         RunReport.report(result);
         return RunReport.exitCode(result.status());

@@ -20,6 +20,7 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 
@@ -47,6 +48,17 @@ const TEMP_PATHS = [];
  * 否则下一次跑测试是在别的项目里跑的，失败会莫名其妙。
  */
 let otherProject = null;
+/**
+ * 链 23 临时造出来的「带假模型的项目」。它同样进过「最近打开」，跑完必须把那条记录删掉——
+ * 中途失败时链尾那一步就走不到，而残留的记录会以「已不在磁盘上」的样子一直留在真实的
+ * 用户目录里（还会把欢迎页撑长，弄红一条本来与此无关的断言）。
+ */
+let reviewProject = null;
+/**
+ * 链 23 起的本机假模型服务。跑完必须关掉——它是一个真在监听的端口，
+ * 留着它下一次跑测试会多一个没人认领的进程。
+ */
+let stubModel = null;
 let failed = 0;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -108,8 +120,30 @@ async function installRunStub() {
   })()`);
 }
 
-/** 反复求值直到条件成立；超时就把最后一次的值报出来。 */
-async function waitFor(expression, message, timeoutMs = 5000) {
+/**
+ * 起一个本机假模型服务，回一句准备好的台词。
+ *
+ * <p>链 23 要让 {@code /api/review} 真的打到后端去，后端也就真的会去调模型——
+ * 而真模型既慢又不定，没法拿来断言。所以给那个临时项目配一个本机端点：
+ * 换来的是<b>整条链一个桩都不装</b>，响应体里少一个字段就会红。
+ */
+function startStubModel(answer) {
+  return new Promise(resolve => {
+    const server = http.createServer((req, res) => {
+      req.on('data', () => { /* 请求内容这里不看，链 23 只关心回来的东西 */ });
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: answer } }] }));
+      });
+    });
+    server.listen(0, '127.0.0.1', () => resolve({
+      port: server.address().port,
+      close: () => server.close(),
+    }));
+  });
+}
+
+/** 反复求值直到条件成立；超时就把最后一次的值报出来。 */async function waitFor(expression, message, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   let last;
   while (Date.now() < deadline) {
@@ -2313,6 +2347,96 @@ async function main() {
     })()`);
     await evaluate(`refreshPending()`);
 
+    // ---------- 链 23：施工单硬拦，一个桩都不装 ----------
+    // 链 22 把 /api/review 整个桩掉了（连 stepAudit 都是手写的），所以它验的是
+    // 「界面拿到这一块会拦人」，验不到「后端有没有把这一块发出来」。
+    // 真试跑里漏的正是后一半：引擎判出来了、响应体里没有，界面永远读到空——
+    // 「施工单三条硬拦」完全不生效，而两边的测试各自都是绿的。
+    //
+    // 这一链把后一半接上：请求打到**真后端**，后端去调一个本机假模型（只有两步的施工单，
+    // 正是真试跑里那种单子），机器判出来的东西原样回到界面上。
+    // 少发一个字段、字段改了名、异常没兜住，这里都会红。
+    console.log('\n链 23　施工单硬拦：真请求打到真后端：');
+
+    reviewProject = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-review-'));
+    TEMP_PATHS.push(reviewProject);
+    fs.mkdirSync(path.join(reviewProject, 'src', 'main', 'java', 'com', 'demo'), { recursive: true });
+    fs.writeFileSync(path.join(reviewProject, 'pom.xml'), '<project/>\n');
+    fs.writeFileSync(path.join(reviewProject, 'src', 'main', 'java', 'com', 'demo', 'Foo.java'),
+        'class Foo {\n    int a = 1;\n}\n');
+    // 这个项目的模型指向本机假服务；密钥走 .specflow/local.env——和真项目一个规矩
+    stubModel = await startStubModel([
+      '<<<<<<< SUMMARY', '分两步做。', '>>>>>>> SUMMARY', '',
+      '<<<<<<< FLOW', 'flowchart TD', '    A[入口] --> B[出口]', '>>>>>>> FLOW', '',
+      '<<<<<<< STEPS',
+      '1 | 先给 Foo 加一个按编号查询的方法 | src/main/java/com/demo/Foo.java | 能编译 | 自洽',
+      '2 | 再把查询接到调用点上 | src/main/java/com/demo/Foo.java | 能编译 | 自洽',
+      '>>>>>>> STEPS', '',
+    ].join('\n'));
+    fs.mkdirSync(path.join(reviewProject, '.specflow'), { recursive: true });
+    fs.writeFileSync(path.join(reviewProject, '.specflow', 'project.yaml'),
+        'llm:\n  base-url: http://127.0.0.1:' + stubModel.port + '\n  model: stub\n'
+        + '  api-key-env: SPECFLOW_TEST_KEY\n');
+    fs.writeFileSync(path.join(reviewProject, '.specflow', 'local.env'), 'SPECFLOW_TEST_KEY=sk-test\n');
+
+    const openedForReview = await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: reviewProject }),
+    });
+    check(openedForReview.status === 200, '换到一个配了假模型的项目上');
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        && document.getElementById('projectname').textContent.includes(${JSON.stringify(path.basename(reviewProject))})`,
+        '页面切到这个项目');
+    // 「运行」这一链要的是「被拦住」：装个桩既数得到它，又保证真放行时不会去动磁盘
+    await installRunStub();
+
+    await setField('demand', '给 Foo 加一个按编号查询的方法');
+    await evaluate(`(() => {
+      state.selected = new Set(['src/main/java/com/demo/Foo.java']);
+      updatePicked();
+      return 'ok';
+    })()`);
+    await clickButton('review');
+    await waitFor(`document.querySelectorAll('#plan .step').length === 2`,
+        '真后端回来的施工单画出来了', 20000);
+
+    check(await evaluate(`document.querySelectorAll('#plan .step').length`) === 2,
+        '真后端回来的施工单是两步（假模型给的就是两步）');
+    check(await evaluate(`document.querySelector('#plan .steps-audit') !== null`),
+        '机器判出来的「这份施工单执行不了」摆到了界面上——漏发 stepAudit 时，'
+        + '这一块永远不会出现');
+    check((await evaluate(`document.querySelector('#plan .steps-audit').textContent`))
+            .includes('施工单只有 2 步'),
+        '而且说清了是为什么：'
+        + JSON.stringify(await evaluate(`document.querySelector('#plan .steps-audit').textContent`)));
+    check(await evaluate(`state.stepAudit.findings.length`) === 1,
+        '界面拿到的是后端那一份（不是它自己编出来的）');
+    check(await evaluate(`document.querySelectorAll('#plan .steps-audit .force-run').length`) === 1,
+        '并且配了「我知道，仍然继续」——这才是能拦人的闸门');
+
+    await evaluate(`(() => { window.__runCalls = 0; state.forced = false; return 'ok'; })()`);
+    await clickButton('run');
+    await sleep(600);
+    check(await evaluate(`window.__runCalls`) === 0,
+        'findings 非空时点「运行」被拦下：请求根本没发出去');
+    check((await noticeText()).includes('这份施工单有 1 处执行不了'),
+        '拦下来的话说清是施工单的问题：' + JSON.stringify(await noticeText()));
+
+    // 换回原项目：这一链改的是服务的「当前项目」，留着它，后面（以及下一次）就都在
+    // 那个临时目录里跑了
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: PROJECT_ROOT }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(PROJECT_ROOT))})`, '换回原项目');
+    stubModel.close();
+    stubModel = null;
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,
@@ -2350,7 +2474,15 @@ async function main() {
       } catch (e) { /* 清理尽力而为 */ }
       try { fs.rmSync(otherProject, { recursive: true, force: true }); } catch (e) { /* 同上 */ }
     }
+    if (reviewProject) {
+      // 链 23 的那个临时项目同理。放在这里而不是链尾：中途失败时链尾那一步根本走不到，
+      // 而残留的「最近打开」记录会一直留在真实的用户目录里
+      try {
+        await fetch(BASE + 'api/recent?path=' + encodeURIComponent(reviewProject), { method: 'DELETE' });
+      } catch (e) { /* 清理尽力而为 */ }
+    }
     try { ws && ws.close(); } catch (e) { /* ignore */ }
+    try { if (stubModel) stubModel.close(); } catch (e) { /* 尽力而为 */ }
     chrome.kill();
     // Chrome 的 profile 目录是每次新建的，不删就会在 %TEMP% 里越堆越多
     await sleep(500);

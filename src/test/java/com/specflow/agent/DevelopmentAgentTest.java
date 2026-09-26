@@ -706,7 +706,7 @@ class DevelopmentAgentTest {
         agent(llm, new ScriptedVerifier(passed()), new RecordingListener()).resume(
                 TestSpecs.spec(List.of("Foo.java")),
                 planWithSteps(step(1, "第一步", false, "Foo.java"), step(2, "第二步", false, "Foo.java")),
-                "NEED_CONTEXT: 缺东西", false);
+                "NEED_CONTEXT: 缺东西", false, List.of());
 
         List<ChatMessage> sent = llm.patches().get(0);
         assertThat(sent.get(0).content()).doesNotContain("NEED_CONTEXT");
@@ -910,7 +910,8 @@ class DevelopmentAgentTest {
         ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
 
         AgentResult result = agent(llm, new ScriptedVerifier(passed()))
-                .resume(TestSpecs.spec(List.of("Foo.java")), null, "NEED_CONTEXT: 我需要 Bar.java", false);
+                .resume(TestSpecs.spec(List.of("Foo.java")), null, "NEED_CONTEXT: 我需要 Bar.java",
+                        false, List.of());
 
         assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
         List<ChatMessage> sent = llm.patches().get(0);
@@ -918,19 +919,100 @@ class DevelopmentAgentTest {
         assertThat(sent.get(2).role()).isEqualTo(ChatMessage.ASSISTANT);
         assertThat(sent.get(2).content()).contains("我需要 Bar.java");
         assertThat(sent.get(3).content()).contains("最多 3 行");
+        // 补过料那一档：用户还可能再补（他刚补过一次），所以出口留着——这和「直接放行」是两档
+        assertThat(sent.get(0).content()).as("补过料的续跑仍然留着那个出口")
+                .contains("NEED_CONTEXT");
     }
 
+    /**
+     * 「直接放行」那一档要认到<b>协议本身</b>，不能只认回话那一句。
+     *
+     * <p>这是真跑出来的一条：{@code specflow continue --force} 时回给模型的话是硬的那一句
+     * （「不要再要求补充信息」），而系统提示词却还带着「缺料就认输」那一段
+     * （实测 1383 字 vs 不带时 894 字）。一边拆梯子一边递梯子，结果就是它又停下来要料，
+     * 用户点了几次「直接继续」都还是原地打转——而只测回话那一句的断言是绿的。
+     */
     @Test
     @DisplayName("「直接继续」的话更强硬：用现有信息做，不许再要东西")
     void forceResumeTellsItToStopAsking() {
         ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
 
         agent(llm, new ScriptedVerifier(passed()))
-                .resume(TestSpecs.spec(List.of("Foo.java")), null, "NEED_CONTEXT: 缺东西", true);
+                .resume(TestSpecs.spec(List.of("Foo.java")), null, "NEED_CONTEXT: 缺东西",
+                        true, List.of());
 
-        assertThat(llm.patches().get(0).get(3).content())
+        List<ChatMessage> sent = llm.patches().get(0);
+        assertThat(sent.get(3).content())
                 .contains("不要再要求补充信息")
                 .doesNotContain("最多 3 行");
+        assertThat(sent.get(0).content()).as("协议里也不该再有那个出口：留着它，这句狠话就是白说的")
+                .contains("<<<<<<< SEARCH")
+                .doesNotContain("NEED_CONTEXT")
+                .doesNotContain("信息不足");
+        assertThat(sent.get(1).content()).as("要求那一句同样不许留「信息确实不足」这个后门")
+                .doesNotContain("信息确实不足");
+    }
+
+    /**
+     * 续跑要复用上一次那条留档里的施工单。
+     *
+     * <p>挂起的那次运行已经花调用定过一次单子（见 {@link #generateSteps}），
+     * 而续跑重开一轮时又去问了一遍——真试跑里那是<b>白花的 2 次调用</b>。
+     * 留档里存着那份单子的唯一理由是：挂起时磁盘已经回滚，其它地方都没有它了。
+     */
+    @Test
+    @DisplayName("续跑：留档里有施工单就接着用，一次都不再多问")
+    void resumeReusesTheStepsFromTheRecord() {
+        List<PlanStep> recorded = List.of(
+                step(1, "第一步", false, "Foo.java"),
+                step(2, "第二步", false, "Foo.java"),
+                step(3, "第三步", false, "Foo.java"));
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"),
+                patch("int a = 3;", "int a = 4;"));
+        RecordingListener listener = new RecordingListener();
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()), listener)
+                .resume(TestSpecs.spec(List.of("Foo.java")), null, "NEED_CONTEXT: 缺东西",
+                        true, recorded);
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(listener.source).as("来源说得清它是从哪来的").isEqualTo(StepsSource.RESUMED);
+        assertThat(listener.probeCalls).as("为它一次调用都没花").isZero();
+        assertThat(listener.plan).extracting(PlanStep::goal)
+                .containsExactly("第一步", "第二步", "第三步");
+        assertThat(llm.calls()).as("加上生成施工单那次，一共只有三次——每一步一次")
+                .hasSize(3);
+        assertThat(llm.calls()).as("没有哪一次是在「只产施工单」")
+                .noneMatch(ScriptedLlm::asksForStepsOnly);
+    }
+
+    /**
+     * 老记录里没有施工单这一项（读出来是 {@code null}），续跑必须能退化——
+     * 那时只能照旧现生成一份，而不是崩在空指针上。
+     */
+    @Test
+    @DisplayName("续跑：留档里没有施工单（老记录）就现生成，不崩也不卡")
+    void resumeWithoutRecordedStepsGeneratesAgain() {
+        // 老记录读出来是 null；归一化在这一处做，引擎那条路上就只有一个判据
+        assertThat(new DevelopmentAgent.Resume("NEED_CONTEXT: 缺东西", true, null).steps())
+                .as("老记录读出来是 null，认成「没有施工单」").isEmpty();
+
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"),
+                patch("int a = 3;", "int a = 4;"))
+                .answeringStepsWith(stepsAnswer(3, "第一步", "第二步", "第三步"));
+        RecordingListener listener = new RecordingListener();
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()), listener)
+                .resume(TestSpecs.spec(List.of("Foo.java")), null, "NEED_CONTEXT: 缺东西",
+                        true, null);
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(listener.source).as("留档里没有就只能现生成").isEqualTo(StepsSource.GENERATED);
+        assertThat(listener.probeCalls).isEqualTo(1);
     }
 
     private List<String> snapshotNames() throws IOException {

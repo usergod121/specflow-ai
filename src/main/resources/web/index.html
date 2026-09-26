@@ -3967,6 +3967,8 @@ const STEP_STATES = {
 const STEP_SOURCE_LABEL = {
   APPROVED: '检查阶段产出的施工单',
   GENERATED: '没有检查结果，开工前现生成的施工单',
+  // 接着上一次挂起的运行跑：那一份是上次定下来的，这次没再问一遍
+  RESUMED: '接着上一次那条留档里的施工单',
   SINGLE: '没有可用的施工单，按单步执行',
 };
 

@@ -513,8 +513,13 @@ public final class WebServer implements AutoCloseable {
     /**
      * 检查阶段：同步返回一份实现方案。
      *
-     * <p>分成两块发出去：{@code plan} 是模型说的，{@code audit} 是机器查出来的
-     * 「执行不了的地方」。界面上只有 {@code audit} 有资格拦人——模型的自评只配当提示。
+     * <p>分成三块发出去：{@code plan} 是模型说的，{@code audit} 是机器查出来的
+     * 「方案执行不了的地方」，{@code stepAudit} 是机器查出来的「施工单执行不了的地方」。
+     * 界面上只有那两块 {@code audit} 有资格拦人——模型的自评只配当提示。
+     *
+     * <p>两块审查<b>都要发</b>：它们在界面上是两个闸门（一处是「这些文件改不了」，
+     * 另一处是「这几步做不了」），少发一块，那一条硬拦就一声不响地失效了——
+     * 引擎照判、留档照写，只有用户看不到，而两边的测试各自都还是绿的。
      */
     private void review(OpenProject project, HttpExchange exchange) throws IOException {
         RunRequest request = Http.readJson(exchange, RunRequest.class);
@@ -523,7 +528,8 @@ public final class WebServer implements AutoCloseable {
         }
         project.requireOpen();
         ReviewOutcome outcome = project.runs().review(request);
-        Http.sendJson(exchange, 200, Map.of("plan", outcome.plan(), "audit", outcome.audit()));
+        Http.sendJson(exchange, 200, Map.of("plan", outcome.plan(), "audit", outcome.audit(),
+                "stepAudit", outcome.stepAudit()));
     }
 
     private void startRun(OpenProject project, HttpExchange exchange) throws IOException {

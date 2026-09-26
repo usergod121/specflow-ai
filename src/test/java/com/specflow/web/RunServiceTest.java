@@ -1,21 +1,15 @@
 package com.specflow.web;
 
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.specflow.agent.AgentListener;
 import com.specflow.project.LlmConfig;
 import com.specflow.project.ProjectConfig;
 import com.specflow.review.PlanStep;
 import com.specflow.review.ReviewOutcome;
 import com.specflow.review.StepAudit;
-import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -164,7 +158,7 @@ class RunServiceTest {
                 3 | 最后收尾 | src/main/java/demo/Foo.java | 能编译 | 中间态
                 >>>>>>> STEPS
                 """;
-        try (StubModel model = StubModel.start(answer)) {
+        try (StubModelServer model = StubModelServer.answering(answer)) {
             Files.createDirectories(root.resolve(".specflow"));
             Files.writeString(root.resolve(".specflow").resolve("local.env"),
                     "SPECFLOW_TEST_KEY=sk-test\n");
@@ -184,44 +178,6 @@ class RunServiceTest {
             assertThat(outcome.stepAudit().findings()).hasSize(2);
             assertThat(outcome.stepAudit().findings()).extracting(StepAudit.Finding::step)
                     .containsExactlyInAnyOrder(1, 3);
-        }
-    }
-
-    /** 一个只会背台词的本机「模型服务」。 */
-    private static final class StubModel implements AutoCloseable {
-
-        private final HttpServer server;
-
-        private StubModel(HttpServer server) {
-            this.server = server;
-        }
-
-        static StubModel start(String answer) throws IOException {
-            HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-            ObjectNode message = JsonNodeFactory.instance.objectNode().put("content", answer);
-            ObjectNode choice = JsonNodeFactory.instance.objectNode().set("message", message);
-            String body = JsonNodeFactory.instance.objectNode()
-                    .set("choices", JsonNodeFactory.instance.arrayNode().add(choice))
-                    .toString();
-            server.createContext("/chat/completions", exchange -> {
-                exchange.getRequestBody().readAllBytes();
-                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-                exchange.getResponseHeaders().add("Content-Type", "application/json");
-                exchange.sendResponseHeaders(200, bytes.length);
-                exchange.getResponseBody().write(bytes);
-                exchange.close();
-            });
-            server.start();
-            return new StubModel(server);
-        }
-
-        String baseUrl() {
-            return "http://127.0.0.1:" + server.getAddress().getPort();
-        }
-
-        @Override
-        public void close() {
-            server.stop(0);
         }
     }
 }

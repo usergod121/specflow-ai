@@ -51,6 +51,14 @@ public final class RunRecorder implements AgentListener {
     private String stepsSource;
 
     /**
+     * 这次运行定下来的完整施工单。
+     *
+     * <p>它和 {@link #steps} 不是一回事：那个是跑完之后按步攒的账（只记跑到了的步子），
+     * 这个是开工时引擎报上来的那份图。留档里必须有它，续跑才不必为同一份单子再花一次调用。
+     */
+    private List<PlanStep> planSteps = List.of();
+
+    /**
      * 施工单上那一步——单步执行时的全部内容。
      *
      * <p>只记「恰好一步」这一种：多于一步时每一步都有步级事件，账在 {@link #steps} 里攒着，
@@ -106,6 +114,7 @@ public final class RunRecorder implements AgentListener {
     public void stepsResolved(List<PlanStep> resolved, AgentListener.StepsSource source,
                               int probeCalls) {
         this.stepsSource = source.name();
+        this.planSteps = List.copyOf(resolved);
         // 单步执行（现生成的施工单核不过、或者压根没跑过检查）时引擎**不发步级事件**，
         // 于是留档里一步都没有。留着这一份，写记录时才能替它补上一条（见 stepsOf）
         this.singleStep = resolved.size() == 1 ? resolved.get(0) : null;
@@ -198,7 +207,7 @@ public final class RunRecorder implements AgentListener {
                 spec.prompt(), spec.acceptance(), contextOf(spec), spec.trace().requirementId(),
                 spec.targets(), result.attempts(), result.detail(),
                 approved == null ? List.of() : approved.missing(),
-                changesOf(result.changes()), stepsOf(result), stepsSource,
+                changesOf(result.changes()), stepsOf(result), planSteps, stepsSource,
                 List.copyOf(timeline));
         try {
             store.save(record);
