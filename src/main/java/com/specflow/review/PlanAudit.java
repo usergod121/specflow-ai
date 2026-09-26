@@ -63,12 +63,11 @@ public final class PlanAudit {
      */
     public static List<Finding> check(PlanReview plan, List<String> targets,
                                      Collection<String> projectFiles, Collection<String> directories) {
-        List<String> stems = targets.stream().map(PlanAudit::stem).toList();
         Set<String> seen = new LinkedHashSet<>();
         List<Finding> findings = new ArrayList<>();
 
         for (Candidate candidate : candidates(plan, projectFiles, directories)) {
-            if (covered(candidate.path(), stems) || !seen.add(candidate.path())) {
+            if (covered(candidate.path(), targets) || !seen.add(candidate.path())) {
                 continue;
             }
             findings.add(new Finding(candidate.path(),
@@ -103,7 +102,7 @@ public final class PlanAudit {
                 continue;
             }
             for (Matcher matcher = PATH.matcher(text); matcher.find(); ) {
-                String path = normalize(matcher.group());
+                String path = PathForms.normalize(matcher.group());
                 if (inProject(directoryOf(path), directories)) {
                     // 写的就是相对路径：它本身就是能加进目标文件的那个路径
                     found.add(new Candidate(path, path));
@@ -125,7 +124,7 @@ public final class PlanAudit {
     /** 项目里哪个文件对应这个全限定类名；找不到返回 null。 */
     private static String existingFileOf(String qualifiedPath, Collection<String> projectFiles) {
         for (String file : projectFiles) {
-            if (stem(file).endsWith(qualifiedPath)) {
+            if (PathForms.stem(file).endsWith(qualifiedPath)) {
                 return file;
             }
         }
@@ -162,46 +161,16 @@ public final class PlanAudit {
 
     // ---------- 比对 ----------
 
-    /** 清单里的这个文件能不能覆盖方案提到的那个：同名同目录就算同一个（后缀差异不算）。 */
-    private static boolean covered(String candidate, List<String> targetStems) {
-        String stem = stem(candidate);
-        for (String known : targetStems) {
-            if (known.equals(stem) || known.endsWith(stem) || stem.endsWith(known)) {
-                return true;
-            }
-        }
-        return false;
+    /** 清单里有没有哪个文件能覆盖方案提到的那个。口径见 {@link PathForms#covers}。 */
+    private static boolean covered(String candidate, List<String> targets) {
+        return targets.stream().anyMatch(target -> PathForms.covers(target, candidate));
     }
 
     private static boolean exists(String candidate, Collection<String> projectFiles) {
-        for (String file : projectFiles) {
-            if (stem(file).endsWith(candidate)) {
-                return true;
-            }
-        }
-        return false;
+        return projectFiles.stream().anyMatch(file -> PathForms.covers(file, candidate));
     }
 
     // ---------- 路径处理 ----------
-
-    private static String normalize(String path) {
-        String value = path.replace('\\', '/').strip();
-        while (value.startsWith("./")) {
-            value = value.substring(2);
-        }
-        while (value.startsWith("/")) {
-            value = value.substring(1);
-        }
-        return value;
-    }
-
-    /** 去掉最后一段里的后缀：`a/b/C.java` → `a/b/C`；没有后缀就原样返回。 */
-    private static String stem(String path) {
-        String value = normalize(path);
-        int slash = value.lastIndexOf('/');
-        int dot = value.lastIndexOf('.');
-        return dot > slash ? value.substring(0, dot) : value;
-    }
 
     private static String directoryOf(String path) {
         int slash = path.lastIndexOf('/');

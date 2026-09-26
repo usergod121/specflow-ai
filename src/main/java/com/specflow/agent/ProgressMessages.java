@@ -2,6 +2,7 @@ package com.specflow.agent;
 
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
+import com.specflow.review.PlanStep;
 import com.specflow.verify.VerificationResult;
 
 import java.util.List;
@@ -23,6 +24,37 @@ public final class ProgressMessages {
 
     public static String roundStarted(int round) {
         return "第 " + round + " 轮：调用模型…";
+    }
+
+    /** 施工单定下来时那一行：把「几步、从哪来、为它花了多少调用」一次说清。 */
+    public static String stepsResolved(List<PlanStep> steps, AgentListener.StepsSource source,
+                                       int probeCalls) {
+        // 花了调用就一定要说出来：它不算轮次，但一样是用户掏的钱
+        String cost = probeCalls == 0 ? "" : "（为了拿它多花了 " + probeCalls + " 次模型调用）";
+        return source.label() + "，共 " + steps.size() + " 步" + cost;
+    }
+
+    public static String stepStarted(PlanStep step) {
+        return step.title() + "（涉及 " + (step.files().isEmpty()
+                ? "未注明文件" : String.join("、", step.files())) + "）";
+    }
+
+    /**
+     * 一步结束时那一行。
+     *
+     * <p>「标的是中间态、实际编译通过了」单独说一句：这是好消息，但事后看时间线时
+     * 如果只有一句「成功」，就会以为「它说这一步编不过」是句空话。
+     * 而它其实是个有用的信号——说明施工单把这一步切得比必要的还碎。
+     */
+    public static String stepFinished(PlanStep step, AgentListener.StepState state) {
+        if (state == AgentListener.StepState.SUCCESS && step.intermediate()) {
+            return step.title() + "：标的是中间态，实际编译通过了";
+        }
+        return step.title() + "：" + state.label();
+    }
+
+    public static String stepRestored(PlanStep step, String reason) {
+        return step.title() + "：" + reason + "，已回滚到该步开始前的状态";
     }
 
     public static String planRejected(PatchConflictException failure) {

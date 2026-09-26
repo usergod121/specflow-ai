@@ -28,6 +28,8 @@ import java.util.Map;
  *
  * @param approvedPlan 检查阶段确认过的实现方案。它只影响发给模型的提示词，
  *                     <b>不参与任何校验</b>——引擎该做的判断不会因为「方案已确认」而放宽
+ * @param maxRounds    整次运行允许调用模型几次；不填（或 0）= 按施工单步数自动算，
+ *                     见 {@link VerifySpec#roundBudget}
  */
 @JsonIgnoreProperties(ignoreUnknown = false)
 public record RunRequest(
@@ -41,7 +43,8 @@ public record RunRequest(
         List<ContextItem> context,
         PlanReview approvedPlan,
         Boolean verifyCompile,
-        Integer maxRetry
+        Integer maxRetry,
+        Integer maxRounds
 ) {
 
     private static final int DEFAULT_MAX_RETRY = VerifySpec.DEFAULT_MAX_RETRY;
@@ -58,7 +61,8 @@ public record RunRequest(
             @JsonProperty("context") List<ContextItem> context,
             @JsonProperty("approvedPlan") PlanReview approvedPlan,
             @JsonProperty("verifyCompile") Boolean verifyCompile,
-            @JsonProperty("maxRetry") Integer maxRetry
+            @JsonProperty("maxRetry") Integer maxRetry,
+            @JsonProperty("maxRounds") Integer maxRounds
     ) {
         return new RunRequest(
                 blankToNull(template),
@@ -71,7 +75,8 @@ public record RunRequest(
                 context == null ? List.of() : context,
                 approvedPlan,
                 verifyCompile,
-                maxRetry);
+                maxRetry,
+                maxRounds);
     }
 
     /**
@@ -90,7 +95,8 @@ public record RunRequest(
                 constraints,
                 context,
                 new VerifySpec(verifyCompile == null || verifyCompile, null,
-                        maxRetry == null ? DEFAULT_MAX_RETRY : maxRetry),
+                        maxRetry == null ? DEFAULT_MAX_RETRY : maxRetry,
+                        maxRounds == null ? VerifySpec.AUTO_ROUNDS : maxRounds),
                 TraceSpec.of(requirementId));
     }
 
@@ -104,7 +110,7 @@ public record RunRequest(
     public static RunRequest from(Spec spec) {
         return new RunRequest(spec.template(), spec.prompt(), spec.acceptance(), spec.trace().requirementId(), spec.variables(),
                 spec.targets(), spec.constraints(), spec.context(), null,
-                spec.verify().compile(), spec.verify().maxRetry());
+                spec.verify().compile(), spec.verify().maxRetry(), spec.verify().maxRounds());
     }
 
     private static String blankToNull(String value) {

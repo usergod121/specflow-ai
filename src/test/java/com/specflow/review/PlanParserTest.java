@@ -4,6 +4,8 @@ import com.specflow.exception.SpecflowException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -250,5 +252,151 @@ class PlanParserTest {
         assertThatThrownBy(() -> parser.parse("   "))
                 .isInstanceOf(SpecflowException.class)
                 .hasMessageContaining("为空");
+    }
+
+    // ---------- 施工单 ----------
+
+    @Test
+    @DisplayName("施工单按五栏拆开：序号、做什么、文件、怎么算做完、自洽还是中间态")
+    void parsesSteps() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+
+                <<<<<<< STEPS
+                1 | 给 Foo 加一个按编号查询的方法 | src/main/java/demo/Foo.java | Foo 能编译，查不到返回空集合 | 自洽
+                2 | 让 BarService 调用它 | src/main/java/demo/BarService.java, src/main/java/demo/Foo.java | BarService 能编译 | 中间态
+                3 | 在控制层暴露出去 | src/main/java/demo/FooController.java | 项目整体编译通过 | 自洽
+                >>>>>>> STEPS
+                """);
+
+        assertThat(review.steps()).hasSize(3);
+        PlanStep first = review.steps().get(0);
+        assertThat(first.index()).isEqualTo(1);
+        assertThat(first.goal()).isEqualTo("给 Foo 加一个按编号查询的方法");
+        assertThat(first.files()).containsExactly("src/main/java/demo/Foo.java");
+        assertThat(first.check()).contains("查不到返回空集合");
+        assertThat(first.intermediate()).isFalse();
+        assertThat(review.steps().get(1).files()).as("逗号分隔的多个文件都要认出来")
+                .containsExactly("src/main/java/demo/BarService.java", "src/main/java/demo/Foo.java");
+        assertThat(review.steps().get(1).intermediate()).isTrue();
+        assertThat(review.steps().get(2).intermediate()).isFalse();
+    }
+
+    @Test
+    @DisplayName("中文逗号、顿号分隔的文件也要拆开——模型不会只用英文逗号")
+    void splitsFilesOnAnyListSeparator() {
+        assertThat(parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                <<<<<<< STEPS
+                1 | 做一件事 | a/Foo.java、b/Bar.java | 能编译 | 自洽
+                >>>>>>> STEPS
+                """).steps().get(0).files()).containsExactly("a/Foo.java", "b/Bar.java");
+    }
+
+    @Test
+    @DisplayName("认不出的行不能悄悄消失：整行当成这一步做什么，让机器去报步数越界")
+    void keepsUnparsedStepLines() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                <<<<<<< STEPS
+                先把实体类写完再说
+                1 | 第二步 | a/Foo.java | 能编译 | 自洽
+                >>>>>>> STEPS
+                """);
+
+        assertThat(review.steps()).as("一行都不能丢").hasSize(2);
+        assertThat(review.steps().get(0).goal()).isEqualTo("先把实体类写完再说");
+        assertThat(review.steps().get(0).index()).as("没写序号就按行号补一个").isEqualTo(1);
+        assertThat(review.steps().get(0).files()).isEmpty();
+        assertThat(review.steps().get(1).index()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("markdown 表格的分隔行是排版不是内容，不能当成一步")
+    void skipsTableRuleLines() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                <<<<<<< STEPS
+                | 序号 | 做什么 | 文件 | 怎么算做完 | 自洽或中间态 |
+                |---|---|---|---|---|
+                1 | 第一步 | a/Foo.java | 能编译 | 自洽
+                2 | 第二步 | a/Bar.java | 能编译 | 自洽
+                3 | 第三步 | a/Baz.java | 能编译 | 自洽
+                >>>>>>> STEPS
+                """);
+
+        assertThat(review.steps()).as("表头那行是有内容的，保留；分隔行丢掉").hasSize(4);
+        assertThat(review.steps()).extracting(PlanStep::goal)
+                .containsExactly("做什么", "第一步", "第二步", "第三步");
+    }
+
+    @Test
+    @DisplayName("「中间态」的判法：只有明说才算，默认是自洽")
+    void treatsUnknownCompletenessAsSelfContained() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                <<<<<<< STEPS
+                1 | 第一步 | a/Foo.java | 能编译 | 不确定
+                2 | 第二步 | a/Bar.java | 能编译 | 中间态
+                >>>>>>> STEPS
+                """);
+
+        // 判反了的后果不对称：把自洽当成中间态，编译失败会被当成「按约定继续」，
+        // 于是一路带着编不过的代码往下走；反过来最坏只是多回滚一次
+        assertThat(review.steps().get(0).intermediate()).isFalse();
+        assertThat(review.steps().get(1).intermediate()).isTrue();
+    }
+
+    @Test
+    @DisplayName("没有 STEPS 块时是空列表，不是报错——调用方本来就准备好了退化")
+    void emptyStepsWhenBlockMissing() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                """);
+
+        assertThat(review.steps()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("只产施工单的轻协议：没有 FLOW 块也能只取施工单")
+    void parsesStepsWithoutFlowchart() {
+        List<PlanStep> steps = parser.parseSteps("""
+                好的，我拆一下。
+
+                <<<<<<< STEPS
+                1 | 第一步 | a/Foo.java | 能编译 | 自洽
+                2 | 第二步 | a/Bar.java | 能编译 | 自洽
+                3 | 第三步 | a/Baz.java | 能编译 | 自洽
+                >>>>>>> STEPS
+                """);
+
+        assertThat(steps).hasSize(3);
+        assertThat(steps.get(2).goal()).isEqualTo("第三步");
+    }
+
+    @Test
+    @DisplayName("轻协议下什么都没有时返回空，不抛异常")
+    void parseStepsNeverThrows() {
+        assertThat(parser.parseSteps("我拆不开。")).isEmpty();
+        assertThat(parser.parseSteps("")).isEmpty();
+        assertThat(parser.parseSteps(null)).isEmpty();
     }
 }

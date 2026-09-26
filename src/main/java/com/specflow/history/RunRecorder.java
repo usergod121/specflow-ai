@@ -6,6 +6,7 @@ import com.specflow.agent.ProgressMessages;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanReview;
+import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
 import com.specflow.spec.Spec;
 import com.specflow.verify.VerificationResult;
@@ -46,6 +47,27 @@ public final class RunRecorder implements AgentListener {
     private final String id;
     private final String startedAt;
     private final List<RunRecord.Line> timeline = new ArrayList<>();
+    private final List<RunRecord.Step> steps = new ArrayList<>();
+    private String stepsSource;
+
+    /**
+     * 正在跑的那一步，以及它自己的账。
+     *
+     * <p>步级的账（几轮、改了哪些文件）必须单独攒：一次运行的改动是<b>按步累积</b>的，
+     * 事后想回答「第 3 步当时动了什么」，只有总账是答不出来的。
+     */
+    private PlanStep openStep;
+    private int openRounds;
+    private final List<PatchApplier.FileChange> openChanges = new ArrayList<>();
+
+    /**
+     * 最近一次看到的轮次。
+     *
+     * <p>步级事件（开始/结束/回滚）本身不带轮次——「这一步在第几轮开始」不是它们要回答的问题。
+     * 但时间线是按轮分组显示的，所以每条步级记录都得挂在某一轮上，
+     * 挂最近的那一轮最接近事实。
+     */
+    private int round;
 
     private RunRecorder(RunStore store, AgentListener delegate, Spec spec, PlanReview approved) {
         this.store = store;
@@ -73,7 +95,50 @@ public final class RunRecorder implements AgentListener {
     }
 
     @Override
+    public void stepsResolved(List<PlanStep> resolved, AgentListener.StepsSource source,
+                              int probeCalls) {
+        this.stepsSource = source.name();
+        record(round, "info", ProgressMessages.stepsResolved(resolved, source, probeCalls));
+        delegate.stepsResolved(resolved, source, probeCalls);
+    }
+
+    @Override
+    public void stepStarted(PlanStep step) {
+        openStep = step;
+        openRounds = 0;
+        openChanges.clear();
+        record(round, "info", ProgressMessages.stepStarted(step));
+        delegate.stepStarted(step);
+    }
+
+    @Override
+    public void stepFinished(PlanStep step, AgentListener.StepState state) {
+        if (openStep != null) {
+            steps.add(new RunRecord.Step(step.index(), step.goal(), step.intermediate(),
+                    state.name(), openRounds, changesOf(openChanges)));
+        }
+        openStep = null;
+        openChanges.clear();
+        record(round, state == AgentListener.StepState.SUCCESS ? "info" : "warn",
+                ProgressMessages.stepFinished(step, state));
+        delegate.stepFinished(step, state);
+    }
+
+    @Override
+    public void stepRestored(PlanStep step, int round, String reason) {
+        // 本步已回滚到进入点：这一轮写进去的东西已经不在盘上了，
+        // 记账不能留着它，否则留档里会多出一份「改过但又没了」的差异
+        openChanges.clear();
+        record(round, "warn", ProgressMessages.stepRestored(step, reason));
+        delegate.stepRestored(step, round, reason);
+    }
+
+    @Override
     public void roundStarted(int round) {
+        this.round = round;
+        if (openStep != null) {
+            openRounds++;
+        }
         record(round, "info", ProgressMessages.roundStarted(round));
         delegate.roundStarted(round);
     }
@@ -86,6 +151,7 @@ public final class RunRecorder implements AgentListener {
 
     @Override
     public void filesApplied(int round, List<PatchApplier.FileChange> changes) {
+        openChanges.addAll(changes);
         record(round, "info", ProgressMessages.filesApplied(changes));
         delegate.filesApplied(round, changes);
     }
@@ -117,21 +183,25 @@ public final class RunRecorder implements AgentListener {
     }
 
     private void persist(AgentResult result) {
-        List<RunRecord.Change> changes = result.changes().stream()
-                .map(change -> new RunRecord.Change(change.relative(), change.created(),
-                        change.bytes(), change.diff()))
-                .toList();
         RunRecord record = new RunRecord(id, startedAt, result.status().name(), spec.template(),
                 spec.prompt(), spec.acceptance(), contextOf(spec), spec.trace().requirementId(),
                 spec.targets(), result.attempts(), result.detail(),
                 approved == null ? List.of() : approved.missing(),
-                changes, List.copyOf(timeline));
+                changesOf(result.changes()), List.copyOf(steps), stepsSource,
+                List.copyOf(timeline));
         try {
             store.save(record);
             log.debug("运行记录已写入 {}", store.directory().resolve(id));
         } catch (RuntimeException e) {
             log.warn("运行记录写入失败，不影响本次结果：{}", e.getMessage());
         }
+    }
+
+    private static List<RunRecord.Change> changesOf(List<PatchApplier.FileChange> changes) {
+        return changes.stream()
+                .map(change -> new RunRecord.Change(change.relative(), change.created(),
+                        change.bytes(), change.diff()))
+                .toList();
     }
 
     /**

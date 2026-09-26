@@ -3,6 +3,9 @@ package com.specflow.web;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -16,17 +19,17 @@ class RunHubTest {
     void assignsIncrementingIds() {
         hub.startRun("run-1");
 
-        assertThat(hub.publish("info", 1, "第一条").id()).isEqualTo(1);
-        assertThat(hub.publish("info", 1, "第二条").id()).isEqualTo(2);
+        assertThat(hub.publish("info", 1, 0, "第一条").id()).isEqualTo(1);
+        assertThat(hub.publish("info", 1, 0, "第二条").id()).isEqualTo(2);
     }
 
     @Test
     @DisplayName("按游标只取新事件")
     void returnsEventsAfterCursor() {
         hub.startRun("run-1");
-        hub.publish("info", 1, "一");
-        hub.publish("info", 1, "二");
-        hub.publish("info", 1, "三");
+        hub.publish("info", 1, 0, "一");
+        hub.publish("info", 1, 0, "二");
+        hub.publish("info", 1, 0, "三");
 
         assertThat(hub.view(0).events()).hasSize(3);
         assertThat(hub.view(2).events()).extracting(RunEvent::text).containsExactly("二", "三");
@@ -37,14 +40,14 @@ class RunHubTest {
     @DisplayName("开始新运行时清空上一轮的事件并换新的 runId")
     void newRunResetsHistory() {
         hub.startRun("run-1");
-        hub.publish("info", 1, "旧事件");
+        hub.publish("info", 1, 0, "旧事件");
         hub.finish();
 
         hub.startRun("run-2");
 
         assertThat(hub.runId()).isEqualTo("run-2");
         assertThat(hub.view(0).events()).isEmpty();
-        assertThat(hub.publish("info", 1, "新事件").id()).isEqualTo(1);
+        assertThat(hub.publish("info", 1, 0, "新事件").id()).isEqualTo(1);
     }
 
     @Test
@@ -72,7 +75,7 @@ class RunHubTest {
     void capsEventCount() {
         hub.startRun("run-1");
         for (int i = 0; i < 600; i++) {
-            hub.publish("info", 1, "第 " + i + " 条");
+            hub.publish("info", 1, 0, "第 " + i + " 条");
         }
 
         RunHub.RunView view = hub.view(0);
@@ -81,13 +84,41 @@ class RunHubTest {
     }
 
     @Test
+    @DisplayName("日志事件带着它属于第几步，界面据此把一段日志按步分组")
+    void logEventCarriesStep() {
+        hub.startRun("run-1");
+
+        RunEvent event = hub.publish("warn", 4, 2, "第 2 步：校验未通过");
+
+        assertThat(event.step()).isEqualTo(2);
+        assertThat(event.round()).isEqualTo(4);
+        assertThat(event.type()).isEqualTo(RunEvent.TYPE_LOG);
+    }
+
+    @Test
+    @DisplayName("施工单是一次给全的：界面在第一步之前就知道总共有几步")
+    void publishesWholePlanBeforeFirstStep() {
+        hub.startRun("run-1");
+
+        hub.publishPlan("共 3 步", Map.of("source", "GENERATED", "steps", List.of()));
+
+        RunEvent event = hub.view(0).events().get(0);
+        assertThat(event.type()).isEqualTo(RunEvent.TYPE_PLAN);
+        assertThat(event.isPlan()).isTrue();
+        assertThat(event.isResult()).isFalse();
+        assertThat(event.payload()).isInstanceOf(Map.class);
+        assertThat(((Map<?, ?>) event.payload()).get("source")).isEqualTo("GENERATED");
+    }
+
+    @Test
     @DisplayName("结束事件带着结构化结果")
     void carriesResultPayload() {
         hub.startRun("run-1");
-        hub.publishResult(java.util.Map.of("status", "SUCCESS"));
+        hub.publishResult(Map.of("status", "SUCCESS"));
 
         RunEvent event = hub.view(0).events().get(0);
         assertThat(event.type()).isEqualTo(RunEvent.TYPE_RESULT);
         assertThat(event.isResult()).isTrue();
+        assertThat(event.isPlan()).isFalse();
     }
 }

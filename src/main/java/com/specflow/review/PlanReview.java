@@ -22,11 +22,15 @@ import java.util.Locale;
  * @param summary   一两句话的实现摘要
  * @param flowchart Mermaid 流程图原文，由界面渲染成图
  * @param missing   缺失依赖清单，按严重度排好序；为空表示模型认为信息已经足够
+ * @param steps     施工单：按执行顺序排好的步子。为空表示这次没有施工单，
+ *                  开发阶段会退化成「一步做完」（老行为）——所以它<b>不能</b>被当成
+ *                  「模型没写」这种小瑕疵来处理
  */
 public record PlanReview(
         String summary,
         String flowchart,
-        List<MissingItem> missing
+        List<MissingItem> missing,
+        List<PlanStep> steps
 ) {
 
     /**
@@ -146,9 +150,19 @@ public record PlanReview(
     }
 
     public static PlanReview of(String summary, String flowchart, List<MissingItem> missing) {
+        return of(summary, flowchart, missing, List.of());
+    }
+
+    /**
+     * 「方案里没有施工单」是一个真实状态，不是一个缺省参数：老记录、以及
+     * 模型没按协议给 STEPS 块时都会落在这里，而下游必须能把它和「有施工单」分开。
+     */
+    public static PlanReview of(String summary, String flowchart, List<MissingItem> missing,
+                                List<PlanStep> steps) {
         List<MissingItem> items = missing == null ? List.of() : List.copyOf(missing);
         return new PlanReview(summary == null ? "" : summary.strip(),
-                flowchart == null ? "" : flowchart.strip(), items);
+                flowchart == null ? "" : flowchart.strip(), items,
+                steps == null ? List.of() : List.copyOf(steps));
     }
 
     /** 按严重度排一遍（越严重越靠前），同档保持模型给的顺序。 */
@@ -194,6 +208,21 @@ public record PlanReview(
             }
             out.append("这些默认值是你自己定的，不是用户逐条确认过的：按它们写，"
                     + "并在代码注释里写明你假设了什么。\n");
+        }
+        if (!steps.isEmpty()) {
+            // 整份施工单要给它看全：只给当前这一步，它会不知道自己在整条链上的位置，
+            // 于是把「这一步」当成需求本身来做（该留的接口不留、该复用的类另起一个）
+            out.append("\n施工单（按这个顺序做；每一步会单独再给你一条施工指令）：\n");
+            for (PlanStep step : steps) {
+                out.append("- ").append(step.title());
+                if (!step.files().isEmpty()) {
+                    out.append("　→　").append(String.join("、", step.files()));
+                }
+                if (step.intermediate()) {
+                    out.append("（中间态：做完它项目可能编译不过）");
+                }
+                out.append("\n");
+            }
         }
         return out.toString().strip();
     }

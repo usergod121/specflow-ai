@@ -43,10 +43,20 @@ public final class RunHub {
         return runId;
     }
 
-    public synchronized RunEvent publish(String level, int round, String text) {
-        RunEvent event = RunEvent.log(nextId++, level, round, text);
+    public synchronized RunEvent publish(String level, int round, int step, String text) {
+        RunEvent event = RunEvent.log(nextId++, level, round, step, text);
         append(event);
         return event;
+    }
+
+    /**
+     * 施工单定下来了，一次把整份推给界面。
+     *
+     * @param text    面向人的一行说明（几步、从哪来）
+     * @param payload 结构化数据，形如 {@code {"source": "GENERATED", "steps": [...]}}
+     */
+    public synchronized void publishPlan(String text, Object payload) {
+        append(RunEvent.plan(nextId++, text, payload));
     }
 
     public synchronized void publishResult(Object payload) {

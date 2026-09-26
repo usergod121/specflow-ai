@@ -37,7 +37,8 @@ class CompileVerifierTest {
     @DisplayName("spec 关闭 compile 时跳过，而不是当成通过")
     void skipsWhenDisabledInSpec() {
         VerificationResult result = verifier.verify(context(
-                TestSpecs.spec(List.of("Foo.java"), new VerifySpec(false, "exit 0", 0)),
+                TestSpecs.spec(List.of("Foo.java"),
+                        new VerifySpec(false, "exit 0", 0, VerifySpec.AUTO_ROUNDS)),
                 ProjectConfig.DEFAULT));
 
         assertThat(result.skipped()).isTrue();
@@ -114,7 +115,8 @@ class CompileVerifierTest {
     // ---------- 辅助 ----------
 
     private Spec specWithCommand(String command) {
-        return TestSpecs.spec(List.of("Foo.java"), new VerifySpec(true, command, 0));
+        return TestSpecs.spec(List.of("Foo.java"),
+                new VerifySpec(true, command, 0, VerifySpec.AUTO_ROUNDS));
     }
 
     private ProjectConfig projectWithCompileCommand(String command) {

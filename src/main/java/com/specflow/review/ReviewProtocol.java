@@ -18,10 +18,51 @@ public final class ReviewProtocol {
     public static final String SUMMARY_MARKER = "<<<<<<< SUMMARY";
     public static final String FLOW_MARKER = "<<<<<<< FLOW";
     public static final String MISSING_MARKER = "<<<<<<< MISSING";
+    public static final String STEPS_MARKER = "<<<<<<< STEPS";
     public static final String END_SUFFIX = ">>>>>>>";
 
     /** 缺失清单里表示「什么都不缺」的写法。 */
     public static final String NOTHING_MISSING = "无";
+
+    /**
+     * 施工单那一行怎么写，以及为什么这么要求。
+     *
+     * <p>单独抽出来是因为它有两个消费者：完整检查协议，和「只产施工单」的
+     * {@link StepsProtocol}。同一件事的规矩写两遍，两个入口迟早会拆出两种风格的步子，
+     * 而引擎按同一套规则去执行它们。
+     */
+    public static final String STEPS_RULES = """
+            <序号> | <这一步做什么> | <涉及文件（逗号分隔，必须来自目标清单）> | <怎么算做完> | <自洽或中间态>
+
+            施工单怎么写（它决定后面干活时能不能一步接一步走顺，写不准比不写更麻烦）：
+            - 每行一步，从 1 开始编号，按执行顺序写；五个字段用竖线 | 分隔，不要加粗、
+              也不要在单元格外写字。
+            - 第 3 栏必须逐个来自目标文件清单（多个用逗号分隔；清单里还没建的文件也算）。
+              写了清单外的文件，这一步执行不了，机器会把它当场拦下来。
+            - 第 4 栏写「怎么算做完」，要让不懂这块的人也能照着验：项目能编译通过、
+              查不到时返回空而不是抛异常、某个接口能返回组装好的结果。
+              不要写「完成 XXX 功能」这种等于没写的。
+            - 第 5 栏只能填两种值：
+              * 自洽 —— 这一步做完，整个项目还能编译（**默认都该是它**）；
+              * 中间态 —— 这一步做完项目**可能编译不过**，只有确实做不到自洽时才写，
+                并在第 4 栏说清「哪一部分还没接上」。
+            - **按功能切，不要按层切**：别写成「先写完所有 Entity、再写完所有 Service、
+              最后写 Controller」——那样每一步都编不过。要写成「一个功能从入口到落地一次打通」。
+            - 最后一步不许标中间态；中间态不超过总步数的三分之一。
+            - 步数 3 到 7 步，越少越好：每一步都要重新装配一次上下文、重跑一次编译。
+
+            样例（三步，注意第 5 栏的变化）：
+            1 | 给 Foo 加一个按编号查询的方法，查不到返回空集合 | src/main/java/demo/Foo.java | Foo 能编译，且查不到时返回空集合而不是抛异常 | 自洽
+            2 | 让 BarService 调用上面那个方法并组装结果 | src/main/java/demo/BarService.java, src/main/java/demo/Foo.java | BarService 能编译，查询返回组装好的结果 | 自洽
+            3 | 在控制层把这个查询暴露出去 | src/main/java/demo/FooController.java | 项目整体编译通过，接口路径与已有接口风格一致 | 自洽
+            """;
+
+    /** 为什么要拆步——两个协议都要讲，因为它直接决定模型愿不愿意认真拆。 */
+    public static final String STEPS_WHY = """
+            为什么要拆：每一步做完都会跑一次编译。整个项目一起编译时，任何一个文件断了就是整次失败，
+            所以「加接口 → 加实现 → 改调用点」这种必须的顺序里天然会出现编不过的中间状态——
+            能自洽就自洽，做不到就明说「中间态」，别硬凑。
+            """;
 
     public static final String INSTRUCTIONS = """
             现在进入「检查」阶段。你不要写代码，只需回答一个问题：
@@ -47,6 +88,10 @@ public final class ReviewProtocol {
             %s
             <缺什么> | <严重度> | <影响（技术）> | <影响（业务）> | <建议默认值>
             %s MISSING
+
+            %s
+            %s
+            %s STEPS
 
             流程图只认下面这些写法（多写的会被忽略，等于图缺了一块）：
             - 第一行必须是 `flowchart TD`，整段只有一个图表头。
@@ -101,10 +146,14 @@ public final class ReviewProtocol {
             6. **动手之前先把自己实现这个需求所需要的输入列全**：要参照哪个文件、要确认哪个设计选择，
                缺什么就写进 MISSING 块。**别留到开发阶段再说**——那时用户已经付过两次调用的钱，
                而开发阶段一喊缺，这一轮就白跑了。信息真够的话，MISSING 就只写一行：%s
+            7. 施工单（STEPS 块）是**必须**的，而且会被机器逐条核一遍：步数越界、
+               最后一步标了中间态、第 3 栏写了目标清单外的文件，都会被拦下来要求改。
+               这几条不是格式要求，是「照着做会卡住」的硬事实。
 
-            注意 SUMMARY / MISSING 两块在内容为空时可以省略，FLOW 块必须给出。
+            注意 SUMMARY / MISSING 两块在内容为空时可以省略，FLOW 与 STEPS 两块必须给出。
             """.formatted(SUMMARY_MARKER, END_SUFFIX,
             FLOW_MARKER, END_SUFFIX,
             MISSING_MARKER, END_SUFFIX,
+            STEPS_MARKER, STEPS_RULES, END_SUFFIX, STEPS_WHY,
             NOTHING_MISSING, NOTHING_MISSING);
 }

@@ -18,7 +18,7 @@
                                   │
                 ③ llm ───────────┤   模型是怎么被调用的
                                   │
-                ④ agent ◄────────┘   ★ 主循环：一轮怎么走、什么时候重试、什么时候停
+                ④ agent ◄────────┘   ★ 主循环：按施工单一步怎么走、什么时候重试、什么时候停
                  │  │  │
        ┌─────────┘  │  └──────────────┐
        ▼            ▼                 ▼
@@ -52,7 +52,7 @@
 **读这些**：
 - `spec/Spec.java`（十个字段，注意注释里哪些是"引擎消费"、哪些是"给模型看的"）
 - `spec/SpecLoader.java` + `spec/SpecValidator.java`（YAML 怎么读进来、什么算不合法）
-- `spec/VerifySpec.java`（`compile` / `compile-command` / `max-retry` 三个开关）
+- `spec/VerifySpec.java`（`compile` / `compile-command` / `max-retry` 三个开关，外加管整次运行总调用的 `max-rounds`）
 - 项目根下的 `spec.example.yaml`（一份真实的样子）
 
 **读完要能回答**：
@@ -90,19 +90,25 @@
 **为什么是重点**：所有"重试/回滚/停下"的判断都在这里。这一份读懂，项目就懂了七成。
 
 **读这些**（按这个顺序）：
-- `agent/AgentResult.java`（六种终态：成功 / 未校验 / 失败 / 待处理环境 / 被中断 / 信息不足）——**先看它，你就知道这个循环可能怎么结束**
-- `agent/DevelopmentAgent.java`：`execute()` 那个 while 循环，一行一行读
+- `agent/AgentResult.java`（七种终态：成功 / 未校验 / 失败 / 待处理环境 / 被中断 / 信息不足 / 等人处置上一次的改动）——**先看它，你就知道这个循环可能怎么结束**
+- `agent/AgentListener.java`（两级粒度：`round` 是"调了一次模型"，`step` 是施工单上的一步）——**先看它，你就知道循环会报出哪些事**
+- `agent/DevelopmentAgent.java`：
+  - `stepsFor` / `generateSteps`（施工单从哪来：检查阶段给的就用；没检查就花一次调用现生成；拿不到就退化成只有一步 = 老的单步行为）
+  - `execute()` 那个 `for` + 内层 `while`：一行一行读。**只有一条路径**，单步执行是它的特例
+  - `stepInstruction`（每一步开工前给模型的"只做这一步、只改这些文件"）
+  - `StepCheckpoint`（每一步的进入点，只放内存：为什么它不落盘）
+  - `restoreStep` / `closeRun` / `fail`（**三种回滚落点**：本步进入点、运行起点、只删快照）
   - `detectNeedContext`（模型说"信息不够"就停，不动盘）
-  - `applyAndVerify`（快照 → 落盘 → 校验 → 失败回滚，**回滚只在这一处**）
-  - 三个停止条件：校验失败重试上限、同一错误连着两轮、环境问题立刻停
+  - 五个停止条件：本步校验重试上限、同一错误连着两轮、环境问题立刻停、某步重试耗尽（整轮回滚）、总轮次用尽
 - `agent/RepairFeedback.java`（失败以后回喂给模型什么）
-- `agent/AgentListener.java` + `ProgressMessages.java`（一次运行怎么把进度说给界面/命令行听）
+- `agent/ProgressMessages.java`（一次运行怎么把进度说给界面/命令行听）
 
 **读完要能回答**：
-1. "一轮"包含哪几步？什么时候结束？
-2. 编译通过会不会自动接着做下一半任务？（**不会**，成功就收工——"写完 DTO/VO/Entity 就停下"的根因）
+1. "一轮"和"一步"差在哪？没有施工单时循环长什么样？（一步；就是老行为，不需要另写一段代码）
+2. 编译通过会不会自动接着做下一半任务？（施工单上还有下一步就接着走；**没有施工单时成功就收工**——"写完 DTO/VO/Entity 就停下"的根因）
 3. 环境问题（缺依赖）为什么不能继续重试？（模型会删掉用到那个包的地方，换来一个假绿灯）
-4. 回滚发生在哪几处？（只有 `applyAndVerify` 一处；这是刻意收敛的）
+4. 回滚发生在哪几处？分别落到哪个点？（本步进入点 / 运行起点 / 只删快照——见 `restoreStep`、`closeRun`）
+5. 施工单上标了"中间态"的那一步编译没过，会发生什么？（记一笔继续下一步；但如果它是最后一步，整轮算失败）
 
 ---
 
@@ -139,19 +145,24 @@
 
 ## 第 7 步：`history` —— 事后凭据
 
-**读这些**：`history/RunRecorder.java`（把 Agent 的每个回调变成留档的一行）、`history/RunRecord.java`（字段：需求、验收、目标文件、上下文、缺失项、改动 diff、时间线）、`history/RunStore.java`（一文件一次运行 + `missingStats` 统计）。
+**读这些**：`history/RunRecorder.java`（把 Agent 的每个回调变成留档的一行；**按步攒那本小账**）、`history/RunRecord.java`（字段：需求、验收、目标文件、上下文、缺失项、改动 diff、**按步的 `steps`**、时间线）、`history/RunStore.java`（一文件一次运行 + `missingStats` 统计）。
 
-**读完要能回答**：代码已经回滚了，事后靠什么复盘"它当时到底做了什么、参考了什么"？（只有这份记录）
+**读完要能回答**：
+1. 代码已经回滚了，事后靠什么复盘"它当时到底做了什么、参考了什么"？（只有这份记录）
+2. 分步运行之后，"第 3 步当时为什么重试了两次"从哪儿看？（`RunRecord.Step` 里的 `rounds`/`state`/`changes`，加上时间线里带步号的那几行）
+3. 老记录里没有 `steps` 字段，读出来是什么？（`null`——和 `context` 一样，缺字段不是读取失败）
 
 ---
 
 ## 第 8 步：`review` —— 检查阶段（人机确认的那一道）
 
-**读这些**：`review/ReviewProtocol.java`（模型要输出的三块：SUMMARY / FLOW / MISSING）、`review/PlanParser.java`（宽容解析，但流程图必须有）、`review/PlanReview.java`（缺失项五个字段 + 严重度）、**`review/PlanAudit.java`**（机器对照：方案里提到的文件 vs 目标清单）、`review/ReviewOutcome.java`（模型那份与机器那份分开放）。
+**读这些**：`review/ReviewProtocol.java`（模型要输出的四块：SUMMARY / FLOW / MISSING / **STEPS**）、`review/PlanParser.java`（宽容解析，但流程图必须有；施工单那一块**一行都不许悄悄丢**）、`review/PlanReview.java`（缺失项五个字段 + 严重度 + 施工单）、`review/PlanStep.java`（一步长什么样）、**`review/PlanAudit.java`**（机器对照：方案里提到的文件 vs 目标清单）、**`review/StepAudit.java`**（机器对照：施工单能不能照着做）、`review/StepsProtocol.java`（没跑检查时那份"只产施工单"的轻协议）、`review/ReviewOutcome.java`（模型那份与机器那两份分开放）。
 
 **读完要能回答**：
-1. "拦人"的开关接在哪？（只接在 `PlanAudit` 的结果上；模型自评的"阻断"只显示）
+1. "拦人"的开关接在哪？（只接在机器那两份上：`PlanAudit` + `StepAudit`；模型自评的"阻断"只显示）
 2. 为什么严重度不拦人？（真模型试跑里 6 条"阻断"全都自己写了默认值）
+3. 施工单的三条硬拦是哪三条？为什么"中间态超过三分之一"只提示不拦？
+4. `StepsProtocol` 和 `ReviewProtocol` 为什么共用同一段 `STEPS_RULES`？
 
 ---
 
@@ -176,9 +187,10 @@
 6. 前端：`web/index.html` 分区读——欢迎页 → 左栏（搜索/文件树/新建/上下文）→ 主面板（模板、需求、验收、约束、运行、方案面板、日志、结果）→ 四个弹层；再看 `web/flowchart.js`（Mermaid 子集 + 自绘 SVG）；最后两个自检页（`flowchart-demo.html`、`style-demo.html`）。
 
 **读完要能回答**：
-1. 界面上的"执行不了"那一条是谁算出来的？（服务端 `RunService.review` 调 `PlanAudit`，`/api/review` 返回 `{plan, audit}`）
+1. 界面上的"执行不了"那一条是谁算出来的？（服务端 `RunService.review` 调 `PlanAudit` 与 `StepAudit`，`/api/review` 返回 `{plan, audit, stepAudit}`）
 2. 事件是怎么到界面的？（400ms 轮询，不是 WebSocket）
 3. 为什么静态文件是白名单？（不扫目录，避免路径拼出界）
+4. 分步运行时，界面靠什么把一段乱序的日志按步分组？（事件的 `step` 字段；施工单本身由 `plan` 事件一次给全）
 
 ---
 
@@ -192,7 +204,7 @@
 
 ## 第 12 步：测试怎么读（挑五个就够）
 
-- `agent/DevelopmentAgentTest.java` —— 循环的每条边界：锚点失配重试、校验失败回滚、重试耗尽、被中断、环境问题早停、同错两轮停
+- `agent/DevelopmentAgentTest.java` —— 循环的每条边界：锚点失配重试、校验失败回滚、重试耗尽、被中断、环境问题早停、同错两轮停，**外加按步循环那一批**（每步施工指令、回到本步进入点重试、某步耗尽整轮回滚、中间态不阻塞、步之间能停、总轮次用尽、施工单三种来源）
 - `patch/SearchReplaceStrategyTest.java` —— 四道不变量各自的反例
 - `verify/CompileVerifierTest.java` —— 用 `exit 0/1` 模拟构建，验"退出码怎么解释、命令从哪来"
 - `web/WebServerTest.java` —— 接口契约（状态码 + 响应体形状）+ `LocalOnly`
@@ -212,8 +224,9 @@ java -jar target\specflow.jar web --port 3081 --no-open -p .
 ## 读的时候记住这几条"护栏"（不然会误判代码在瞎写）
 
 1. **不引依赖**是硬约束：所以流程图自己画、前端没有框架。
-2. **回滚只有一处**（`applyAndVerify`）：别在别处再补回滚，那就是回滚两遍。
-3. **清单是白名单**：所有"路径越界被拒"都是这一条在起作用，不是 bug。
-4. **模型看不到项目里的其他文件**：所以"它不知道表结构"是设计，不是缺陷。
-5. **事件是轮询不是推送**：看到 400ms 的定时器别以为是临时方案。
-6. **改前端必须重新打包 + 重启服务**：浏览器测的是服务端那份 `index.html`。
+2. **回滚有三个落点，都在 `DevelopmentAgent` 里**（`restoreStep` 回本步进入点、`closeRun` 回运行起点、只删快照）：别在别处再补回滚，那就是回滚两遍。
+3. **施工单只由检查阶段产出，或缺检查时开工前现生成一次**：运行期不许临时加步（发现要加步就是报告偏差并停下）。
+4. **清单是白名单**：所有"路径越界被拒"都是这一条在起作用，不是 bug。
+5. **模型看不到项目里的其他文件**：所以"它不知道表结构"是设计，不是缺陷。
+6. **事件是轮询不是推送**：看到 400ms 的定时器别以为是临时方案。
+7. **改前端必须重新打包 + 重启服务**：浏览器测的是服务端那份 `index.html`。

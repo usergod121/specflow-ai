@@ -16,7 +16,9 @@ import com.specflow.project.ProjectConfig;
 import com.specflow.review.PlanAudit;
 import com.specflow.review.PlanReview;
 import com.specflow.review.PlanReviewer;
+import com.specflow.review.PlanStep;
 import com.specflow.review.ReviewOutcome;
+import com.specflow.review.StepAudit;
 import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.SpecValidator;
@@ -69,6 +71,15 @@ public final class RunService implements AgentListener {
      * 而真正的代价并不大：停下之前的所有改动都会被回滚。
      */
     private volatile boolean cancelRequested;
+
+    /**
+     * 当前在第几步（0 = 不属于某一步）。
+     *
+     * <p>由运行线程写、运行线程读：所有回调都发生在同一条运行线程上。
+     * 它存在的意义是让界面能把一段乱序的日志按步分组——「这一步的落盘、编译、重试」
+     * 本来散在好几条轮级事件里，界面自己猜不准该归到哪一步。
+     */
+    private int currentStep;
 
     private final ExecutorService runner = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "specflow-run");
@@ -214,7 +225,9 @@ public final class RunService implements AgentListener {
         // 为此把 ProjectIndex 塞进构造函数反而让这个类多背一个依赖。
         ProjectIndex.Entries entries = new ProjectIndex(projectRoot).entries();
         return new ReviewOutcome(plan,
-                PlanAudit.check(plan, spec.targets(), entries.files(), entries.directories()));
+                PlanAudit.check(plan, spec.targets(), entries.files(), entries.directories()),
+                // 施工单那几条不用扫项目：要动哪些文件是白纸黑字写在单子上的
+                StepAudit.check(plan.steps(), spec.targets()));
     }
 
     /** 界面与 CLI 走同一套校验：这里过不了的 spec，命令行那边同样过不了。 */
@@ -294,7 +307,7 @@ public final class RunService implements AgentListener {
             }
         } catch (RuntimeException e) {
             log.warn("运行中断", e);
-            hub.publish("error", 0, "运行中断：" + e.getMessage());
+            hub.publish("error", 0, 0, "运行中断：" + e.getMessage());
             hub.publishResult(payload("ERROR", 0, String.valueOf(e.getMessage()), List.of()));
         } finally {
             hub.finish();
@@ -309,31 +322,70 @@ public final class RunService implements AgentListener {
         return cancelRequested;
     }
 
+    /**
+     * 施工单定下来了：整份推一次。
+     *
+     * <p>界面要能一眼看出「一共几步、现在在第几步、还差什么」，所以不能一步步喂——
+     * 那样它在最后一步之前都不知道总共有几步。{@code source} 还顺带回答了
+     * 「这次和走检查的那次差在哪」这个唯一的问题。
+     */
+    @Override
+    public void stepsResolved(List<PlanStep> steps, AgentListener.StepsSource source,
+                              int probeCalls) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("source", source.name());
+        payload.put("probeCalls", probeCalls);
+        payload.put("steps", steps);
+        hub.publishPlan(ProgressMessages.stepsResolved(steps, source, probeCalls), payload);
+    }
+
+    @Override
+    public void stepStarted(PlanStep step) {
+        currentStep = step.index();
+        hub.publish("info", 0, currentStep, ProgressMessages.stepStarted(step));
+    }
+
+    @Override
+    public void stepFinished(PlanStep step, AgentListener.StepState state) {
+        hub.publish(stepLevel(state), 0, currentStep, ProgressMessages.stepFinished(step, state));
+    }
+
+    @Override
+    public void stepRestored(PlanStep step, int round, String reason) {
+        hub.publish("warn", round, currentStep, ProgressMessages.stepRestored(step, reason));
+    }
+
     @Override
     public void roundStarted(int round) {
-        hub.publish("info", round, ProgressMessages.roundStarted(round));
+        hub.publish("info", round, currentStep, ProgressMessages.roundStarted(round));
     }
 
     @Override
     public void planRejected(int round, PatchConflictException failure) {
-        hub.publish("warn", round, ProgressMessages.planRejected(failure));
+        hub.publish("warn", round, currentStep, ProgressMessages.planRejected(failure));
     }
 
     @Override
     public void filesApplied(int round, List<PatchApplier.FileChange> changes) {
-        hub.publish("info", round, ProgressMessages.filesApplied(changes));
+        hub.publish("info", round, currentStep, ProgressMessages.filesApplied(changes));
     }
 
     @Override
     public void verificationFinished(int round, List<VerificationResult> results) {
         for (VerificationResult result : results) {
-            hub.publish(ProgressMessages.levelOf(result), round, ProgressMessages.verified(result));
+            hub.publish(ProgressMessages.levelOf(result), round, currentStep,
+                    ProgressMessages.verified(result));
         }
     }
 
     @Override
     public void workspaceRestored(int round, String reason) {
-        hub.publish("warn", round, ProgressMessages.restored(reason));
+        hub.publish("warn", round, currentStep, ProgressMessages.restored(reason));
+    }
+
+    /** 中间态和失败都要看得见：它们意味着此刻磁盘上的代码是编不过的。 */
+    private static String stepLevel(AgentListener.StepState state) {
+        return state == AgentListener.StepState.SUCCESS ? "info" : "warn";
     }
 
     @Override

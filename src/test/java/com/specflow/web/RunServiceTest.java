@@ -1,11 +1,25 @@
 package com.specflow.web;
 
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.specflow.agent.AgentListener;
+import com.specflow.project.LlmConfig;
 import com.specflow.project.ProjectConfig;
+import com.specflow.review.PlanStep;
+import com.specflow.review.ReviewOutcome;
+import com.specflow.review.StepAudit;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -47,7 +61,135 @@ class RunServiceTest {
         service.shutdown();
     }
 
+    /**
+     * 步级事件是界面这批新拿到的东西，形状在这里钉住：
+     * 施工单一次给全（含来源与额外花的调用），每一步的开始/结束是一条带 {@code step} 的日志。
+     * 界面靠 {@code step} 把一段乱序的日志按步分组，也靠它做「某一步的 diff」。
+     */
+    @Test
+    @DisplayName("施工单一次推全，后面每条日志都带着它属于第几步")
+    void pushesPlanAndStepScopedEvents() {
+        RunService service = service();
+        PlanStep first = new PlanStep(1, "先加接口", List.of("Foo.java"), "能编译", true);
+        PlanStep second = new PlanStep(2, "接上实现", List.of("Bar.java"), "能编译", false);
+
+        service.stepsResolved(List.of(first, second), AgentListener.StepsSource.GENERATED, 1);
+        service.stepStarted(first);
+        service.roundStarted(1);
+        service.stepFinished(first, AgentListener.StepState.INTERMEDIATE);
+        service.stepStarted(second);
+        service.stepFinished(second, AgentListener.StepState.SUCCESS);
+
+        List<RunEvent> events = service.hub().view(0).events();
+        assertThat(events).hasSize(6);
+
+        RunEvent plan = events.get(0);
+        assertThat(plan.type()).isEqualTo(RunEvent.TYPE_PLAN);
+        assertThat(plan.step()).isZero();
+        assertThat(plan.text()).contains("现生成的施工单").contains("共 2 步").contains("1 次模型调用");
+        assertThat(plan.payload()).isInstanceOf(Map.class);
+        Map<?, ?> payload = (Map<?, ?>) plan.payload();
+        assertThat(payload.get("source")).isEqualTo("GENERATED");
+        assertThat(payload.get("probeCalls")).isEqualTo(1);
+        assertThat(payload.get("steps")).isEqualTo(List.of(first, second));
+
+        assertThat(events).filteredOn(event -> event.type().equals(RunEvent.TYPE_LOG))
+                .extracting(RunEvent::step).containsExactly(1, 1, 1, 2, 2);
+        assertThat(events.get(1).text()).as("第 1 步的日志挂在第 1 步上").contains("第 1 步").contains("先加接口");
+        assertThat(events.get(2).text()).contains("第 1 轮");
+        assertThat(events.get(3).level()).as("中间态要显眼：此刻磁盘上的代码是坏的").isEqualTo("warn");
+        assertThat(events.get(5).level()).isEqualTo("info");
+
+        service.shutdown();
+    }
+
     private RunService service() {
         return new RunService(root, ProjectConfig.DEFAULT, root.resolve(".specflow/templates"));
+    }
+
+    /**
+     * 检查阶段那条链——模型响应 → 解析 → 两块机器校验 → {@link ReviewOutcome}。
+     *
+     * <p>起一个假模型服务把整条链走通，而不是只单测 {@link StepAudit}：
+     * 光测那一层的话，「核了但结果没接进返回体」这种断线照样是绿的。
+     */
+    @Test
+    @DisplayName("检查的返回体里带着施工单和它的机器校验结果")
+    void reviewReturnsPlanAndStepAudit() throws Exception {
+        String answer = """
+                <<<<<<< SUMMARY
+                分三步做。
+                >>>>>>> SUMMARY
+
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+
+                <<<<<<< STEPS
+                1 | 先改一个清单外的类 | src/main/java/demo/Nope.java | 能编译 | 自洽
+                2 | 再把 a 改成 2 | src/main/java/demo/Foo.java | 能编译 | 自洽
+                3 | 最后收尾 | src/main/java/demo/Foo.java | 能编译 | 中间态
+                >>>>>>> STEPS
+                """;
+        try (StubModel model = StubModel.start(answer)) {
+            Files.createDirectories(root.resolve(".specflow"));
+            Files.writeString(root.resolve(".specflow").resolve("local.env"),
+                    "SPECFLOW_TEST_KEY=sk-test\n");
+            ProjectConfig project = new ProjectConfig(null,
+                    new LlmConfig(model.baseUrl(), "stub", "SPECFLOW_TEST_KEY", 5, 0.0, 0),
+                    null);
+            RunService service = new RunService(root, project, root.resolve(".specflow/templates"));
+
+            ReviewOutcome outcome = service.review(RunRequest.of(null, "加一个接口", null, null, null,
+                    List.of("src/main/java/demo/Foo.java"), null, null, null, null, null, null));
+            service.shutdown();
+
+            assertThat(outcome.plan().steps()).as("施工单解析出来了").hasSize(3);
+            assertThat(outcome.plan().steps().get(1).goal()).isEqualTo("再把 a 改成 2");
+            // 两条硬拦：清单外的文件、最后一步标中间态
+            assertThat(outcome.stepAudit().blocking()).isTrue();
+            assertThat(outcome.stepAudit().findings()).hasSize(2);
+            assertThat(outcome.stepAudit().findings()).extracting(StepAudit.Finding::step)
+                    .containsExactlyInAnyOrder(1, 3);
+        }
+    }
+
+    /** 一个只会背台词的本机「模型服务」。 */
+    private static final class StubModel implements AutoCloseable {
+
+        private final HttpServer server;
+
+        private StubModel(HttpServer server) {
+            this.server = server;
+        }
+
+        static StubModel start(String answer) throws IOException {
+            HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            ObjectNode message = JsonNodeFactory.instance.objectNode().put("content", answer);
+            ObjectNode choice = JsonNodeFactory.instance.objectNode().set("message", message);
+            String body = JsonNodeFactory.instance.objectNode()
+                    .set("choices", JsonNodeFactory.instance.arrayNode().add(choice))
+                    .toString();
+            server.createContext("/chat/completions", exchange -> {
+                exchange.getRequestBody().readAllBytes();
+                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+                exchange.close();
+            });
+            server.start();
+            return new StubModel(server);
+        }
+
+        String baseUrl() {
+            return "http://127.0.0.1:" + server.getAddress().getPort();
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+        }
     }
 }

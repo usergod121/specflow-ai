@@ -7,6 +7,7 @@ import com.specflow.exception.PatchConflictException;
 import com.specflow.exception.SpecflowException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanReview;
+import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
 import com.specflow.spec.Spec;
 import com.specflow.verify.VerificationResult;
@@ -70,7 +71,8 @@ class RunStoreTest {
     /** 直接写记录，不经过 {@code RunRecorder}：它的 id 是毫秒时间戳，同一个测试里连写几条会撞名。 */
     private static RunRecord record(String id, String status, String detail) {
         return new RunRecord(id, "2026-01-01T00:00", status, null, "改点东西", List.of(),
-                List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of());
+                List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of(),
+                null, List.of());
     }
 
     @Test
@@ -368,6 +370,137 @@ class RunStoreTest {
         recorder.finished(AgentResult.failed(1, List.of(), List.of(), "结束"));
 
         assertThat(delegate.events).containsExactly("round", "rejected", "verified", "restored", "finished");
+    }
+
+    // ---------- 按步留档 ----------
+
+    @Test
+    @DisplayName("按步记：每步的目标、状态、用了几轮、改了哪些文件都写进记录里")
+    void recordsSteps() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+
+        recorder.stepsResolved(List.of(step(1, "先加接口", true), step(2, "接上实现", false)),
+                AgentListener.StepsSource.GENERATED, 1);
+        recorder.stepStarted(step(1, "先加接口", true));
+        recorder.roundStarted(1);
+        recorder.filesApplied(1, List.of(change("Foo.java", "+interface")));
+        recorder.verificationFinished(1, List.of(VerificationResult.failed("编译校验", "mvn", "编不过")));
+        recorder.stepFinished(step(1, "先加接口", true), AgentListener.StepState.INTERMEDIATE);
+        recorder.stepStarted(step(2, "接上实现", false));
+        recorder.roundStarted(2);
+        recorder.filesApplied(2, List.of(change("Bar.java", "+impl")));
+        recorder.verificationFinished(2, List.of(VerificationResult.passed("编译校验", "mvn", "")));
+        recorder.stepFinished(step(2, "接上实现", false), AgentListener.StepState.SUCCESS);
+        recorder.finished(AgentResult.success(2, List.of(), List.of()));
+
+        RunRecord record = store.load(store.list().get(0).id());
+
+        assertThat(record.stepsSource()).isEqualTo("GENERATED");
+        assertThat(record.steps()).hasSize(2);
+        assertThat(record.steps().get(0)).satisfies(first -> {
+            assertThat(first.index()).isEqualTo(1);
+            assertThat(first.goal()).isEqualTo("先加接口");
+            assertThat(first.intermediate()).isTrue();
+            assertThat(first.state()).isEqualTo("INTERMEDIATE");
+            assertThat(first.rounds()).isEqualTo(1);
+            assertThat(first.changes()).singleElement()
+                    .satisfies(change -> assertThat(change.path()).isEqualTo("Foo.java"));
+        });
+        assertThat(record.steps().get(1)).satisfies(second -> {
+            assertThat(second.state()).isEqualTo("SUCCESS");
+            assertThat(second.rounds()).isEqualTo(1);
+            assertThat(second.changes()).singleElement()
+                    .satisfies(change -> assertThat(change.path()).isEqualTo("Bar.java"));
+        });
+        // 生成施工单多花的那一次调用要留在时间线上：它不算轮次，但一样是钱
+        assertThat(record.timeline()).extracting(RunRecord.Line::text)
+                .anySatisfy(text -> assertThat(text).contains("多花了 1 次模型调用"));
+    }
+
+    @Test
+    @DisplayName("本步回滚之后，那一步的改动不再算在它名下")
+    void forgetsChangesOfARolledBackRound() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+
+        recorder.stepStarted(step(1, "第一步", false));
+        recorder.roundStarted(1);
+        recorder.filesApplied(1, List.of(change("Foo.java", "+废掉的版本")));
+        recorder.verificationFinished(1, List.of(VerificationResult.failed("编译校验", "mvn", "错")));
+        recorder.stepRestored(step(1, "第一步", false), 1, "校验未通过");
+        recorder.roundStarted(2);
+        recorder.filesApplied(2, List.of(change("Foo.java", "+最终版本")));
+        recorder.verificationFinished(2, List.of(VerificationResult.passed("编译校验", "mvn", "")));
+        recorder.stepFinished(step(1, "第一步", false), AgentListener.StepState.SUCCESS);
+        recorder.finished(AgentResult.success(2, List.of(), List.of()));
+
+        RunRecord record = store.load(store.list().get(0).id());
+
+        assertThat(record.steps()).singleElement().satisfies(only -> {
+            assertThat(only.rounds()).as("两步各一轮").isEqualTo(2);
+            assertThat(only.changes()).singleElement()
+                    .satisfies(change -> assertThat(change.diff()).contains("最终版本"));
+        });
+    }
+
+    /**
+     * 加 {@code steps} 字段之前写下的记录里没有这一项。和 {@code context} 同样的道理：
+     * 读不出来就是<b>静默跳过</b>，用户只会看到历史莫名少了几条。
+     */
+    @Test
+    @DisplayName("没有 steps 字段的老记录仍然读得出来")
+    void readsLegacyRecordWithoutSteps() throws IOException {
+        Path dir = root.resolve(RunStore.DEFAULT_DIR);
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("20260103-000000-000.json"), """
+                {
+                  "id" : "20260103-000000-000",
+                  "startedAt" : "2026-01-03 00:00:00",
+                  "status" : "SUCCESS",
+                  "template" : "implement",
+                  "prompt" : "老需求",
+                  "targets" : [ "Foo.java" ],
+                  "attempts" : 2,
+                  "detail" : "结束"
+                }
+                """);
+        RunStore store = new RunStore(dir);
+
+        assertThat(store.list()).as("老记录不能消失").hasSize(1);
+        RunRecord record = store.load("20260103-000000-000");
+        assertThat(record.attempts()).isEqualTo(2);
+        // 缺字段就是一个 null，不是读取失败
+        assertThat(record.steps()).isNull();
+        assertThat(record.stepsSource()).isNull();
+    }
+
+    @Test
+    @DisplayName("单步执行（没有施工单）时按步记录是空列表，不是 null")
+    void writesEmptyStepsForSingleStepRuns() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+
+        recorder.stepsResolved(List.of(step(1, "按需求把这件事一次做完", false)),
+                AgentListener.StepsSource.SINGLE, 2);
+        recorder.roundStarted(1);
+        recorder.finished(AgentResult.success(1, List.of(), List.of()));
+
+        RunRecord record = store.load(store.list().get(0).id());
+
+        assertThat(record.steps()).as("新记录里这一项总是在的，老记录才没有").isEmpty();
+        assertThat(record.stepsSource()).isEqualTo("SINGLE");
+    }
+
+    private static PlanStep step(int index, String goal, boolean intermediate) {
+        return new PlanStep(index, goal, List.of("Foo.java"), "能编译", intermediate);
+    }
+
+    private static PatchApplier.FileChange change(String path, String diff) {
+        return new PatchApplier.FileChange(Path.of(path), path, false, 10, diff);
     }
 
     private void record(RunStore store, String detail) {

@@ -9,7 +9,11 @@ import java.util.List;
  * 一次开发任务的结果。
  *
  * @param status       终态
- * @param attempts     模型调用次数（含最后一次）
+ * @param attempts     <b>开发轮次</b>：装配一次上下文、调用一次模型、改一次代码那种轮。
+ *                     开工前为拿施工单额外花的那几次调用<b>不算</b>——它们由
+ *                     {@code AgentListener.stepsResolved} 的 {@code probeCalls} 单独报。
+ *                     这样这里的数字和界面上「第 N 轮 / 共 N 轮」永远是同一个口径，
+ *                     也不会超过 {@code verify.max-rounds}
  * @param changes      最终落在磁盘上的改动；失败时为已回滚的改动，仅供报告
  * @param verifications 各校验器的结果，按执行顺序排列
  * @param detail       面向人的说明：成功时是摘要，失败时是原因

@@ -102,7 +102,7 @@ class SpecRoundTripTest {
     @Test
     @DisplayName("写出来的 YAML 用的是人写的那种字段名，不是 Java 的驼峰名")
     void writesReadableFieldNames() {
-        String yaml = YamlRoundTrip.write(new VerifySpec(true, "mvn compile", 3),
+        String yaml = YamlRoundTrip.write(new VerifySpec(true, "mvn compile", 3, 9),
                 new TraceSpec("REQ-1"));
 
         assertThat(yaml).contains("compile-command").contains("max-retry")

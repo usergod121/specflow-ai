@@ -30,6 +30,10 @@ import java.util.List;
  * @param detail    面向人的结论
  * @param missing   检查阶段报出的缺失依赖；没跑过检查时为空
  * @param changes   落盘过的改动（失败时这些改动已回滚，但差异本身留在这里）
+ * @param steps     按施工单的步记下的过程；单步执行（没有施工单）时为空。
+ *                  老记录里没有这一项，读出来是 {@code null}
+ * @param stepsSource 施工单是从哪来的（{@code APPROVED} / {@code GENERATED} / {@code SINGLE}）；
+ *                    没有施工单这个概念的记录里是 {@code null}
  * @param timeline  逐条的过程记录
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -47,6 +51,8 @@ public record RunRecord(
         String detail,
         List<PlanReview.MissingItem> missing,
         List<Change> changes,
+        List<Step> steps,
+        String stepsSource,
         List<Line> timeline
 ) {
 
@@ -56,6 +62,24 @@ public record RunRecord(
      * @param diff 行级差异，在回滚<b>之前</b>就算好了——回滚之后文件内容还原，差异再也算不出来
      */
     public record Change(String path, boolean created, int bytes, String diff) {
+    }
+
+    /**
+     * 施工单上的一步，跑完之后的样子。
+     *
+     * <p>为什么要按步存而不是只存一份总的 changes：一次分步运行的改动是<b>按步累积</b>的，
+     * 事后想回答「第 3 步当时动了什么、为什么重试了两次」，只有总账是答不出来的。
+     *
+     * @param index        第几步，从 1 开始
+     * @param goal         这一步做什么
+     * @param intermediate 这一步做完是否允许整项目编不过
+     * @param state        终态：{@code SUCCESS} / {@code INTERMEDIATE} / {@code FAILED}，
+     *                     与 {@code AgentListener.StepState} 同名
+     * @param rounds       这一步实际调了几次模型（含失败的那些）
+     * @param changes      这一步落盘的改动；本步失败已回滚时为空
+     */
+    public record Step(int index, String goal, boolean intermediate, String state,
+                       int rounds, List<Change> changes) {
     }
 
     /**
