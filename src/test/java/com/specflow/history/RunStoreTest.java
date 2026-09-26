@@ -40,6 +40,40 @@ class RunStoreTest {
                     PlanReview.MissingItem.Severity.BLOCKING, "要写 SQL", "查询会错", "粘贴建表语句")));
 
     @Test
+    @DisplayName("挂起：最新那条是「等补充信息」才算挂着，接着跑出来的新记录会把它顶掉")
+    void suspendedIsOnlyTheNewestRecord() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        store.save(record("20260101-000000-001", "NEEDS_CONTEXT", "NEED_CONTEXT: 我要 OrderMapper.java"));
+
+        assertThat(store.suspended()).isPresent();
+        assertThat(store.suspended().orElseThrow().detail()).contains("OrderMapper");
+        assertThat(store.repeatedNeedsContext()).isEqualTo(1);
+
+        store.save(record("20260101-000000-002", "NEEDS_CONTEXT", "NEED_CONTEXT: 还是缺"));
+        assertThat(store.repeatedNeedsContext()).isEqualTo(2);
+
+        // 接着跑成功之后，挂在等人就是过去式了——否则界面会一直劝你接着跑
+        store.save(record("20260101-000000-003", "SUCCESS", "改动已落盘，校验通过"));
+        assertThat(store.suspended()).isEmpty();
+        assertThat(store.repeatedNeedsContext()).isZero();
+    }
+
+    @Test
+    @DisplayName("没有记录时：没有挂起、连着说缺的次数是 0")
+    void suspendedIsEmptyWithoutRecords() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+
+        assertThat(store.suspended()).isEmpty();
+        assertThat(store.repeatedNeedsContext()).isZero();
+    }
+
+    /** 直接写记录，不经过 {@code RunRecorder}：它的 id 是毫秒时间戳，同一个测试里连写几条会撞名。 */
+    private static RunRecord record(String id, String status, String detail) {
+        return new RunRecord(id, "2026-01-01T00:00", status, null, "改点东西", List.of(),
+                List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of());
+    }
+
+    @Test
     @DisplayName("失败的一次运行同样留下完整过程：改了哪些文件、为什么停、缺什么")
     void keepsRecordForFailedRun() {
         RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));

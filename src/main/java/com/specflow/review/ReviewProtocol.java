@@ -98,10 +98,13 @@ public final class ReviewProtocol {
             5. 你写完方案之后，机器会再核一遍：方案里提到、而目标文件清单里没有的文件，
                会被当成「这套方案执行不了」提示给用户。所以别把清单外的新文件当成方案的正常一步；
                真需要，就在 MISSING 里写清「需要把 X 加进目标文件」。
+            6. **动手之前先把自己实现这个需求所需要的输入列全**：要参照哪个文件、要确认哪个设计选择，
+               缺什么就写进 MISSING 块。**别留到开发阶段再说**——那时用户已经付过两次调用的钱，
+               而开发阶段一喊缺，这一轮就白跑了。信息真够的话，MISSING 就只写一行：%s
 
             注意 SUMMARY / MISSING 两块在内容为空时可以省略，FLOW 块必须给出。
             """.formatted(SUMMARY_MARKER, END_SUFFIX,
             FLOW_MARKER, END_SUFFIX,
             MISSING_MARKER, END_SUFFIX,
-            NOTHING_MISSING);
+            NOTHING_MISSING, NOTHING_MISSING);
 }

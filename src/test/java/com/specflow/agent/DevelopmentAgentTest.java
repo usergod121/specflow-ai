@@ -455,6 +455,35 @@ class DevelopmentAgentTest {
         assertThat(snapshotNames()).isEmpty();
     }
 
+    @Test
+    @DisplayName("续跑：不重发上下文，只补「它说过什么」和「接下来怎么办」")
+    void resumesWithoutResendingContext() {
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()))
+                .resume(TestSpecs.spec(List.of("Foo.java")), null, "NEED_CONTEXT: 我需要 Bar.java", false);
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        List<ChatMessage> sent = llm.calls().get(0);
+        assertThat(sent).as("system + user + 它说过的话 + 接着跑这一句，就这四条").hasSize(4);
+        assertThat(sent.get(2).role()).isEqualTo(ChatMessage.ASSISTANT);
+        assertThat(sent.get(2).content()).contains("我需要 Bar.java");
+        assertThat(sent.get(3).content()).contains("最多 3 行");
+    }
+
+    @Test
+    @DisplayName("「直接继续」的话更强硬：用现有信息做，不许再要东西")
+    void forceResumeTellsItToStopAsking() {
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
+
+        agent(llm, new ScriptedVerifier(passed()))
+                .resume(TestSpecs.spec(List.of("Foo.java")), null, "NEED_CONTEXT: 缺东西", true);
+
+        assertThat(llm.calls().get(0).get(3).content())
+                .contains("不要再要求补充信息")
+                .doesNotContain("最多 3 行");
+    }
+
     private List<String> snapshotNames() throws IOException {
         Path directory = root.resolve(SnapshotConfig.DEFAULT_DIR);
         if (!Files.isDirectory(directory)) {

@@ -167,6 +167,17 @@ class SpecflowCliTest {
         assertThat(undisposedSnapshots()).isEmpty();
     }
 
+    @Test
+    @DisplayName("没有挂起的运行时 continue 返回 0，并说清没有东西可接着跑")
+    void continueWithoutSuspendedRunIsFine() throws Exception {
+        writeSpec("""
+                prompt: 给 Foo 加一行日志
+                targets: [Foo.java]
+                """);
+
+        assertThat(SpecflowCli.execute("continue", "-p", project)).isZero();
+    }
+
     /** 造一份「校验通过、等人处置」的快照，模拟上一次运行留下的东西。 */
     private void markPendingSnapshot(Path file) {
         WorkspaceSnapshot.capture(new SafePathResolver(root),

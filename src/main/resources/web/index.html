@@ -614,6 +614,17 @@
   .pending-body:empty { display: none; }
   /* 每个文件复用运行结果区那套 details.change / .diff：同一个东西在两处不该长得不一样 */
   .pending .change { background: var(--panel); }
+  /* 挂起面板和待处置面板共用上面这套结构，含义却不同：一个是「磁盘上有改动等你表态」，
+     一个是「模型停下等你补料」。换一套底色，别让人以为磁盘上又多了东西。 */
+  .pending.suspended { background: var(--panel); border-color: var(--line-strong); }
+  .pending.suspended .pending-summary, .pending.suspended .pending-why { color: var(--muted); }
+  /* 模型那句话按它自己的分行显示：它写「需要 / 为什么」是为了让人看懂，折成一行反而难读 */
+  .pending-need {
+    white-space: pre-wrap;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text);
+  }
 
   /* ---------- 实现方案 ---------- */
   #plan:empty { display: none; }
@@ -1087,6 +1098,9 @@
 
     <!-- 待处置的改动。它挡着的正是「运行」，所以摆在运行按钮正上方。 -->
     <div id="pending"></div>
+    <!-- 挂起的运行：模型说信息不足，停在这儿等补料。它不是闸门（不挡运行），
+         只是一张「它在等什么」的说明。 -->
+    <div id="suspended"></div>
 
     <div class="actions">
       <button id="review" class="ghost">先检查</button>
@@ -1219,6 +1233,8 @@ const state = {
   runId: '',
   pending: null,        // 最近一次拉到的待处置改动；null = 还没拉到过
   pendingOpen: null,    // 面板收起/展开；null = 按改动多少自动决定
+  suspended: null,      // 最近一次拉到的挂起运行（模型说信息不足）；null = 还没拉到过
+  suspendedOpen: null,  // 挂起面板收起/展开；null = 默认展开
 };
 const $ = id => document.getElementById(id);
 
@@ -1625,6 +1641,8 @@ async function startWorkspace() {
   // 进项目时先看一眼磁盘上有没有上次留下的、还没处置的改动：有的话一进来就该按住「运行」，
   // 而不是等用户填完需求、点下去，才发现这一次根本开不出来。
   refreshPending();
+  // 也看一眼有没有「上次它说缺料就停了」的运行：那条要接着跑，而不是从头再花钱。
+  refreshSuspended();
 }
 
 /**
@@ -2716,7 +2734,18 @@ async function run() {
     return;
   }
   state.forced = false;
+  await postRun('/api/run');
+}
 
+/**
+ * 起一次运行：普通运行和「接着上次跑」共用这一条路。
+ *
+ * <p>合并的理由很实际：两条路各写一遍的话，会出现「普通运行会拦执行不了的方案、
+ * 接着跑却直接冲过去」这种分叉——而用户看不出差别在哪。
+ *
+ * @return 请求发出去并开始轮询了返回 true
+ */
+async function postRun(path) {
   state.cursor = 0;
   state.runId = '';
   setRunning(true);
@@ -2724,16 +2753,16 @@ async function run() {
   let response;
   let body;
   try {
-    response = await fetch('/api/run', {
+    response = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload()),
     });
-    body = await response.json();
+    body = await response.json().catch(() => ({}));
   } catch (e) {
     notice('error', '无法连接后端：' + e.message);
     setRunning(false);
-    return;
+    return false;
   }
 
   if (!response.ok) {
@@ -2743,10 +2772,12 @@ async function run() {
     // 409 里最要紧的一种就是「上一次的改动还没处置」。这时候把面板拉出来，
     // 用户才能就地处置；只给一句话的话，他还得自己去找那两个按钮在哪。
     refreshPending();
-    return;
+    refreshSuspended();
+    return false;
   }
   state.runId = body.runId;
   poll();
+  return true;
 }
 
 async function poll() {
@@ -2772,9 +2803,10 @@ async function poll() {
     return;
   }
   setRunning(false);
-  // 一次运行刚结束，正是「磁盘上有没有留下要处置的改动」翻牌的时刻。
-  // 这里不拉一次，面板就要等到用户手动刷新页面才出现。
+  // 一次运行刚结束，正是两个面板翻牌的时刻：磁盘上有没有留下要处置的改动、
+  // 模型是不是又停下来说缺料。这里不拉一次，用户要手动刷新页面才看得到。
   refreshPending();
+  refreshSuspended();
 }
 
 function appendLog(event) {
@@ -2980,6 +3012,14 @@ function renderPlan() {
     ok.className = 'ok-plan';
     ok.textContent = '模型认为信息已经足够，可以直接开发。';
     body.appendChild(ok);
+
+    // 小字：检查与开发是两次独立调用、两段协议，谁也不能承诺第二次不会变卦。
+    // 把它写出来，用户才知道「检查过了」不等于「运行时不会再停下来问」。
+    const caveat = document.createElement('div');
+    caveat.className = 'hint';
+    caveat.textContent = '检查通过不保证运行时不再缺上下文。它的作用是先把方案定下来、'
+        + '运行时按图施工；真在运行时缺料，它会停下来等你补，或者你让它直接继续。';
+    body.appendChild(caveat);
   }
 
   box.append(head, body);
@@ -3559,7 +3599,7 @@ const STATUS_LABEL = {
   FAILED: ['bad', '失败'],
   NEEDS_ENVIRONMENT: ['bad', '待你处理环境'],
   CANCELLED: ['mid', '中断'],
-  NEEDS_CONTEXT: ['bad', '缺依赖'],
+  NEEDS_CONTEXT: ['mid', '等补充信息：模型停下来问你缺什么，磁盘未动'],
 };
 
 async function openHistory() {
@@ -3843,30 +3883,42 @@ async function refreshPending() {
 function renderPending() {
   const box = $('pending');
   box.innerHTML = pendingPanelHtml(state.pending, state.pendingOpen);
+  wirePanel(box, open => { state.pendingOpen = open; }, act => resolvePending(act));
+}
 
+/**
+ * 面板的收起/展开与按钮接线。
+ *
+ * <p>两套面板（待处置 / 挂起）结构一样，接线只写一份：各写一遍的话，
+ * 迟早一边跟得上新写法、另一边停在旧的，表现是「有一块面板点了没反应」。
+ *
+ * <p>收起时只翻这一块、不整块重画：重画会把键盘焦点从刚按下的按钮上抖掉，
+ * 键盘用户按一下「收起」就不知道焦点跑哪去了。
+ *
+ * @param onToggle 记住展开状态的落点（两套面板各存各的）
+ * @param onAct    按钮动作的分发（两套面板各接各的接口）
+ */
+function wirePanel(box, onToggle, onAct) {
   const panel = box.querySelector('.pending');
   if (!panel) {
     updateRunButton();
     return;
   }
-
   const toggle = panel.querySelector('.pending-toggle');
   const body = panel.querySelector('.pending-body');
   body.hidden = panel.dataset.open !== 'true';
   toggle.onclick = () => {
-    // 只翻这一块，不整块重画：重画会把键盘焦点从刚按下的按钮上抖掉，
-    // 键盘用户按一下「收起」就不知道焦点跑哪去了。
     const open = panel.dataset.open !== 'true';
     panel.dataset.open = open ? 'true' : 'false';
     body.hidden = !open;
     toggle.textContent = open ? '收起' : '展开';
     toggle.setAttribute('aria-expanded', String(open));
-    state.pendingOpen = open;
+    onToggle(open);
   };
 
-  // 两个按钮由面板自己接：面板是重画出来的，用 data-act 认动作比逐个存元素引用稳
+  // 按钮由面板自己接：面板是重画出来的，用 data-act 认动作比逐个存元素引用稳
   for (const button of panel.querySelectorAll('[data-act]')) {
-    button.onclick = () => resolvePending(button.dataset.act);
+    button.onclick = () => onAct(button.dataset.act);
   }
   updateRunButton();
 }
@@ -3903,6 +3955,98 @@ function updateRunButton() {
   const blocked = !!(state.pending && state.pending.present);
   $('run').disabled = state.running || blocked;
   $('run').title = blocked ? '先处置上面的改动：保留或撤回之后才能再运行' : '';
+}
+
+// ---------- 挂起的运行 ----------
+// 模型说「信息不足」时会停下来等人补料。它不写盘，所以这块面板不是闸门，而是一张说明：
+// 它在等什么、补完怎么接着跑。接着跑不会重发上下文——那份钱已经付过了。
+
+/**
+ * 挂起面板的 HTML。纯函数，理由和待处置面板一样：它的两条路（补过料 / 直接放行）
+ * 要能在 src/test/js/web.test.js 里喂输入直接看一眼。
+ *
+ * @param open 展开与否；不传时默认展开——它那句话正是用户要看的东西
+ */
+function suspendedPanelHtml(data, open) {
+  if (!data || !data.present) {
+    return '';
+  }
+  const expanded = typeof open === 'boolean' ? open : true;
+  // 连着第二次说缺就该劝一句了：再补一次大概率还是缺，问题多半在需求本身。
+  const repeat = data.repeated >= 2
+      ? '<div class="pending-alert">它已经连着 ' + data.repeated + ' 次说信息不足了：'
+          + '再补一次大概率还是缺，可以考虑改需求或者换个做法。</div>'
+      : '';
+  return '<section class="pending suspended" data-open="' + expanded + '">'
+      + '<div class="pending-head">'
+      + '<b>它在等信息</b>'
+      + '<span class="pending-summary">第 ' + (data.attempts || 0) + ' 轮停下，磁盘一个字节都没动</span>'
+      + '<button type="button" class="ghost small pending-toggle" aria-expanded="' + expanded + '">'
+      + (expanded ? '收起' : '展开') + '</button>'
+      + '</div>'
+      + '<div class="pending-why">补上它要的文件（目标文件或上下文依赖），然后点「补充后继续」——'
+      + '接着跑不会把上下文重发一遍。不想补也行，直接让它用现有信息试。</div>'
+      + repeat
+      + '<div class="pending-actions">'
+      + '<button type="button" data-act="resume">补充后继续</button>'
+      + '<button type="button" class="ghost" data-act="force">直接继续运行</button>'
+      + '<span class="hint">直接继续不保证成功：它可能做不出来，但不会再问你第二次。</span>'
+      + '</div>'
+      + '<div class="pending-body"' + (expanded ? '' : ' hidden') + '>'
+      + '<div class="pending-need">' + escapeHtml(data.need || '（它没写清要什么）') + '</div>'
+      + '</div>'
+      + '</section>';
+}
+
+/** 两个动作各打哪个接口：补过料是普通续跑，「直接继续」多带一个 force。 */
+function suspendedActionPath(act) {
+  return act === 'force' ? '/api/continue?force=1' : '/api/continue';
+}
+
+/**
+ * 拉一次挂起的运行并重画面板。
+ *
+ * <p>和待处置面板一样，三处要拉：进项目时、每次运行结束时、处置完之后。
+ */
+async function refreshSuspended() {
+  let data;
+  try {
+    data = await getJson('/api/suspended');
+  } catch (e) {
+    notice('error', '读取挂起的运行失败：' + e.message);
+    return;
+  }
+  if (!state.suspended || state.suspended.runId !== data.runId) {
+    state.suspendedOpen = null;
+  }
+  state.suspended = data;
+  renderSuspended();
+}
+
+function renderSuspended() {
+  const box = $('suspended');
+  box.innerHTML = suspendedPanelHtml(state.suspended, state.suspendedOpen);
+  wirePanel(box, open => { state.suspendedOpen = open; }, act => resolveSuspended(act));
+}
+
+/**
+ * 接着那次挂起的运行跑：把表单当前的内容（含你刚补的上下文）发过去。
+ *
+ * <p>失败不改界面：挂着的那次运行还在，面板先消失就等于骗人「已经接着跑了」。
+ */
+async function resolveSuspended(act) {
+  clearNotice();
+  const missing = validateForm();
+  if (missing.length) {
+    notice('warn', '还差这些信息：\n- ' + missing.join('\n- '));
+    return;
+  }
+  const started = await postRun(suspendedActionPath(act));
+  if (started) {
+    notice('ok', act === 'force'
+        ? '已让它用现有信息继续；它可能做不出来，但不会再要东西。'
+        : '已接着上一次继续——不会把上下文重发一遍。');
+  }
 }
 
 // ---------- 结果 ----------

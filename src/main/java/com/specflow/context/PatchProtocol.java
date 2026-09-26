@@ -57,9 +57,26 @@ public final class PatchProtocol {
             <完整文件内容>
             %s
 
-            若你判断现有信息不足以完成修改，不要猜测，只输出下面这一行：
+            若你判断现有信息不足以完成修改，不要猜测，只输出下面这几行（**整段最多 3 行**，
+            超了引擎就不认，会被当成普通回答处理）：
 
-            NEED_CONTEXT: <你需要看到的文件路径或需要澄清的问题>
+            NEED_CONTEXT: <你要做什么、卡在哪>
+            需要: <尽量具体：要哪个文件就给路径，要拍板就给一个二选一的问题>
+            为什么: <缺了它你只能靠猜，猜错会怎样>
+
+            要求：
+            - 一次说清，不要来回问。含糊的「信息不足」等于没说——用户看不懂该给你什么。
+            - 需要的文件请写出你推测的路径，用户会核对它到底在不在。
+            - 目标文件清单之外的文件你改不了；真需要动，就写清「需要把 <路径> 加进目标文件」。
+            - 不要因为「想更保险」就要东西：能在现有信息下做出来的部分，就做出来。
+
+            反例（这样写等于没说）：
+            NEED_CONTEXT: 上下文不足
+
+            正例：
+            NEED_CONTEXT: 我要给 OrderService 加一个按 id 查询
+            需要: src/main/java/com/demo/mapper/OrderMapper.java 的现有写法（要照它的风格）
+            为什么: 不知道项目里 SQL 走注解还是 XML，猜错整个包都要返工
             """.formatted(SEARCH_MARKER, DIVIDER, REPLACE_MARKER,
             SEARCH_MARKER, DIVIDER, REPLACE_MARKER);
 

@@ -445,5 +445,49 @@ check(nasty.includes('src/&lt;b&gt;a&lt;/b&gt;.java') && !nasty.includes('<b>a</
     '路径里的尖括号被转义（路径是模型写出来的）');
 check(nasty.includes('&lt;img src=x onerror=1&gt;'), 'diff 正文里的尖括号也被转义');
 
+// ---------- 挂起的运行 ----------
+// 这块面板最要紧的一条：接着跑**不能**把上下文重发一遍（那份钱用户已经付过了），
+// 所以两个动作必须打到两个不同的请求上；而「直接继续」还要带上 force，
+// 否则引擎会以为用户补过料，回一句软话，于是它可能又停下来要东西。
+const { suspendedPanelHtml, suspendedActionPath } = load('index.html',
+    ['suspendedPanelHtml', 'suspendedActionPath'],
+    // 从待处置那段开始切：escapeHtml / diffLineClass 都在那儿，挂起面板要用它们
+    '// ---------- 待处置的改动 ----------', 'async function refreshSuspended');
+
+console.log('挂起动作打到哪个接口：');
+check(suspendedActionPath('resume') === '/api/continue', '「补充后继续」打 /api/continue');
+check(suspendedActionPath('force') === '/api/continue?force=1', '「直接继续」多带一个 force=1');
+check(suspendedActionPath('resume') !== suspendedActionPath('force'),
+    '两个动作不落同一个请求上（落同一个就是「点了直接继续，却当成补过料」）');
+
+console.log('挂起面板：');
+check(suspendedPanelHtml({ present: false, runId: null, need: '', attempts: 0, repeated: 0 }) === '',
+    '没有挂起时一个字符都不渲染');
+
+const waiting = suspendedPanelHtml({
+  present: true, runId: 'r1', attempts: 2, repeated: 1,
+  need: 'NEED_CONTEXT: 我要给 OrderService 加查询\n需要: OrderMapper.java 的现有写法\n为什么: 猜错整包返工',
+});
+check(waiting.includes('它在等信息'), '标题说清它在等什么');
+check(waiting.includes('NEED_CONTEXT: 我要给 OrderService 加查询'), '它那句话原样摆出来（用户要看的正是这个）');
+check(waiting.includes('<div class="pending-need">'), '那句话按它自己的分行显示');
+check(waiting.includes('第 2 轮停下'), '说清是第几轮停下的');
+check(waiting.includes('data-act="resume">补充后继续</button>'), '主按钮是「补充后继续」');
+check(waiting.includes('data-act="force">直接继续运行</button>'), '次按钮是「直接继续运行」');
+check(waiting.indexOf('data-act="resume"') < waiting.indexOf('data-act="force"'), '主按钮排在前面');
+check(waiting.includes('class="pending suspended"'), '挂起面板带自己的修饰类（底色和待处置那份分得开）');
+check(!waiting.includes('class="pending-alert"'), '第一次说缺时不劝退，只给两条路');
+
+const chatty = suspendedPanelHtml({ present: true, runId: 'r', need: 'x', attempts: 1, repeated: 2 });
+check(chatty.includes('连着 2 次说信息不足'), '连着两次以上开始劝人补料或改需求');
+
+const rude = suspendedPanelHtml({ present: true, runId: 'r', need: '<b>x</b>', attempts: 1, repeated: 1 });
+check(rude.includes('&lt;b&gt;x&lt;/b&gt;') && !rude.includes('<b>x</b>'),
+    '它那句话也转义（那段文字同样是模型写出来的）');
+
+check(suspendedPanelHtml({ present: true, runId: 'r', need: '', attempts: 1, repeated: 1 })
+        .includes('（它没写清要什么）'),
+    '它没写内容时给一句兜底，而不是留一块空白');
+
 console.log(failed ? '\n失败 ' + failed + ' 项' : '\n全部通过');
 process.exitCode = failed ? 1 : 0;

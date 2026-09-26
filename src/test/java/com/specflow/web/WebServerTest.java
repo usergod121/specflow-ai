@@ -2,6 +2,7 @@ package com.specflow.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.specflow.history.RunStore;
 import com.specflow.project.ProjectConfig;
 import com.specflow.project.RecentProjects;
 import com.specflow.project.SnapshotConfig;
@@ -778,6 +779,32 @@ class WebServerTest {
         assertThat(get("/api/accept").statusCode()).isEqualTo(405);
         assertThat(post("/api/accept", "{}").statusCode()).isEqualTo(409);
         assertThat(post("/api/rollback", "{}").statusCode()).isEqualTo(409);
+    }
+
+    @Test
+    @DisplayName("挂起的运行：查得到它说了什么；没有挂起时接口各报各的错")
+    void suspendedRunIsVisible() throws Exception {
+        assertThat(body(get("/api/suspended")).path("present").asBoolean()).isFalse();
+        assertThat(get("/api/continue").statusCode()).as("接着跑只接受 POST").isEqualTo(405);
+        assertThat(post("/api/continue", "{\"prompt\":\"做点什么\"}").statusCode()).isEqualTo(409);
+
+        writeRunRecord("20260101-000000-001", "NEEDS_CONTEXT", "NEED_CONTEXT: 我需要 OrderMapper.java");
+
+        JsonNode suspended = body(get("/api/suspended"));
+        assertThat(suspended.path("present").asBoolean()).isTrue();
+        assertThat(suspended.path("runId").asText()).isEqualTo("20260101-000000-001");
+        assertThat(suspended.path("need").asText()).contains("OrderMapper");
+        assertThat(suspended.path("repeated").asInt()).isEqualTo(1);
+    }
+
+    /** 直接写一份留档，不经过模型：界面要看的是「挂着的那次说了什么」，没必要真跑一次。 */
+    private void writeRunRecord(String id, String status, String detail) throws IOException {
+        Path directory = root.resolve(RunStore.DEFAULT_DIR);
+        Files.createDirectories(directory);
+        Files.writeString(directory.resolve(id + ".json"), """
+                {"id":"%s","startedAt":"t","status":"%s","prompt":"p",
+                 "targets":["src/main/java/com/demo/Demo.java"],"attempts":1,"detail":"%s"}
+                """.formatted(id, status, detail));
     }
 
     // ---------- 辅助 ----------

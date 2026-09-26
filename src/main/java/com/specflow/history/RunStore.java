@@ -33,6 +33,9 @@ public final class RunStore {
     private static final String SUCCESS = "SUCCESS";
     private static final String UNVERIFIED = "SUCCESS_UNVERIFIED";
 
+    /** 模型宣布「信息不足」时的终态名，与 {@code AgentResult.Status} 同名。 */
+    private static final String NEEDS_CONTEXT = "NEEDS_CONTEXT";
+
     private final Path directory;
 
     public RunStore(Path directory) {
@@ -109,6 +112,37 @@ public final class RunStore {
      */
     public record MissingStats(int runs, int items, int blockingItems,
                                int runsWithBlocking, int runsWithBlockingSucceeded) {
+    }
+
+    /**
+     * 现在挂着的那一次运行（模型说缺料、停下了），没有就返回空。
+     *
+     * <p>判据只看**最新那一条记录**：接着跑出来的新纪录会把它挤下去，所以
+     * 「最新那条是不是 NEEDS_CONTEXT」正好等于「现在有没有东西挂着等人」——
+     * 不需要另存一个「挂起中」的标记，也就不会出现标记和记录对不上的情况。
+     */
+    public Optional<RunRecord> suspended() {
+        List<RunRecord> records = readAll();
+        return !records.isEmpty() && NEEDS_CONTEXT.equals(records.get(0).status())
+                ? Optional.of(records.get(0))
+                : Optional.empty();
+    }
+
+    /**
+     * 连着几次说缺料（从最新那条往回数，遇到别的状态就停）。
+     *
+     * <p>数出来而不是记下来：多存一个计数器就多一处可能和历史对不上的状态。
+     * 用户看到的是「它已经第 N 次说缺」，据此判断该补料还是该改需求。
+     */
+    public int repeatedNeedsContext() {
+        int count = 0;
+        for (RunRecord record : readAll()) {
+            if (!NEEDS_CONTEXT.equals(record.status())) {
+                break;
+            }
+            count++;
+        }
+        return count;
     }
 
     /**

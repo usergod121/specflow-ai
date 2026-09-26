@@ -6,6 +6,7 @@ import com.specflow.agent.DevelopmentAgent;
 import com.specflow.agent.ProgressMessages;
 import com.specflow.context.ContextAssembler;
 import com.specflow.exception.PatchConflictException;
+import com.specflow.history.RunRecord;
 import com.specflow.history.RunRecorder;
 import com.specflow.history.RunStore;
 import com.specflow.llm.LlmClient;
@@ -143,6 +144,41 @@ public final class RunService implements AgentListener {
     }
 
     /**
+     * 现在有没有一次运行挂着等人补料。
+     */
+    public SuspendedRun suspended() {
+        return store.suspended()
+                .map(record -> SuspendedRun.of(record, store.repeatedNeedsContext()))
+                .orElseGet(SuspendedRun::none);
+    }
+
+    /**
+     * 接着上一次跑：丢掉的那一轮不重发上下文，只补「它当时说了什么」和「接下来怎么办」。
+     *
+     * <p>为什么不干脆重开一轮：重开会把目标文件全文与上下文依赖再发一遍，
+     * 而这份上下文用户已经付过一次钱了。
+     *
+     * @param force {@code true} = 用户没补料、直接放行；{@code false} = 用户补过上下文了
+     */
+    public synchronized String resume(RunRequest request, boolean force) {
+        if (hub.running()) {
+            throw new IllegalStateException("已有任务正在运行，请等它结束");
+        }
+        if (waitingSnapshot() != null) {
+            throw new IllegalStateException("上一次的改动还没处置：请先「保留改动」或「撤回改动」");
+        }
+        RunRecord suspended = store.suspended()
+                .orElseThrow(() -> new IllegalStateException("现在没有挂起的运行，直接点运行就行"));
+        cancelRequested = false;
+        Spec spec = toValidSpec(request);
+        LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
+        DevelopmentAgent.Resume origin = new DevelopmentAgent.Resume(suspended.detail(), force);
+        String runId = hub.startRun(UUID.randomUUID().toString());
+        runner.submit(() -> execute(spec, llm, request.approvedPlan(), origin));
+        return runId;
+    }
+
+    /**
      * 请求停止当前这次运行。
      *
      * <p>它只置一个标志，不做任何等待，也不抛异常——界面点完「停止」要立刻有反馈，
@@ -238,13 +274,24 @@ public final class RunService implements AgentListener {
     }
 
     private void execute(Spec spec, LlmClient llm, PlanReview approved) {
+        execute(spec, llm, approved, null);
+    }
+
+    /**
+     * @param resume 非空表示这是「接着上次跑」，见 {@link #resume(RunRequest, boolean)}
+     */
+    private void execute(Spec spec, LlmClient llm, PlanReview approved, DevelopmentAgent.Resume resume) {
         try {
             // 装饰器：先记进运行留档，再转发给界面推送。两件事互不知道对方存在，
             // CLI 那边套的是同一个录制器，只是转发目标换成了空实现。
             AgentListener listener = RunRecorder.start(store, spec, approved, this);
             DevelopmentAgent agent = new DevelopmentAgent(projectRoot, project, templates(),
                     llm, List.of(new CompileVerifier()), listener);
-            agent.run(spec, approved);
+            if (resume == null) {
+                agent.run(spec, approved);
+            } else {
+                agent.resume(spec, approved, resume.modelSaid(), resume.force());
+            }
         } catch (RuntimeException e) {
             log.warn("运行中断", e);
             hub.publish("error", 0, "运行中断：" + e.getMessage());

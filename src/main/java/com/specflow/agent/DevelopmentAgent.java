@@ -115,12 +115,33 @@ public final class DevelopmentAgent {
      * @param approved 已确认的方案；为 {@code null} 表示跳过检查直接开发
      */
     public AgentResult run(Spec spec, PlanReview approved) {
-        AgentResult result = execute(spec, approved);
+        AgentResult result = execute(spec, approved, null);
         listener.finished(result);
         return result;
     }
 
-    private AgentResult execute(Spec spec, PlanReview approved) {
+    /**
+     * 从「它上一次说缺什么」接着跑，而不是重开一轮。
+     *
+     * <p>重开一轮等于把整份上下文（目标文件全文 + 上下文依赖）再发一遍，用户已经付过一次钱了。
+     * 这里只补两条消息：它当时说了什么、接下来该怎么办。
+     *
+     * @param modelSaid 上一次它输出的那段 {@code NEED_CONTEXT} 原文
+     * @param force     {@code true} = 用户没补东西、直接让它干；{@code false} = 用户补过上下文了
+     */
+    public AgentResult resume(Spec spec, PlanReview approved, String modelSaid, boolean force) {
+        AgentResult result = execute(spec, approved, new Resume(modelSaid, force));
+        listener.finished(result);
+        return result;
+    }
+
+    /**
+     * 上一次留下的「缺料声明」，以及这一次是补了料还是直接放行。
+     */
+    public record Resume(String modelSaid, boolean force) {
+    }
+
+    private AgentResult execute(Spec spec, PlanReview approved, Resume resume) {
         // 上一次的改动还在等人表态：磁盘上那份是好的，但没经过人确认。
         // 在它之上再叠一轮，等于让人在一个自己没看过的状态上继续施工。
         List<WorkspaceSnapshot> undisposed = WorkspaceSnapshot.undisposed(pathResolver, snapshotRoot());
@@ -135,6 +156,10 @@ public final class DevelopmentAgent {
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(ChatMessage.system(assembler.systemMessage(spec, templates)));
         messages.add(ChatMessage.user(userMessage(spec, approved)));
+        if (resume != null) {
+            messages.add(ChatMessage.assistant(resume.modelSaid()));
+            messages.add(ChatMessage.user(resumePrompt(resume.force())));
+        }
 
         int attempts = 0;
         int conflictRetries = 0;
@@ -361,7 +386,28 @@ public final class DevelopmentAgent {
         if (approved == null || approved.render().isEmpty()) {
             return message;
         }
-        return message + "\n## 已确认的实现方案（请按它实现）\n" + approved.render() + "\n";
+        return message + "\n## 已确认的实现方案（已由人确认，请按它实现）\n"
+                + "除非遇到硬性障碍（要动目标清单之外的文件、或者信息确实不足），"
+                + "否则按这张方案做，不要另起一套。\n\n"
+                + approved.render() + "\n";
+    }
+
+    /**
+     * 续跑时回给模型的那一句。
+     *
+     * <p>两种语气不一样：「补了料」是告诉它新材料在哪、顺着往下做；「直接放行」要更强硬——
+     * 用户已经表态不再补了，这时再喊缺就是白烧一轮。仍然允许它说「做不到哪一部分」，
+     * 但不允许它再要东西。
+     */
+    private static String resumePrompt(boolean force) {
+        if (force) {
+            return "你上一次要求补充信息，但没有更多材料了：目标文件清单之外的文件你改不了，"
+                    + "也不会再有新的上下文。请用上面这些信息直接给出补丁；"
+                    + "确实做不到的部分，说清是哪一处、为什么做不到，不要再要求补充信息。";
+        }
+        return "上面的「上下文依赖」与「目标文件」已经按你上一次的要求更新过（没有变化就是原来那些）。"
+                + "请据此继续输出补丁。如果仍然缺，只输出 NEED_CONTEXT 开头的那几行（最多 3 行），"
+                + "并且具体到你缺哪个文件。";
     }
 
     private PatchPlan plan(Spec spec, String response) {

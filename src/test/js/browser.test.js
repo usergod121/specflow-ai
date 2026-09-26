@@ -1851,6 +1851,68 @@ async function main() {
     })()`);
     await evaluate(`refreshPending()`);
 
+    // ---------- 链 21：挂起的运行 ----------
+    // 模型说「信息不足」时会停下等人。这里桩住 /api/suspended 与 /api/continue，
+    // 验的是界面有没有把它那句话摆出来、两个按钮有没有打到两个不同的请求上。
+    console.log('\n链 21　挂起的运行：说清它在等什么，两条路各走各的：');
+
+    await evaluate(`(() => {
+      window.__continues = [];
+      window.__suspended = {
+        present: true, runId: 'probe-run', attempts: 2, repeated: 1,
+        need: 'NEED_CONTEXT: 我要给 OrderService 加查询\\n需要: OrderMapper.java 的现有写法\\n为什么: 猜错整包返工',
+      };
+      const inner = window.fetch;
+      window.fetch = (url, opts) => {
+        const u = String(url);
+        if (u.endsWith('/api/suspended')) {
+          return Promise.resolve(new Response(JSON.stringify(window.__suspended),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (u.includes('/api/continue')) {
+          window.__continues.push(u.slice(u.indexOf('/api/continue')));
+          window.__suspended = { present: false, runId: null, need: '', attempts: 0, repeated: 0 };
+          return Promise.resolve(new Response(JSON.stringify({ runId: 'probe-continued' }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return inner(url, opts);
+      };
+      return 'ok';
+    })()`);
+    await evaluate(`refreshSuspended()`);
+    await waitFor(`document.querySelector('#suspended .pending') !== null`, '挂起面板出现');
+
+    check(await evaluate(`document.querySelector('#suspended .pending-need').textContent`)
+            .then(t => t.includes('OrderMapper.java')),
+        '它要什么原样摆出来了（用户要看的正是这句）');
+    check(await evaluate(`document.querySelector('#suspended .pending').className`)
+            === 'pending suspended',
+        '挂起面板带自己的修饰类，和待处置那份分得开');
+    check(await evaluate(`document.getElementById('run').disabled`) === false,
+        '挂起不挡运行：挂着的只是一次没做完的任务，磁盘没动');
+    check(await evaluate(`document.querySelector('#suspended [data-act="force"]').textContent`)
+            === '直接继续运行', '次按钮是「直接继续运行」');
+
+    // 填好必填项再点：需求为空时前端会先把请求挡下来
+    await setField('demand', '给 OrderService 加一个按 id 查询');
+    await evaluate(`(() => {
+      state.selected = new Set(['src/main/java/com/demo/Demo.java']);
+      return 'ok';
+    })()`);
+    await evaluate(`document.querySelector('#suspended [data-act="force"]').click(); 'ok'`);
+    await waitFor(`window.__continues.length > 0`, '「直接继续」发出去了');
+    check(JSON.stringify(await evaluate(`window.__continues`)) === '["/api/continue?force=1"]',
+        '「直接继续」带上了 force=1：' + JSON.stringify(await evaluate(`window.__continues`)));
+
+    // 桩撤掉，界面回到真接口上
+    await evaluate(`(() => {
+      window.fetch = window.__realFetch;
+      window.__suspended = null;
+      setRunning(false);
+      return 'ok';
+    })()`);
+    await evaluate(`refreshSuspended()`);
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,

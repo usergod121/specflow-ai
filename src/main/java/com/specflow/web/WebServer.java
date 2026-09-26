@@ -203,6 +203,8 @@ public final class WebServer implements AutoCloseable {
                                 // 「它标的阻断最后真的阻断了吗」那一行汇总要的数据
                                 "missingStats", now.runs().history().missingStats()));
                 case "/api/cancel" -> cancelRun(now, exchange);
+                case "/api/suspended" -> Http.sendJson(exchange, 200, now.runs().suspended());
+                case "/api/continue" -> continueRun(now, exchange);
                 case "/api/pending" -> Http.sendJson(exchange, 200, now.runs().pending());
                 case "/api/accept" -> decidePending(now, exchange, false);
                 case "/api/rollback" -> decidePending(now, exchange, true);
@@ -577,6 +579,29 @@ public final class WebServer implements AutoCloseable {
             project.runs().accept();
         }
         Http.sendJson(exchange, 200, Map.of("done", true));
+    }
+
+    /**
+     * 接着上一次挂起的运行跑。
+     *
+     * <p>{@code force=1} 表示「用户没补东西，直接让它干」——引擎会回一句更强硬的话，
+     * 但不保证它就能做出来：那一轮照样可能失败，只是不再白等用户补料。
+     */
+    private void continueRun(OpenProject project, HttpExchange exchange) throws IOException {
+        if (!Http.requirePost(exchange)) {
+            return;
+        }
+        RunRequest request = Http.readJson(exchange, RunRequest.class);
+        if (request == null) {
+            return;
+        }
+        boolean force = "1".equals(Http.query(exchange, "force", ""));
+        String runId;
+        synchronized (this) {
+            project.requireOpen();
+            runId = project.runs().resume(request, force);
+        }
+        Http.sendJson(exchange, 200, Map.of("runId", runId));
     }
 
     private RunHub.RunView events(OpenProject project, HttpExchange exchange) {
