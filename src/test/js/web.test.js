@@ -29,7 +29,7 @@ function load(file, names, fromMarker, toMarker) {
 }
 
 /** 页面里的 state 是全局的，被测函数会读它；这里放一份假的，纯逻辑测试就不用开浏览器。 */
-globalThis.state = { files: [], selected: new Set() };
+globalThis.state = { files: [], selected: new Set(), stepStates: new Map(), stepDetail: null };
 
 let failed = 0;
 function check(condition, message) {
@@ -360,7 +360,8 @@ check(typeof templateToYaml({}) === 'string', '空对象也能转，不抛异常
 // 肉眼过一遍很容易漏，所以把它渲染成字符串，直接对着字符串断言。
 const { pendingPanelHtml, diffLineClass, pendingActionPath } = load('index.html',
     ['pendingPanelHtml', 'diffLineClass', 'pendingActionPath'],
-    '// ---------- 待处置的改动 ----------', 'async function refreshPending');
+    // 从施工单那段开始切：待处置面板现在要按施工单分组，changeGroups 在那儿
+    '// ---------- 施工单 ----------', 'async function refreshPending');
 
 console.log('差异行的分类：');
 check(diffLineClass('+class New {}') === 'add', '+ 开头是新增行');
@@ -451,8 +452,8 @@ check(nasty.includes('&lt;img src=x onerror=1&gt;'), 'diff 正文里的尖括号
 // 否则引擎会以为用户补过料，回一句软话，于是它可能又停下来要东西。
 const { suspendedPanelHtml, suspendedActionPath } = load('index.html',
     ['suspendedPanelHtml', 'suspendedActionPath'],
-    // 从待处置那段开始切：escapeHtml / diffLineClass 都在那儿，挂起面板要用它们
-    '// ---------- 待处置的改动 ----------', 'async function refreshSuspended');
+    // 从施工单那段开始切：escapeHtml / diffLineClass 都在那儿，挂起面板要用它们
+    '// ---------- 施工单 ----------', 'async function refreshSuspended');
 
 console.log('挂起动作打到哪个接口：');
 check(suspendedActionPath('resume') === '/api/continue', '「补充后继续」打 /api/continue');
@@ -488,6 +489,278 @@ check(rude.includes('&lt;b&gt;x&lt;/b&gt;') && !rude.includes('<b>x</b>'),
 check(suspendedPanelHtml({ present: true, runId: 'r', need: '', attempts: 1, repeated: 1 })
         .includes('（它没写清要什么）'),
     '它没写内容时给一句兜底，而不是留一块空白');
+
+// ---------- 施工单 ----------
+// 施工单这一段有三件事最要紧，而且都是「弄错了不容易被发现」的那种：
+// 每步的状态画成什么、用户在界面上改的那份有没有跟着发回去、
+// 点「运行」被拦下来时说的到底是哪一步。全是纯逻辑，直接喂输入看一眼。
+const step = load('index.html',
+    ['STEP_STATES', 'STEP_SOURCE_LABEL', 'stepStateMeta', 'stepState', 'stepEventState',
+     'normalizeSteps', 'moveStep', 'removeStep', 'appendStep', 'planForRun', 'roundBudget',
+     'stepFindingLabel', 'stepAuditFindings', 'blockedRunMessage', 'changeGroups', 'fileKey'],
+    '// ---------- 施工单 ----------', 'async function refreshPending');
+
+console.log('施工单：步态 → class 与文案：');
+check(step.stepStateMeta('RUNNING').join('|') === 'running|进行中', '进行中');
+check(step.stepStateMeta('SUCCESS').join('|') === 'success|成功', '成功');
+check(step.stepStateMeta('INTERMEDIATE').join('|') === 'intermediate|中间态未通过',
+    '中间态单说一个词：它不是「成功」，也不是「失败」');
+check(step.stepStateMeta('FAILED').join('|') === 'failed|失败', '失败');
+check(step.stepStateMeta('PENDING').join('|') === 'pending|未做', '没轮到它就是「未做」');
+check(step.stepStateMeta('谁也没见过的值').join('|') === 'pending|未做',
+    '认不出的状态按「未做」画，而不是留一个没颜色的空白标签：'
+        + step.stepStateMeta('谁也没见过的值').join('|'));
+check(step.STEP_STATES.PENDING[1] !== step.STEP_STATES.RUNNING[1]
+    && step.STEP_STATES.SUCCESS[1] !== step.STEP_STATES.INTERMEDIATE[1],
+    '五档文案两两不同（同一个词出现在两档上，标签就等于没写）');
+check(Object.keys(step.STEP_SOURCE_LABEL).join(',') === 'APPROVED,GENERATED,SINGLE',
+    '施工单的三个来源都有对应的说法（现生成的那份必须说得出来）');
+
+console.log('施工单：某一步此刻的状态：');
+state.stepStates = new Map();
+state.stepDetail = null;
+check(step.stepState(7) === 'PENDING', '界面里没记过这一步，它就是「未做」');
+state.stepStates = new Map([[7, 'FAILED']]);
+check(step.stepState(7) === 'FAILED', '记过之后按记的来');
+check(step.stepState(8) === 'PENDING', '别的步号不受影响');
+state.stepStates = new Map();
+
+console.log('施工单：从运行事件里读步态：');
+const ev = (stepNo, text, type) => ({ type: type || 'log', level: 'info', round: 1, step: stepNo, text });
+check(step.stepEventState(ev(0, '第 3 轮：调用模型…')) === null,
+    'step=0 的事件不属于任何一步：不去改任何一步的状态');
+check(step.stepEventState(ev(3, '第 3 轮：调用模型…')) === null,
+    '轮级那句不带步态，认不出来就什么都不做（宁可停在「进行中」）');
+check(step.stepEventState(ev(3, '第 3 步：给 OrderMapper 加方法（涉及 a/Mapper.java）')) === 'RUNNING',
+    '「（涉及 …）」那句说明这一步开始了');
+check(step.stepEventState(ev(3, '第 3 步：给 OrderMapper 加方法：成功')) === 'SUCCESS', '一步成功');
+check(step.stepEventState(ev(3, '第 3 步：加接口：中间态（编译未通过）')) === 'INTERMEDIATE',
+    '中间态未通过：不是成功，也不是失败');
+check(step.stepEventState(ev(3, '第 3 步：加接口：失败')) === 'FAILED', '一步失败');
+check(step.stepEventState(ev(3, '第 3 步：加接口：标的是中间态，实际编译通过了')) === 'SUCCESS',
+    '标了中间态但真的编过了：按成功算（它确实编过了）');
+check(step.stepEventState(ev(3, '第 3 步：补丁被拒绝，已回滚到该步开始前的状态')) === 'RUNNING',
+    '这一步被回滚去重试：它又回到「进行中」，而不是停在失败上');
+check(step.stepEventState({ type: 'plan', level: 'info', round: 0, step: 0,
+    text: '共 5 步', payload: { steps: [] } }) === null, 'plan 事件走另一条路，不当成步态');
+check(step.stepEventState({ type: 'result', level: 'info', round: 0, step: 0, text: '任务结束' }) === null,
+    '终态事件也不当步态');
+check(step.stepEventState(null) === null && step.stepEventState(undefined) === null,
+    '没有事件时也不炸');
+
+console.log('施工单：编辑（改、增删、上下移、勾中间态）：');
+const rawSteps = [
+  { index: 1, goal: '  加接口  ', files: [' a/A.java ', ''], check: '能编译', intermediate: false },
+  { index: 2, goal: '加实现', files: ['a/B.java'], check: '', intermediate: true },
+  { index: 0, goal: '改调用点', files: [], check: '', intermediate: false },
+];
+const normalized = step.normalizeSteps(rawSteps);
+check(normalized.map(s => s.index).join(',') === '1,2,3', '步号按顺序重排成 1..N：'
+    + normalized.map(s => s.index).join(','));
+check(normalized[0].goal === '加接口', 'goal 收掉首尾空格');
+check(normalized[0].files.join(',') === 'a/A.java', '文件里的空白项被丢掉');
+check(normalized[2].index === 3, '引擎没给步号（≤0）时按位置补一个');
+check(normalized[1].intermediate === true && normalized[2].intermediate === false,
+    '中间态原样带过去');
+
+const keptIndex = step.normalizeSteps([{ index: 4, goal: 'x' }, { index: 9, goal: 'y' }], false);
+check(keptIndex.map(s => s.index).join(',') === '4,9',
+    '来自事件/留档的那一份不重排步号：事件里的 step 就是它，重排会让两者对不上号');
+
+const twoSteps = step.normalizeSteps([{ goal: '一' }, { goal: '二' }, { goal: '三' }]);
+check(step.moveStep(twoSteps, 0, -1).map(s => s.goal).join(',') === '一,二,三',
+    '已经在最上面了：上移不生效（不是把它扔到末尾）');
+check(step.moveStep(twoSteps, 2, 1).map(s => s.goal).join(',') === '一,二,三', '已经在最下面了：下移不生效');
+const movedUp = step.moveStep(twoSteps, 2, -1);
+check(movedUp.map(s => s.goal).join(',') === '一,三,二', '下移一步：顺序真的换了');
+check(movedUp.map(s => s.index).join(',') === '1,2,3',
+    '换完之后步号重新排：上移下移之后「第 3 步」指的仍然是第 3 个位置');
+check(twoSteps.map(s => s.goal).join(',') === '一,二,三', '编辑函数不改传进来的那一份（纯函数）');
+
+const removed = step.removeStep(twoSteps, 0);
+check(removed.map(s => s.goal).join(',') === '二,三' && removed[0].index === 1, '删掉一步，步号跟着重排');
+check(step.removeStep(step.normalizeSteps([{ goal: '只剩这一步' }]), 0).length === 1,
+    '只剩一步时删不掉：空施工单在引擎那边等于「没有施工单」，会静默退化成单步');
+const appended = step.appendStep(twoSteps);
+check(appended.length === 4 && appended[3].index === 4 && appended[3].goal === ''
+    && appended[3].intermediate === false && appended[3].files.length === 0,
+    '加一步：加在末尾，步号接上，默认不标中间态');
+
+console.log('施工单：编辑之后怎么发回去：');
+const plan = {
+  summary: '加一个查询接口', flowchart: 'flowchart TD\n A-->B', missing: [],
+  steps: [{ index: 1, goal: '旧的第一步' }],
+};
+const edited = [{ goal: '改过的第一步', files: ['a/A.java'], check: '能编译', intermediate: true },
+                { goal: '刚加的一步' }];
+const sentPlan = step.planForRun(plan, edited);
+check(sentPlan.steps.length === 2 && sentPlan.steps[0].goal === '改过的第一步',
+    '发回去的是界面上改过的那一份（发旧的等于用户白改）');
+check(sentPlan.steps.map(s => s.index).join(',') === '1,2', '步号重排之后再发（引擎按列表顺序走）');
+check(sentPlan.steps[0].files.join() === 'a/A.java' && sentPlan.steps[0].intermediate === true
+    && sentPlan.steps[0].check === '能编译',
+    '四个字段一个不少：少一个，引擎那边这一步就不完整了');
+check(sentPlan.summary === plan.summary && sentPlan.flowchart === plan.flowchart,
+    '方案里别的东西原样带着（改的是施工单，不是摘要和流程图）');
+check(sentPlan.steps !== plan.steps, '不是直接把原始数组塞进去（改完还能改回来）');
+const untouched = step.planForRun(plan, []);
+check(untouched.steps && untouched.steps.length === 1 && untouched.steps[0].goal === '旧的第一步',
+    '施工单空着时原样返回：steps: [] 和「没这个字段」在引擎那边是同一件事');
+check(step.planForRun(null, twoSteps) === null, '压根没有方案时返回 null，不凭空造一份');
+
+console.log('施工单：总轮次预算：');
+check(step.roundBudget('') === 0 && step.roundBudget('   ') === 0,
+    '留空是「自动」（0），不是「一轮都不给」');
+check(step.roundBudget('0') === 0, '写 0 也是自动（后端约定的「没配」值）');
+check(step.roundBudget('12') === 12, '写了数字就用它');
+check(step.roundBudget('-5') === 0, '负数是没意义的输入，退回自动而不是发出一个负数');
+check(step.roundBudget('abc') === 0, '打了汉字也是自动：不静默变成「一次都不给」');
+check(step.roundBudget('999') === 60, '上限收在 60：'
+    + step.roundBudget('999'));
+check(step.roundBudget('3.7') === 3, '小数取整，不把 3.7 当字符串发出去');
+check(step.roundBudget(undefined) === 0, '连输入框都没有时也不炸');
+
+console.log('施工单：哪一步有问题：');
+check(step.stepFindingLabel(0) === '整份施工单', 'step=0 说的是整份单子（步数越界这一类）');
+check(step.stepFindingLabel(3) === '第 3 步', 'step>0 说的是那一步');
+check(step.stepAuditFindings({ findings: [{ step: 1, reason: 'r' }], hints: ['h'] }).length === 1,
+    '只取 findings');
+check(step.stepAuditFindings({ findings: [], hints: ['中间态超过三分之一'] }).length === 0,
+    'hints 不是 findings：它只说事，绝不拦人');
+check(step.stepAuditFindings({ hints: ['空施工单会退化成单步'] }).length === 0,
+    '一份纯 hints 的审查结果，findings 仍然是空的（拿它去拦人就是「提示挡用户」）');
+check(step.stepAuditFindings(null).length === 0 && step.stepAuditFindings(undefined).length === 0,
+    '没有施工单审查结果时是空的，不是 undefined');
+
+console.log('施工单：点运行被拦下来的那句话：');
+check(step.blockedRunMessage([], []) === '', '两处都没有问题时没有话说');
+const onlyPlan = step.blockedRunMessage([{ path: 'a/A.java', reason: '清单外' }], []);
+check(onlyPlan.includes('这份方案有 1 处执行不了') && onlyPlan.includes('a/A.java')
+    && onlyPlan.includes('仍然继续'), '只有方案的问题时，还是原来那句话：' + onlyPlan);
+check(!onlyPlan.includes('施工单'), '没有施工单问题时不许提施工单（否则用户去改错东西）');
+const onlySteps = step.blockedRunMessage([], [{ step: 3, reason: '第 3 步要动 a/X.java：它不在清单里' }]);
+check(onlySteps.includes('这份施工单有 1 处执行不了') && onlySteps.includes('第 3 步：'),
+    '施工单的问题说清是哪一步：' + onlySteps);
+check(onlySteps.includes('仍然继续'), '出路也写了：点「我知道，仍然继续」就放行');
+const both = step.blockedRunMessage([{ path: 'a/A.java', reason: '清单外' }],
+    [{ step: 0, reason: '施工单只有 2 步' }, { step: 5, reason: '最后一步标了中间态' }]);
+check(both.includes('这份方案有 1 处执行不了') && both.includes('这份施工单有 2 处执行不了'),
+    '两处问题一次说全，而不是先说一处、点完再冒出另一处');
+check(both.includes('整份施工单：') && both.includes('第 5 步：'),
+    '整份的问题和某一步的问题分得开：' + both);
+check(both.split('执行不了').length === 3, '两段分开写，不是糊成一句');
+
+console.log('施工单：改动按步分组：');
+const files = ['a/A.java', 'a/B.java', 'a/C.java'];
+const twoStepPlan = step.normalizeSteps([
+  { index: 1, goal: '加接口', files: ['a/A.java'] },
+  { index: 2, goal: '加实现', files: ['a/B.java'] },
+]);
+const changes = files.map(path => ({ path, created: false, bytes: 1, diff: '+x' }));
+/** 把分组结果压成一行，好读也好比：`第1步:a/A.java | 无:a/C.java`。 */
+const groupLine = groups => groups.map(group =>
+    (group.step ? '第' + group.step.index + '步' : '无') + ':'
+    + group.changes.map(change => change.path).join('+')).join(' | ');
+
+const byFiles = step.changeGroups(changes, null, twoStepPlan);
+check(groupLine(byFiles) === '第1步:a/A.java | 第2步:a/B.java | 无:a/C.java',
+    '按施工单里「这一步要动哪些文件」归位；对不上任何一步的单独列在最后，而不是被丢掉：'
+        + groupLine(byFiles));
+check(byFiles[1].step.goal === '加实现', '每一组还带着「这一步做什么」，不是只有一个号');
+check(step.changeGroups(changes, null, twoStepPlan.slice(0, 1)).length === 1,
+    '只有一步时不分组（单步执行就是老样子）');
+check(step.changeGroups(changes, null, []).length === 1, '没有施工单时不分组');
+const countChanges = groups => groups.reduce((sum, group) => sum + group.changes.length, 0);
+check(countChanges(byFiles) === 3, '分组不吞改动：三个文件一个不少（'
+    + countChanges(byFiles) + '）');
+check(step.changeGroups([{ path: 'z/Z.java' }], null, twoStepPlan)[0].step === null,
+    '一个文件都对不上时别硬分组（分错了比不分更坏）');
+check(step.changeGroups([{ path: 'a\\A.java' }], null, twoStepPlan)[0].changes.length === 1,
+    '反斜杠的路径也能对上（Windows 上两边写法都可能出现）');
+
+const detail = [
+  { index: 1, goal: '加接口', state: 'SUCCESS', rounds: 2, changes: [{ path: 'a/A.java' }] },
+  { index: 2, goal: '加实现', state: 'INTERMEDIATE', rounds: 3, changes: [{ path: 'a/B.java' }] },
+];
+const byDetail = step.changeGroups(changes, detail, twoStepPlan);
+check(groupLine(byDetail) === '第1步:a/A.java | 第2步:a/B.java | 无:a/C.java',
+    '留档在的时候以它为准，连顺序都按留档来：' + groupLine(byDetail));
+check(byDetail[0].step.state === 'SUCCESS' && byDetail[0].step.rounds === 2,
+    '状态和轮次都是留档里记下来的，不是界面猜的');
+check(byDetail[1].step.state === 'INTERMEDIATE', '第 2 步的中间态也照着留档画');
+check(step.changeGroups([], detail, twoStepPlan).length === 2,
+    '一步都没改文件时也把那两步列出来（「这一步没动东西」本身是信息）');
+check(step.changeGroups(changes, detail.slice(0, 1), twoStepPlan)[0].step === null,
+    '留档只有一步时不当成分步的证据（单步执行走老样子）');
+check(step.fileKey(' a\\b/C.java ') === 'a/b/C.java', '路径归一：反斜杠、两头空格都收干净');
+check(step.fileKey(null) === '' && step.fileKey(undefined) === '', '没有路径时给空串，不炸');
+
+console.log('施工单：待处置面板按步分组：');
+const pendingTwo = {
+  present: true, id: 'x.pending', canAccept: true, summary: '2 个文件：新增 1、修改 1',
+  files: [pendingFile('a/A.java', false, '+x'), pendingFile('a/B.java', true, '+y')],
+};
+const groupedPending = pendingPanelHtml(pendingTwo, null, twoStepPlan);
+check(groupedPending.includes('<div class="step-group">'), '给了施工单就按步分组');
+check(groupedPending.includes('第 1 步：加接口') && groupedPending.includes('第 2 步：加实现'),
+    '每一组写明是哪一步、做什么：' + groupedPending.slice(0, 200));
+check(groupedPending.indexOf('修改 a/A.java') < groupedPending.indexOf('第 2 步'),
+    'a/A.java 落在第 1 步那一组里');
+check(pendingPanelHtml(pendingTwo).indexOf('<div class="step-group">') < 0,
+    '不给施工单时一块都不分组：老样子（链 20 盯着两个文件各占一行）');
+check(!pendingPanelHtml(pendingTwo, null, twoStepPlan.slice(0, 1)).includes('step-group'),
+    '施工单只有一步时也不分组');
+check(pendingPanelHtml(pendingTwo, null, twoStepPlan).includes(
+    '<button type="button" data-act="accept">保留改动</button>'),
+    '分组之后那两个按钮还在（分组只动正文）');
+check(pendingPanelHtml(pendingTwo, null, twoStepPlan).includes('<div class="add">+x</div>'),
+    '分组之后 diff 的底色也还在');
+const nastyGoal = pendingPanelHtml(pendingTwo, null,
+    step.normalizeSteps([{ index: 1, goal: '<b>坏</b>', files: ['a/A.java'] }, { index: 2, goal: 'x', files: ['a/B.java'] }]));
+check(nastyGoal.includes('&lt;b&gt;坏&lt;/b&gt;') && !nastyGoal.includes('<b>坏</b>'),
+    '分组标题里的 goal 也是模型写出来的，照样转义');
+
+console.log('施工单：样式（状态靠自己那一档的 token 上色）：');
+// 每一档的底色与字色都点名到具体 token：写成 var(--error) 这种前缀相同、
+// 但不是同一个 token 的退化，必须能被抓出来（否则状态之间就分不开了）
+for (const [name, bg, text] of [['pending', 'chip', 'muted'], ['running', 'accent-weak', 'accent'],
+                                ['success', 'ok', 'ok-text'], ['intermediate', 'warn', 'warn-text'],
+                                ['failed', 'error', 'error-text']]) {
+  check(new RegExp('^\\s*\\.step-state\\.' + name + ' \\{[^}]*background: var\\(--' + bg
+      + '\\)[^}]*color: var\\(--' + text + '\\)', 'm').test(styleBlock),
+  '「' + name + '」这一档：底色 ' + bg + '、字色 ' + text + '，都是它自己那组 token');
+}
+check(/\.step\[data-state=running\]\s*\{[^}]*var\(--accent-line\)/.test(styleBlock),
+    '整行的边框也跟着状态走，不是只有那个小标签变了');
+check(/\.step-state\s*\{[^}]*border: 1px solid/.test(styleBlock)
+    && /\.step-goal[^{]*\{[^}]*font-size/.test(styleBlock),
+    '状态标签和输入框都有自己的样式，不是浏览器默认长相');
+
+// ---------- 施工单：运行结束后的校正 ----------
+// 运行详情是按记录 id 取的，而 /api/run 回的是运行标识（UUID），两者对不上号——
+// 只能靠「开跑前那条最新的是谁」认出刚跑完的那一条。这里认错的表现很具体：
+// 界面把**上一次**运行的步态画到了这一次头上，而且看不出来是错的。
+const { newRecordSince } = load('index.html', ['newRecordSince'],
+    '// ---------- 施工单 ----------', 'async function refreshPending');
+
+console.log('施工单：跑完认哪条留档：');
+// 认错了的表现是「把上一次运行的步态画到这一次头上」，所以这里连着认不出来的
+// 三种情况一起钉死。取 id 写成这样是为了让「认不出来」变成一条干净的断言，
+// 而不是把整轮测试抛掉
+const since = (baseline, runs) => {
+  const hit = newRecordSince(baseline, runs);
+  return hit && hit.id ? hit.id : null;
+};
+check(since('a', [{ id: 'b' }, { id: 'a' }]) === 'b',
+    '列表按时间倒序，第一条不是开跑前那条，那它就是这一次的');
+check(since('a', [{ id: 'a' }, { id: 'z' }]) === null,
+    '最新的还是开跑前那一条：这次没留下记录，没什么可校正的');
+check(since('', [{ id: 'b' }]) === 'b',
+    '跑之前一条记录都没有（空串）→ 这条新的就是本次的（空串和 null 不是一回事）');
+check(since(null, [{ id: 'b' }]) === null,
+    '基线不知道（请求失败了）→ 宁可不校正，也不拿一条老记录去改界面');
+check(since('a', []) === null && since('a', undefined) === null,
+    '一条记录都没有时什么都不做');
 
 console.log(failed ? '\n失败 ' + failed + ' 项' : '\n全部通过');
 process.exitCode = failed ? 1 : 0;

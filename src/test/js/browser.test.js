@@ -1913,6 +1913,389 @@ async function main() {
     })()`);
     await evaluate(`refreshSuspended()`);
 
+    // ---------- 链 22：施工单 ----------
+    // 这一链验的是「施工单」这一整批：方案面板上画得出来、能不能在上面改、
+    // 机器查出来的「哪一步做不了」挡不挡得住运行、以及改完的那份有没有跟着发出去。
+    // /api/review、/api/events、/api/run 全桩住：这一链只是要看界面怎么反应，
+    // 真去调一次模型、动一次磁盘就是拿用户的项目当试验田。
+    console.log('\n链 22　施工单：画得出、改得动、拦得住：');
+
+    const stepPlan = {
+      summary: '按订单号查询：接口 → 服务 → mapper。',
+      flowchart: 'flowchart TD\n    A[入口] --> B[出口]',
+      missing: [],
+      steps: [
+        { index: 1, goal: '给 OrderMapper 加按号查询',
+          files: ['src/main/java/com/demo/OrderMapper.java'],
+          check: '接口里能看到这个方法', intermediate: false },
+        { index: 2, goal: '给 OrderService 加方法',
+          files: ['src/main/java/com/demo/OrderService.java'],
+          check: '能编译', intermediate: false },
+        // 最后一步标了中间态：这正是 StepAudit 要拦的那一条
+        { index: 3, goal: 'Controller 暴露接口',
+          files: ['src/main/java/com/demo/OrderController.java'],
+          check: '编译通过', intermediate: true },
+      ],
+    };
+    const stepFindings = [{
+      step: 3,
+      reason: '最后一步（第 3 步）标了「中间态」：施工单跑完必须是一个能编译的项目。',
+    }];
+    const stepHints = ['有 1 步标了「中间态」（共 3 步，超过三分之一）：这几步做完项目是编不过的。'];
+
+    await evaluate(`(() => {
+      window.__runs22 = 0;
+      window.__plan22 = ${JSON.stringify(stepPlan)};
+      window.__planEventSteps = null;
+      window.__selected22 = [...state.selected];
+      // 一次运行的事件要在**请求那一刻**再拼：plan 事件里那份施工单是引擎回传的
+      // approvedPlan，也就是界面上改过的那一份——装桩时还不知道它会改成什么样
+      window.__makeEvents22 = () => [
+        { id: 1, type: 'plan', level: 'info', round: 0, step: 0,
+          text: '检查阶段产出的施工单，共 3 步',
+          payload: { source: 'APPROVED', probeCalls: 0,
+                     steps: window.__planEventSteps || window.__plan22.steps } },
+        // 步级事件在真后端里 round=0（RunService：hub.publish(level, 0, currentStep, …)）：
+        // 轮次是「调了一次模型」，步是施工单上的一步，两件事别混着写
+        { id: 2, type: 'log', level: 'info', round: 0, step: 1,
+          text: '第 1 步：给 OrderMapper 加按号查询：成功' },
+        { id: 3, type: 'log', level: 'warn', round: 0, step: 2,
+          text: '第 2 步：Controller 暴露接口：中间态（编译未通过）' },
+        // 轮级那一句带着步号，但它不是步态：第 3 步该停在「未做」
+        { id: 4, type: 'log', level: 'info', round: 3, step: 3,
+          text: '第 3 轮：调用模型…' },
+      ];
+      const inner = window.fetch;
+      window.__inner22 = inner;
+      // 桩按**路径**匹配，不按整串：请求上是带查询串的（/api/events?from=0、/api/run-detail?id=…），
+      // 拿 endsWith('/api/events') 去比永远比不中，那条请求会漏到真后台上——
+      // 界面上等于一条事件都没收到。链 22 第一次跑就是栽在这儿：步态全停在「未做」、
+      // 时间线上一行日志都没有，而失败的样子看着像「界面没画」。
+      // __stubbed22 顺手记一笔，漏掉哪个端点下面有断言直接指出来。
+      window.__stubbed22 = [];
+      window.fetch = (url, opts) => {
+        const u = String(url);
+        const path = u.split('?')[0];
+        const json = (body, status) => Promise.resolve(new Response(JSON.stringify(body),
+            { status: status || 200, headers: { 'Content-Type': 'application/json' } }));
+        const take = () => { window.__stubbed22.push(path); };
+        if (path === '/api/review') {
+          take();
+          return json({ plan: window.__plan22, audit: [],
+                        stepAudit: { findings: ${JSON.stringify(stepFindings)},
+                                     hints: ${JSON.stringify(stepHints)} } });
+        }
+        if (path === '/api/events') {
+          take();
+          // 真后端按游标过滤（id >= from）：桩也照做，不然第二次轮询会把整条流再放一遍，
+          // plan 事件跟着把步态清零再重放，「事件按顺序只生效一次」就验不出来了
+          const from = Number(new URL(u, location.origin).searchParams.get('from') || 0);
+          return json({ runId: 'probe-22', running: false,
+                        events: window.__makeEvents22().filter(event => event.id >= from) });
+        }
+        if (path === '/api/runs') {
+          take();
+          return json({ runs: window.__runsList || [] });   // 这一次不留档：校正那条路先走「没有新记录」
+        }
+        if (path === '/api/run-detail') {
+          take();
+          return json(window.__detail || {});
+        }
+        if (path === '/api/run') {
+          take();
+          window.__runs22++;
+          window.__lastRunBody22 = (opts && opts.body) || '';
+          return json({ runId: 'probe-22' });
+        }
+        if (path === '/api/pending') {
+          take();
+          return json({ present: false, id: null, canAccept: false,
+                        summary: '没有待处置的改动', files: [] });
+        }
+        if (path === '/api/suspended') {
+          take();
+          return json({ present: false, runId: null, need: '', attempts: 0, repeated: 0 });
+        }
+        return inner(url, opts);
+      };
+      return 'ok';
+    })()`);
+
+    await setField('demand', '按订单号查询订单');
+    await evaluate(`(() => {
+      state.selected = new Set(['src/main/java/com/demo/OrderMapper.java',
+                               'src/main/java/com/demo/OrderService.java',
+                               'src/main/java/com/demo/OrderController.java']);
+      // 别让上一条链留下的「待处置改动」把「运行」按住（那和这一链要验的东西无关）
+      state.pending = { present: false, id: null, canAccept: false, summary: '', files: [] };
+      updateRunButton();
+      return 'ok';
+    })()`);
+
+    await evaluate(`review()`);
+    await waitFor(`document.querySelectorAll('#plan .step').length === 3`, '施工单画出来');
+
+    check(await evaluate(`[...document.querySelectorAll('#plan .step')]
+            .map(row => row.dataset.step).join(',')`) === '1,2,3',
+        '三步都画出来了，而且是按步号排的');
+    check(await evaluate(`document.querySelectorAll('#plan .step .step-goal').length`) === 3,
+        '每步都有一个能改的「做什么」输入框（不再是只能看的一段文字）');
+    check(await evaluate(`document.querySelector('#plan .step[data-step="3"] .step-goal').value`)
+            === 'Controller 暴露接口', '输入框里装的是模型给的那句');
+    check(await evaluate(`document.getElementById('plan').textContent`)
+            .then(t => t.includes('src/main/java/com/demo/OrderController.java')),
+        '每一步涉及哪些文件也写出来了（施工单上最要紧的一栏）');
+    check(await evaluate(`document.getElementById('plan').textContent`)
+            .then(t => t.includes('算做完：编译通过')), '「怎么算做完」也写出来了');
+    check(await evaluate(`[...document.querySelectorAll('#plan .step-flag')].length`) === 1,
+        '只有第 3 步标了「中间态」，就只画一个标记');
+    check(await evaluate(`document.querySelectorAll('#plan .step-state').length`) === 3
+            && await evaluate(`[...document.querySelectorAll('#plan .step-state')]
+                .every(chip => chip.textContent === '未做')`),
+        '还没跑，三步都是「未做」');
+    check(await evaluate(`!document.getElementById('plan').textContent
+            .includes('检查阶段产出的施工单')`),
+        '还没跑时不乱说这份单子是哪来的（那时候还不知道）');
+
+    // 机器查出来的「哪一步做不了」：方案那份 audit 在这里是空的，
+    // 所以这一块必须自己站出来说清是第几步
+    check(await evaluate(`document.querySelector('#plan .steps-audit') !== null`),
+        '施工单的问题单独占一块（不和方案那份执行不了的混在一起）');
+    check(await evaluate(`document.querySelector('#plan .steps-audit').textContent`)
+            .then(t => t.includes('第 3 步')), '说清了是第几步有问题');
+    check(await evaluate(`document.querySelectorAll('#plan .steps-audit .force-run').length`) === 1,
+        '这一处才配拦人：旁边有「我知道，仍然继续」');
+    check(await evaluate(`document.querySelector('#plan .steps .hint') !== null`)
+            && await evaluate(`document.querySelector('#plan .steps .hint').textContent`)
+                .then(t => t.includes('中间态')),
+        '提示只显示：它写在那儿，但没有闸门（hints 不拦人）');
+
+    // 闸门：findings 非空、用户还没点过确认 → 点「运行」被挡一次
+    await evaluate(`(() => { window.__runs22 = 0; state.forced = false; return 'ok'; })()`);
+    await clickButton('run');
+    await sleep(600);
+    check(await evaluate(`window.__runs22`) === 0, '施工单有执行不了的步骤时，点「运行」被拦下');
+    check((await noticeText()).includes('这份施工单有 1 处执行不了'),
+        '拦下来的话说清是施工单的问题：' + (await noticeText()));
+    check((await noticeText()).includes('第 3 步'), '而且说清是哪一步：' + (await noticeText()));
+
+    // 在界面上改施工单：改哪一句、勾中间态、上移下移、加一步、删一步
+    await evaluate(`(() => {
+      const input = document.querySelector('#plan .step[data-step="2"] .step-goal');
+      input.value = '改过的：给 OrderService 加方法';
+      input.dispatchEvent(new Event('change'));
+      return 'ok';
+    })()`);
+    check(await evaluate(`state.plan.steps[1].goal`) === '改过的：给 OrderService 加方法',
+        '改过的 goal 立刻写回方案里（只改输入框不写回，发出去还是旧的）');
+    check(await evaluate(`state.stepsEdited === true`), '界面记下了「这份单子被手改过」');
+    check(await evaluate(`document.querySelector('#plan .steps-edited').textContent`)
+            .then(t => t.includes('已改')), '并且一直写着「已改，将按这份施工单执行」');
+    check(await evaluate(`document.getElementById('actionnote').textContent`)
+            .then(t => t.includes('已改')), '「运行」旁边那句也跟着改：'
+            + (await evaluate(`document.getElementById('actionnote').textContent`)));
+    check((await noticeText()).includes('已改'), '改完还弹了一条回音：' + (await noticeText()));
+
+    // 中间态的勾/取消：两个方向都得真写回方案里。只改那个勾选框而不写回，
+    // 发出去还是旧的——而这一步标不标中间态，正是引擎决定「编不过算不算失败」的依据。
+    // 第一次跑这里只点了一下却按「取消」写断言，等于要求「勾一个本来没勾的框、结果还是没勾」，
+    // 那种断言就算实现写回错了也照样绿。现在三个方向分开钉：勾上、取消、再勾回去。
+    await evaluate(`document.querySelector('#plan .step[data-step="2"] .step-intermediate').click(); 'ok'`);
+    check(await evaluate(`state.plan.steps[1].intermediate`) === true,
+        '勾上中间态立刻写回方案里：'
+            + (await evaluate(`JSON.stringify(state.plan.steps.map(step => step.intermediate))`)));
+    check(await evaluate(`document.querySelector('#plan .step[data-step="2"] .step-intermediate').checked`) === true,
+        '勾选框自己也是照 state 画的（不是只有内部变量变了）');
+    check(await evaluate(`state.plan.steps[2].intermediate`) === true,
+        '只动点中的那一步：第 3 步本来就标着中间态，它不受影响');
+
+    await evaluate(`document.querySelector('#plan .step[data-step="2"] .step-intermediate').click(); 'ok'`);
+    check(await evaluate(`state.plan.steps[1].intermediate`) === false,
+        '取消中间态也是真写回去的（方向反过来同样得落回方案里）：'
+            + (await evaluate(`JSON.stringify(state.plan.steps.map(step => step.intermediate))`)));
+
+    // 再勾回去：下面那条「界面上改过的那一份跟着请求发出去」要验的正是这份单子，
+    // 而它得和检查阶段那份不一样才算验到（检查阶段那份第 2 步是没标中间态的）
+    await evaluate(`document.querySelector('#plan .step[data-step="2"] .step-intermediate').click(); 'ok'`);
+    check(await evaluate(`state.plan.steps[1].intermediate`) === true,
+        '再勾上，留给下面「改过的中间态跟着发出去」那一条');
+
+    await evaluate(`document.querySelector('#plan .step[data-step="3"] [data-act="step-up"]').click(); 'ok'`);
+    check(await evaluate(`state.steps.map(step => step.goal).join(' | ')`)
+            === '给 OrderMapper 加按号查询 | Controller 暴露接口 | 改过的：给 OrderService 加方法',
+        '上移真的换了顺序：' + (await evaluate(`state.steps.map(step => step.goal).join(' | ')`)));
+    check(await evaluate(`state.steps[2].index`) === 3,
+        '换完顺序步号重新排：上移之后「第 3 步」还是第 3 个位置');
+    const focusAfterMove = await evaluate(`(() => {
+      const wanted = document.querySelector('#plan .step[data-step="2"] [data-act="step-up"]');
+      return { hasFocus: document.hasFocus(), onWanted: document.activeElement === wanted,
+               active: document.activeElement.dataset.act || document.activeElement.tagName };
+    })()`);
+    check(!focusAfterMove.hasFocus || focusAfterMove.onWanted,
+        '重画之后焦点还在刚按的那个按钮上（整块重画最容易把焦点抖掉）：'
+            + JSON.stringify(focusAfterMove));
+
+    await clickButton('step-add');
+    check(await evaluate(`document.querySelectorAll('#plan .step').length`) === 4, '「加一步」加在末尾');
+    await evaluate(`document.querySelector('#plan .step[data-step="4"] [data-act="step-remove"]').click(); 'ok'`);
+    check(await evaluate(`document.querySelectorAll('#plan .step').length`) === 3, '删掉之后又回到三步');
+
+    // 改完的这份单子要跟着 approvedPlan 一起发出去
+    await setField('maxrounds', '12');
+    await evaluate(`(() => {
+      // 引擎按 approvedPlan 施工，会把那一份原样回传——桩里也照这个来
+      window.__planEventSteps = payload().approvedPlan.steps;
+      window.__runs22 = 0;
+      return 'ok';
+    })()`);
+    await evaluate(`document.querySelector('#plan .steps-audit .force-run').click(); 'ok'`);
+    await sleep(900);
+    check(await evaluate(`window.__runs22`) === 1, '点「我知道，仍然继续」之后，请求真的发出去了');
+    check(await evaluate(`state.forced === false`), '而且这个放行是一次性的');
+    const body22 = JSON.parse(await evaluate(`window.__lastRunBody22`));
+    check(body22.maxRounds === 12, '总轮次上限跟着 maxRounds 发出去：' + body22.maxRounds);
+    check(body22.approvedPlan && body22.approvedPlan.steps.length === 3,
+        'approvedPlan 里带着施工单：' + JSON.stringify(body22.approvedPlan && body22.approvedPlan.steps.length));
+    check(body22.approvedPlan.steps[2].goal === '改过的：给 OrderService 加方法',
+        '而且是界面上改过的那一份（发旧的等于用户白改）：'
+            + body22.approvedPlan.steps.map(step => step.goal).join(' | '));
+    // 上移之后单子的顺序是：第 1 步 OrderMapper、第 2 步 Controller（原本就标着中间态）、
+    // 第 3 步 OrderService（界面上刚勾上的）。三个标记都得原样发出去
+    check(body22.approvedPlan.steps.map(step => step.intermediate).join(',') === 'false,true,true',
+        '中间态的勾/取消也跟着发过去了（第 3 步是在界面上勾的，发旧的就等于白勾）：'
+            + body22.approvedPlan.steps.map(step => step.intermediate).join(','));
+
+    // 桩自己也得照真后端来：步级事件 round=0（RunService 里是 hub.publish(level, 0, currentStep, …)），
+    // 只有轮级那条带轮号。桩写错不会让别的断言变红，但「轮次」和「步」就被搅在一起了——
+    // 这一链第一次跑就是栽在「手写的桩和真后端不一致」上，所以这一条专门盯着桩自己
+    check(await evaluate(`JSON.stringify(window.__makeEvents22().map(event => event.round))`) === '[0,0,0,3]',
+        '桩的轮号照真后端来：步级事件 round=0，只有轮级那条带轮号：'
+            + (await evaluate(`JSON.stringify(window.__makeEvents22().map(event => event.round))`)));
+
+    // 事件是从桩里来的、而且真的被界面收到了。漏到真后台上时这一条会直接红——
+    // 免得「事件根本没进来」又被读成「界面没照着事件画」
+    check(await evaluate(`(window.__stubbed22 || []).includes('/api/events')`),
+        '进度事件走的是桩（不是漏到真后端去了）：'
+            + (await evaluate(`JSON.stringify(window.__stubbed22 || [])`)));
+
+    // 运行中的步态：plan 事件整份定下来，之后靠「第几条事件属于哪一步」
+    await waitFor(`document.querySelector('#plan .step[data-step="2"] .step-state') !== null`,
+        '运行之后施工单还在（而且被引擎回传的那一份刷新过）');
+    const chips22 = await evaluate(`[...document.querySelectorAll('#plan .step .step-state')]
+        .map(chip => chip.textContent)`);
+    check(JSON.stringify(chips22) === '["成功","中间态未通过","未做"]',
+        '每步的状态按事件画出来了：' + JSON.stringify(chips22));
+    check(await evaluate(`document.querySelector('#plan .step[data-step="2"]').dataset.state`)
+            === 'intermediate', '整行的状态也跟着走（不只是那个小标签）');
+    check(await evaluate(`document.querySelector('#plan .step[data-step="3"]').dataset.state`)
+            === 'pending', '轮级那句带着步号，但它不是步态：第 3 步该停在「未做」');
+    check(await evaluate(`document.getElementById('plan').textContent`)
+            .then(t => t.includes('检查阶段产出的施工单')), 'plan 事件说了单子是哪来的，界面照写');
+    check(await evaluate(`[...document.querySelectorAll('#log .line')]
+            .some(line => line.textContent.includes('第 3 轮：调用模型'))`),
+        '那几条日志也进了时间线');
+
+    // 运行结束之后：用运行详情里那份留档再校正一遍。
+    // 留档说第 3 步失败、还记着每步花了多少轮——这两样事件里都没有，
+    // 所以这一段的断言只可能靠「校正」那条路满足
+    await evaluate(`(() => {
+      window.__runsList = [{ id: 'r22' }];
+      window.__detail = {
+        stepsSource: 'APPROVED',
+        steps: [
+          { index: 1, goal: '给 OrderMapper 加按号查询', intermediate: false,
+            state: 'SUCCESS', rounds: 2,
+            changes: [{ path: 'a/A.java', created: false, bytes: 3, diff: '+x' }] },
+          { index: 2, goal: 'Controller 暴露接口', intermediate: true,
+            state: 'INTERMEDIATE', rounds: 3,
+            changes: [{ path: 'a/B.java', created: true, bytes: 9, diff: '+y' }] },
+          { index: 3, goal: '改过的：给 OrderService 加方法', intermediate: false,
+            state: 'FAILED', rounds: 1, changes: [] },
+        ],
+      };
+      // 结果区先按「没有留档」画一遍（一个文件一块），校正之后应该变成按步分组
+      renderResult({ status: 'SUCCESS_UNVERIFIED', attempts: 5, detail: '留档校正用',
+        changes: [{ path: 'a/A.java', created: false, bytes: 3, diff: '+x' },
+                  { path: 'a/B.java', created: true, bytes: 9, diff: '+y' }] });
+      state.recordBaseline = 'r0';   // 开跑前是另一条：于是 r22 就是这一次的
+      setRunning(false);
+      return adoptRunDetail();
+    })()`);
+
+    check(await evaluate(`state.stepDetail && state.stepDetail.length`) === 3,
+        '运行详情里的每步留档拿到了');
+    check(await evaluate(`document.querySelector('#plan .step[data-step="3"] .step-state').textContent`)
+            === '失败',
+        '留档把事件没说的一步也校正了（事件里第 3 步停在「未做」）：'
+            + (await evaluate(`document.querySelector('#plan .step[data-step="3"] .step-state').textContent`)));
+    check(await evaluate(`[...document.querySelectorAll('#plan .step-rounds')]
+            .map(item => item.textContent).join(' | ')`) === '这一步花了 2 轮 | 这一步花了 3 轮 | 这一步花了 1 轮',
+        '每步花了多少轮也写出来了（这是留档里的数，事件里没有）');
+    check(await evaluate(`document.querySelectorAll('#result .step-group').length`) === 3,
+        '结果区的 diff 按步分组：三步各一组');
+    check(await evaluate(`document.querySelectorAll('#result .change').length`) === 2,
+        '两个文件的改动一块不少（只是换了个摆法）');
+    check(await evaluate(`document.querySelector('#result .step-group-head .step-state.intermediate')
+            .textContent`) === '中间态未通过', '每一组的抬头带着那一步的状态');
+    check(await evaluate(`document.querySelector('#result .step-group:last-child .step-group-empty')
+            !== null`),
+        '一步都没改文件时也把它列出来，写清「这一步没有落盘的改动」');
+    check(await evaluate(`document.querySelector('#result .step-group-head .step-state.failed')
+            .textContent`) === '失败', '没落盘的那一组也带着它自己的状态');
+
+    // 没走检查时的那条路：施工单是引擎开工前现生成的，界面照样要画出来，
+    // 但**不能**摆一堆改了也发不回去的输入框
+    await evaluate(`(() => {
+      window.__keepPlan22 = state.plan;
+      state.plan = null;
+      state.stepStates = new Map([[1, 'SUCCESS'], [2, 'FAILED']]);
+      renderPlan();
+      return 'ok';
+    })()`);
+    check(await evaluate(`document.querySelectorAll('#plan .step').length`) === 3,
+        '没有检查结果时，引擎现生成的施工单也画出来（那正是「它打算分几步做」）');
+    check(await evaluate(`document.querySelector('#plan .plan-head b').textContent`)
+            === '这次运行的施工单', '标题说清这一份不是检查出来的那份');
+    check(await evaluate(`document.querySelectorAll('#plan .step-goal').length`) === 0
+            && await evaluate(`document.querySelectorAll('#plan .step-goal-read').length`) === 3,
+        '这时候只给文字：不给改了也发不回去的输入框');
+    check(await evaluate(`!document.querySelector('#step-add')
+            && document.querySelectorAll('#plan [data-act="step-up"]').length === 0`),
+        '也没有「加一步」「上移下移」（这一轮它已经照着在做了）');
+    check(await evaluate(`!!document.getElementById('steps-readonly')`),
+        '并且说明白为什么这里改不了、想改该怎么做');
+    check(await evaluate(`[...document.querySelectorAll('#plan .step-state')]
+            .map(chip => chip.textContent).join(',')`) === '成功,失败,未做',
+        '状态照样画：这时候正是要看它做到哪一步了');
+    await evaluate(`(() => {
+      state.plan = window.__keepPlan22;
+      state.stepStates = new Map();
+      renderPlan();
+      return 'ok';
+    })()`);
+
+    // 桩撤掉，界面回到真接口上；这一链改过的东西也收拾干净
+    await evaluate(`(() => {
+      window.fetch = window.__inner22;
+      window.__stubbed22 = null;
+      window.__plan22 = null;
+      window.__makeEvents22 = null;
+      window.__planEventSteps = null;
+      state.selected = new Set(window.__selected22 || []);
+      state.plan = null;
+      state.audit = [];
+      state.stepAudit = { findings: [], hints: [] };
+      state.steps = [];
+      state.stepStates = new Map();
+      state.stepDetail = null;
+      state.stepsEdited = false;
+      state.forced = false;
+      renderPlan();
+      updatePicked();
+      return 'ok';
+    })()`);
+    await evaluate(`refreshPending()`);
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,

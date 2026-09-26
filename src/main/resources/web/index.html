@@ -752,6 +752,106 @@
     font-size: 13px;
   }
 
+  /* ---------- 施工单（有序的步骤条） ----------
+     为什么不做成第二张流程图：施工单是**有序**的列表，而每一步上要挂的东西
+     （改哪一句、涉及哪些文件、勾不勾中间态、上移下移）全是可交互的表单控件。
+     塞进 SVG 之后，键盘改不动、文字也选不中；而流程图那边回答的是另一个问题
+     （整件事的走向），两者不是同一件事，长得一样反而会让人以为是同一张图。 */
+  .steps {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+  .steps-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .steps-head b { font-size: 13px; }
+  .steps-source { color: var(--muted); font-size: 12px; }
+  /* 「已改」要一直挂着，而不是弹一条四秒就走的提示：
+     用户改完施工单到真点「运行」之间可能隔很久，那时候界面必须还写着它 */
+  .steps-edited { color: var(--accent); font-size: 12px; }
+
+  .step {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    background: var(--panel);
+  }
+  /* 一眼看出哪一步在跑、哪一步出了事：边框与底色跟着状态走。
+     成功不点整行——它不需要提醒，那个绿标签就够了（全页都有的 .status.ok / .ok-plan 也是这么办的：
+     只用底 + 字色，不描边）；「正在跑 / 编不过 / 失败」才值得把一整行点亮 */
+  .step[data-state=running] { border-color: var(--accent-line); background: var(--accent-weak); }
+  .step[data-state=intermediate] { border-color: var(--warn-line); background: var(--warn); }
+  .step[data-state=failed] { border-color: var(--error-line); background: var(--error); }
+
+  .step-head { display: flex; align-items: center; gap: 8px; }
+  .step-index { flex: none; color: var(--muted); font-size: 12px; }
+  .step-goal { flex: 1; min-width: 0; padding: 4px 8px; font-size: 13px; }
+  /* 引擎现生成的那份施工单只能看：同一行的位置留给一句话，而不是一个改不动的输入框 */
+  .step-goal-read { flex: 1; min-width: 0; font-size: 13px; }
+  .step-state {
+    flex: none;
+    padding: 1px 6px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    font-size: 11px;
+    line-height: 1.7;
+  }
+  .step-state.pending { background: var(--chip); border-color: var(--line-strong); color: var(--muted); }
+  .step-state.running { background: var(--accent-weak); border-color: var(--accent-line); color: var(--accent); }
+  .step-state.success { background: var(--ok); color: var(--ok-text); }
+  .step-state.intermediate { background: var(--warn); border-color: var(--warn-line); color: var(--warn-text); }
+  .step-state.failed { background: var(--error); border-color: var(--error-line); color: var(--error-text); }
+  /* 中间态是这一行里最要紧的一条：它决定「停下来时项目编不编得过」 */
+  .step-flag {
+    flex: none;
+    padding: 1px 6px;
+    border: 1px solid var(--warn-line);
+    border-radius: 3px;
+    background: var(--warn);
+    color: var(--warn-text);
+    font-size: 11px;
+  }
+  .step-files {
+    margin-top: 4px;
+    font: 12px/1.6 ui-monospace, Consolas, monospace;
+    color: var(--text-2);
+    word-break: break-all;
+  }
+  .step-check { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .step-tools { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+  .step-tools label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+  .step-tools .step-rounds { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .steps-empty { color: var(--muted); font-size: 12px; }
+
+  /* 施工单里查出来的「执行不了」：和方案那份 audit 各占一块，
+     因为它说的是另一件事（哪一步做不了），措辞与原因都不能混着写 */
+  .steps-audit { margin-bottom: 10px; }
+  .steps-audit h3 { margin: 0 0 6px; font-size: 13px; color: var(--error-text); }
+  .steps-audit .item {
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    border: 1px solid var(--error-line);
+    border-radius: 6px;
+    background: var(--error);
+    font-size: 13px;
+  }
+  .steps-audit .where { font-weight: 600; }
+  .steps-audit .why { color: var(--error-text); font-size: 12px; margin-top: 2px; }
+  .steps-audit .hint { color: var(--error-text); }
+
+  /* 每步一份改动：哪一步改了哪些文件，一眼分得开 */
+  .step-group { margin-bottom: 10px; }
+  .step-group-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  .step-group-head .goal { color: var(--muted); }
+  .step-group-empty { color: var(--muted); font-size: 12px; }
+
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
 
   /* ---------- 欢迎页 ---------- */
@@ -1094,7 +1194,16 @@
                style="width:64px;text-align:center">
         轮
       </label>
+      <!-- 和上面那个不是一回事：那个管「每一步里编译失败再试几次」，
+           这个管「一整单最多烧几次模型调用」。留空就是自动（3 × 步数）。 -->
+      <label>总轮次上限
+        <input type="number" id="maxrounds" min="0" max="60" step="1" placeholder="自动"
+               style="width:64px;text-align:center">
+        轮
+      </label>
     </div>
+    <div class="hint">总轮次上限留空＝自动：按施工单的步数算，3 × 步数；
+      单步执行（没有施工单）时不设这道闸。它和「失败重试上限」是两道不同的闸。</div>
 
     <!-- 待处置的改动。它挡着的正是「运行」，所以摆在运行按钮正上方。 -->
     <div id="pending"></div>
@@ -1226,6 +1335,14 @@ const state = {
   importChecked: new Set(),  // 预览里勾中的下标
   plan: null,           // 检查阶段确认过的实现方案，会随运行一起发回去
   audit: [],            // 机器查出来的「方案执行不了的地方」；只有它拦人
+  steps: [],            // 施工单（界面上可改）：每步 {index, goal, files, check, intermediate}
+  stepStates: new Map(),// 每步此刻的状态（PENDING/RUNNING/SUCCESS/INTERMEDIATE/FAILED），按步号存
+  stepAudit: { findings: [], hints: [] }, // 机器查出来的「施工单执行不了的地方」；findings 拦人
+  stepsEdited: false,   // 施工单被手改过：要一直写着「已改，将按这份施工单执行」
+  stepsSource: '',      // 施工单从哪来（plan 事件的 source），顶行显示用
+  stepDetail: null,     // 最近一次运行详情里的每步留档：用来校正步态、按步分 diff
+  recordBaseline: null, // 开跑前最新的那条运行记录 id，跑完靠它认出「刚跑完的那一条」
+  lastResult: null,     // 最近一次的终态事件：运行详情回来之后要按它重画一遍 diff
   forced: false,        // 用户是否点了「我知道，仍然继续」（有执行不了的地方时的一次性放行）
   suffixDismissed: null, // 用户说过「不用了」的那条路径，本次会话不再提醒后缀
   running: false,
@@ -2590,10 +2707,14 @@ function payload() {
         : { name: item.name, text: item.text, note: item.note }),
     verifyCompile: $('compile').checked,
     maxRetry: retryBudget($('maxretry').value),
+    // 总轮次预算：0（留空）就是「让引擎按步数自动算」，这是后端约定的「没配」值
+    maxRounds: roundBudget($('maxrounds').value),
   };
   if (currentTemplate()) body.template = currentTemplate().name;
-  // 检查阶段确认过的方案随运行一起发回去，让模型按图施工
-  if (state.plan) body.approvedPlan = state.plan;
+  // 检查阶段确认过的方案随运行一起发回去，让模型按图施工。
+  // 施工单要带上界面上改过的那一份：引擎照 approvedPlan.steps 施工，
+  // 发一份旧的过去，用户改完等于没改。
+  if (state.plan) body.approvedPlan = planForRun(state.plan, state.steps);
   return body;
 }
 
@@ -2724,13 +2845,13 @@ async function run() {
     return;
   }
 
-  // 方案里有执行不了的地方时先拦一下。不是不让跑，是别让它「悄悄写不进去」——
-  // 用户点一下「我知道，仍然继续」之后，那次运行的记录里照样带着这份方案。
+  // 方案里、施工单里有执行不了的地方时先拦一下。不是不让跑，是别让它「悄悄写不进去」——
+  // 两处的放行是同一个开关（state.forced）：用户点一下「我知道，仍然继续」之后，
+  // 那次运行的记录里照样带着方案、也照样带着这份施工单。
   const audit = auditFindings();
-  if (audit.length && !state.forced) {
-    notice('warn', '这份方案有 ' + audit.length + ' 处执行不了：\n- '
-        + audit.map(finding => finding.path).join('\n- ')
-        + '\n要么把它们加进目标文件，要么点方案里的「我知道，仍然继续」。');
+  const stepFindings = stepAuditFindings(state.stepAudit);
+  if ((audit.length || stepFindings.length) && !state.forced) {
+    notice('warn', blockedRunMessage(audit, stepFindings));
     return;
   }
   state.forced = false;
@@ -2748,7 +2869,17 @@ async function run() {
 async function postRun(path) {
   state.cursor = 0;
   state.runId = '';
+  // 上一次运行留下的步态、每步留档、终态事件都不能跟到这一次来：
+  // 「第 3 步：成功」挂在新一轮的第三步上，是界面在撒谎
+  state.stepStates = new Map();
+  state.stepDetail = null;
+  state.lastResult = null;
+  renderStepStates();
   setRunning(true);
+
+  // 先记下此刻最新的那条运行记录。跑完才知道哪条是这一次产生的——
+  // 详情接口按 id 取，而 /api/run 回的是运行标识（一个 UUID），两者对不上号。
+  await rememberRecordBaseline();
 
   let response;
   let body;
@@ -2797,6 +2928,8 @@ async function poll() {
     state.cursor = event.id + 1;
     if (event.type === 'result') renderResult(event.payload);
     else appendLog(event);
+    // 每条事件都要过一遍：施工单（plan）与「这一步怎么了」（step 字段）都藏在这里面
+    applyStepEvent(event);
   }
   if (view.running) {
     setTimeout(poll, 400);
@@ -2807,6 +2940,9 @@ async function poll() {
   // 模型是不是又停下来说缺料。这里不拉一次，用户要手动刷新页面才看得到。
   refreshPending();
   refreshSuspended();
+  // 再拿运行详情校正一遍步态与每步的改动。它是落盘留档，比流式事件可信；
+  // 不 await：校正慢一点没关系，上面两块面板不能等它
+  adoptRunDetail();
 }
 
 function appendLog(event) {
@@ -2818,6 +2954,15 @@ function appendLog(event) {
     round.className = 'round';
     round.textContent = '第 ' + event.round + ' 轮';
     div.appendChild(round);
+  }
+  // 第几步也标出来。轮级那几句（「第 2 轮：调用模型…」）本身不带步号，
+  // 而施工单把一次运行拆成好几步之后，「这一轮是在做哪一步」正是要看的东西。
+  // 步级那几句自己已经写了「第 N 步：…」，再挂一个标签就成了结巴
+  if (event.step > 0 && !String(event.text || '').includes('第 ' + event.step + ' 步')) {
+    const tag = document.createElement('span');
+    tag.className = 'round';
+    tag.textContent = '第 ' + event.step + ' 步';
+    div.appendChild(tag);
   }
   div.appendChild(document.createTextNode(event.text));
   $('log').appendChild(div);
@@ -2902,12 +3047,21 @@ async function review() {
     }
     plan = body.plan;
     state.audit = body.audit || [];
+    // 施工单那份「执行不了的地方」和方案那份分开发过来，界面也分开存：
+    // 一处是「这些文件改不了」，另一处是「这几步做不了」，拦人的理由不一样
+    state.stepAudit = body.stepAudit || { findings: [], hints: [] };
   } catch (e) {
     notice('error', '检查失败：' + e.message);
     setReviewing(false);
     return;
   }
   state.plan = plan;
+  // 新的一份施工单：界面上那份旧的编辑、上一次运行的步态与留档都不再作数
+  state.steps = normalizeSteps(plan.steps || []);
+  state.stepsEdited = false;
+  state.stepsSource = '';
+  state.stepStates = new Map();
+  state.stepDetail = null;
   // 换了一份方案，上一次那次「仍然继续」的放行不能跟着过来
   state.forced = false;
   renderPlan();
@@ -2918,7 +3072,9 @@ function renderPlan() {
   const box = $('plan');
   box.innerHTML = '';
   const plan = state.plan;
-  if (!plan) {
+  // 没有方案、但有施工单时也要画：那是「没走检查、引擎开工前现生成」的那一份，
+  // 而「它到底打算分几步做」正是这时候最该看见的东西
+  if (!plan && !state.steps.length) {
     $('actionnote').textContent = '';
     return;
   }
@@ -2926,37 +3082,60 @@ function renderPlan() {
   const head = document.createElement('div');
   head.className = 'plan-head';
   const title = document.createElement('b');
-  title.textContent = '模型的实现方案';
-  const discard = document.createElement('span');
-  discard.className = 'discard';
-  discard.textContent = '丢弃这份方案';
-  discard.onclick = () => {
-    state.plan = null;
-    state.forced = false;
-    renderPlan();
-  };
-  head.append(title, discard);
+  title.textContent = plan ? '模型的实现方案' : '这次运行的施工单';
+  head.appendChild(title);
+  if (plan) {
+    const discard = document.createElement('span');
+    discard.className = 'discard';
+    discard.textContent = '丢弃这份方案';
+    discard.onclick = () => {
+      state.plan = null;
+      // 方案的机器审查结果、施工单、以及它的步态，都是跟着这一份方案来的，一起丢掉。
+      // 留着它们，下一份还没检查的方案会顶着上一份的问题被拦下来
+      state.audit = [];
+      state.stepAudit = { findings: [], hints: [] };
+      state.steps = [];
+      state.stepStates = new Map();
+      state.stepsEdited = false;
+      state.forced = false;
+      renderPlan();
+    };
+    head.appendChild(discard);
+  }
 
   const body = document.createElement('div');
   body.className = 'plan-body';
 
   // 机器查出来的问题排在最前面：它决定这次能不能直接跑
   const audit = auditFindings();
-  if (audit.length) {
+  if (plan && audit.length) {
     body.appendChild(auditBlock(audit));
   }
 
-  if (plan.summary) {
+  if (plan && plan.summary) {
     const summary = document.createElement('div');
     summary.className = 'plan-summary';
     summary.textContent = plan.summary;
     body.appendChild(summary);
   }
 
-  const flow = document.createElement('div');
-  const flowReport = renderFlowchart(plan.flowchart || '', flow);
-  body.appendChild(flow);
-  body.appendChild(flowNotes(plan.flowchart || '', flowReport));
+  if (plan) {
+    const flow = document.createElement('div');
+    const flowReport = renderFlowchart(plan.flowchart || '', flow);
+    body.appendChild(flow);
+    body.appendChild(flowNotes(plan.flowchart || '', flowReport));
+  }
+
+  // 施工单就摆在图的后面：图回答「整件事怎么走」，单子回答「按哪几步做、现在做到哪」。
+  // 两块都画，是因为它们回答的不是同一个问题；只有图的话，
+  // 用户看到的是模型画的一张示意图，而引擎实际是照着单子在循环。
+  body.appendChild(stepsBlock());
+
+  if (!plan) {
+    box.append(head, body);
+    $('actionnote').textContent = '';
+    return;
+  }
 
   const items = plan.missing || [];
   if (items.length) {
@@ -3023,7 +3202,10 @@ function renderPlan() {
   }
 
   box.append(head, body);
-  $('actionnote').textContent = '已带上这份方案';
+  // 改过施工单之后这句要跟着变：它就在「运行」按钮旁边，是「待会儿按什么跑」的最后一句提示
+  $('actionnote').textContent = state.stepsEdited
+      ? '已改，将按这份施工单执行'
+      : '已带上这份方案';
 }
 
 /**
@@ -3582,7 +3764,14 @@ function applyRunRequest(data) {
   $('constraints').value = (data.constraints || []).join('\n');
   if (typeof data.verifyCompile === 'boolean') $('compile').checked = data.verifyCompile;
   if (data.maxRetry) $('maxretry').value = data.maxRetry;
+  // 0/缺省都是「自动」，那就把输入框留空——填个 0 进去看着像「一轮都不给」
+  $('maxrounds').value = data.maxRounds ? data.maxRounds : '';
   state.plan = null;
+  // 这是另一份组装，上一份的施工单与它的审查结果都不该跟过来
+  state.steps = [];
+  state.stepStates = new Map();
+  state.stepAudit = { findings: [], hints: [] };
+  state.stepsEdited = false;
   renderPlan();
   renderFiles();
   renderContext();
@@ -3753,6 +3942,698 @@ function emptyLine(text) {
   return div;
 }
 
+// ---------- 施工单 ----------
+// 施工单是「这次按哪几步做」那张单子，它在界面上有三个身份：方案面板上要画出来的东西、
+// 用户可以直接改的东西、以及随 approvedPlan 发回引擎的执行依据。
+//
+// 为什么不做成第二张流程图：施工单是**有序**的列表，而且每一步上挂的东西
+// （改哪一句、涉及哪些文件、勾不勾中间态、上移下移）全是可交互的表单控件——
+// 塞进 SVG 之后键盘改不动、文字也选不中。而流程图回答的是另一个问题（整件事的走向），
+// 两张图长得一样反而会让人以为它们是同一件东西。
+//
+// 这一段是纯逻辑（状态映射、事件判定、编辑操作、diff 归拢），
+// 所以 src/test/js/web.test.js 直接读这段源码来测。
+
+/** 每步的状态 → [class, 文案]。PENDING 是「还没轮到它」，不是引擎会给的值。 */
+const STEP_STATES = {
+  PENDING: ['pending', '未做'],
+  RUNNING: ['running', '进行中'],
+  SUCCESS: ['success', '成功'],
+  INTERMEDIATE: ['intermediate', '中间态未通过'],
+  FAILED: ['failed', '失败'],
+};
+
+/** 施工单是从哪来的（plan 事件的 source）。它回答「这次和走过检查的那次差在哪」。 */
+const STEP_SOURCE_LABEL = {
+  APPROVED: '检查阶段产出的施工单',
+  GENERATED: '没有检查结果，开工前现生成的施工单',
+  SINGLE: '没有可用的施工单，按单步执行',
+};
+
+/** 状态 → [class, 文案]；认不出来的按「未做」画，而不是留一个没颜色的空白标签。 */
+function stepStateMeta(name) {
+  return STEP_STATES[name] || STEP_STATES.PENDING;
+}
+
+/** 某一步此刻的状态；界面里没记过它就是「未做」。 */
+function stepState(index) {
+  return state.stepStates.get(index) || 'PENDING';
+}
+
+/**
+ * 一条运行事件把某一步推到了哪个状态；推不出来时返回 null。
+ *
+ * <p>事件里没有结构化的步态字段（只有 text、level 和 step），所以只能认
+ * ProgressMessages 里那几句话——好在它们和 StepState 一一对应，而且是同一份代码写出来的。
+ * 认不出来时**什么都不做**：宁可这一步停在「进行中」，也不要把一句
+ * 「第 2 轮：调用模型…」误读成「第 2 步成功了」。
+ */
+function stepEventState(event) {
+  if (!event || !(event.step > 0) || event.type === 'plan' || event.type === 'result') {
+    return null;
+  }
+  const text = String(event.text || '');
+  // 这一步重试：回滚到该步开始前，于是它又回到「进行中」
+  if (text.includes('，已回滚到该步开始前的状态')) return 'RUNNING';
+  // 「标的是中间态，实际编译通过了」是好消息：它确实编过了
+  if (text.includes('标的是中间态，实际编译通过了')) return 'SUCCESS';
+  if (text.endsWith('：成功')) return 'SUCCESS';
+  if (text.endsWith('：中间态（编译未通过）')) return 'INTERMEDIATE';
+  if (text.endsWith('：失败')) return 'FAILED';
+  // 「第 3 步：做点什么（涉及 a.java）」——stepStarted 那一句的固定尾巴
+  if (text.includes('（涉及 ')) return 'RUNNING';
+  return null;
+}
+
+/**
+ * 施工单规范化。
+ *
+ * @param steps    原始步子（可能来自模型、也可能是界面上改过的）
+ * @param renumber true = 步号按顺序重排成 1..N（界面上改过之后就该这样：
+ *                 上移下移之后，「第 3 步」指的仍然是第 3 个位置）；
+ *                 false = 保留引擎给的步号（事件里的 step 就是它，重排会让两者对不上号）
+ */
+function normalizeSteps(steps, renumber = true) {
+  return (steps || []).map((step, at) => ({
+    index: renumber || !(step && step.index > 0) ? at + 1 : step.index,
+    goal: String((step && step.goal) || '').trim(),
+    files: ((step && step.files) || []).map(file => String(file).trim()).filter(Boolean),
+    check: String((step && step.check) || '').trim(),
+    intermediate: !!(step && step.intermediate),
+  }));
+}
+
+/** 上移/下移一步。到顶/到底了就原样还回去，调用方不用自己判边界。 */
+function moveStep(steps, at, delta) {
+  const list = normalizeSteps(steps);
+  const to = at + delta;
+  if (at < 0 || at >= list.length || to < 0 || to >= list.length) {
+    return list;
+  }
+  const [moved] = list.splice(at, 1);
+  list.splice(to, 0, moved);
+  return normalizeSteps(list);
+}
+
+/**
+ * 删掉一步。
+ *
+ * <p>留最后一步：空施工单在引擎那边等于「没有施工单」，会静默退化成
+ * 一次调用把整件事做完——那不是用户能表达出来的意图，所以干脆不让删空。
+ */
+function removeStep(steps, at) {
+  const list = normalizeSteps(steps);
+  if (list.length > 1 && at >= 0 && at < list.length) {
+    list.splice(at, 1);
+  }
+  return normalizeSteps(list);
+}
+
+/** 末尾加一步。新步子不标中间态：标它是需要理由的，默认不标。 */
+function appendStep(steps) {
+  const list = normalizeSteps(steps);
+  list.push({ index: list.length + 1, goal: '', files: [], check: '', intermediate: false });
+  return normalizeSteps(list);
+}
+
+/**
+ * 发回给引擎的那份方案：把界面上改过的施工单塞进 approvedPlan。
+ *
+ * <p>引擎按 {@code approvedPlan.steps} 施工，而用户在界面上改的正是这一份。
+ * 不塞进去，「改完还是照原来那份跑」，改动等于白做。
+ *
+ * <p>没有施工单时原样返回：{@code steps: []} 和「没这个字段」在引擎那边是同一件事，
+ * 但没必要顺手把一份没有施工单的方案改造成另一个样子。
+ */
+function planForRun(plan, steps) {
+  if (!plan) return null;
+  const list = normalizeSteps(steps);
+  return list.length ? { ...plan, steps: list } : plan;
+}
+
+/**
+ * 总轮次预算。
+ *
+ * <p>留空（或写了不是数字的东西）都算「自动」，也就是 0——那是后端约定的「没配」值，
+ * 它会按步数算成 3 × 步数。这里和 retryBudget 的默认值刻意相反：
+ * 「失败重试次数」空着必须给一个安全数，而「总轮次」空着本来就有一个正确的自动值，
+ * 猜一个固定数字反而把「自动」那套关掉了。
+ */
+function roundBudget(raw) {
+  const text = String(raw === null || raw === undefined ? '' : raw).trim();
+  if (!text) return 0;
+  const value = Math.floor(Number(text));
+  return Number.isFinite(value) ? Math.min(60, Math.max(0, value)) : 0;
+}
+
+/** 一条施工单发现落在哪里：step = 0 表示问题在整份单子上（步数越界这一类）。 */
+function stepFindingLabel(step) {
+  return step > 0 ? '第 ' + step + ' 步' : '整份施工单';
+}
+
+/** 施工单那份「执行不了的地方」。和方案那份 audit 各占一块，理由一样：都是算出来的才拦人。 */
+function stepAuditFindings(stepAudit) {
+  return (stepAudit && stepAudit.findings) || [];
+}
+
+/**
+ * 点「运行」被拦下来的那句话；两处都没有问题时返回空串。
+ *
+ * <p>两处的措辞分开写：一处是「这些文件改不了」，另一处是「这几步做不了」，
+ * 混成一句之后，用户分不清自己是该去补目标文件，还是该去改施工单。
+ */
+function blockedRunMessage(audit, stepFindings) {
+  const parts = [];
+  if (audit && audit.length) {
+    parts.push('这份方案有 ' + audit.length + ' 处执行不了：\n- '
+        + audit.map(finding => finding.path).join('\n- ')
+        + '\n要么把它们加进目标文件，要么点方案里的「我知道，仍然继续」。');
+  }
+  if (stepFindings && stepFindings.length) {
+    parts.push('这份施工单有 ' + stepFindings.length + ' 处执行不了：\n- '
+        + stepFindings.map(finding =>
+            stepFindingLabel(finding.step) + '：' + finding.reason).join('\n- ')
+        + '\n要么改施工单（改哪一步做什么、删掉那一步、把最后一步的中间态勾掉），'
+        + '要么点方案里的「我知道，仍然继续」。');
+  }
+  return parts.join('\n\n');
+}
+
+/** 路径比较用的归一形式：反斜杠、首尾空格、开头斜杠都收干净。 */
+function fileKey(path) {
+  return String(path === null || path === undefined ? '' : path)
+      .trim().replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+/**
+ * 把一批改动按施工单分成几组。
+ *
+ * <p>两套依据，优先级不同：
+ * <ol>
+ *   <li>运行详情里每步的留档（{@code record.steps[].changes}）——它记的就是「这一步写了什么」，
+ *       最准。两步碰同一个文件时，只有它答得出来；</li>
+ *   <li>施工单里每步声明的文件——运行还没结束时只有这个，按文件归属去猜，
+ *       猜错的情况（两个文件都被两步碰过）是已知的代价。</li>
+ * </ol>
+ * 分不出来时（单步执行、老记录、没有施工单）返回**一组、step 为 null**，
+ * 调用方据此画成原来的样子。
+ *
+ * @return [{step: {index, goal, state?, rounds?} | null, changes: [...]}]
+ */
+function changeGroups(changes, stepDetail, steps) {
+  const list = (changes || []).slice();
+  const detail = (stepDetail || []).filter(step => step && step.index > 0);
+  // 留档说这次只有一步：那这次就是单步跑完的，按老样子一个文件一块。
+  // 别拿界面上的划线去分组——那是另一份东西，把一次单步运行画成「第 1 步 / 第 2 步」是撒谎
+  if (detail.length === 1) {
+    return [{ step: null, changes: list }];
+  }
+  if (detail.length > 1) {
+    const groups = detail.map(step => ({
+      step: { index: step.index, goal: step.goal || '', state: step.state || '', rounds: step.rounds || 0 },
+      changes: (step.changes || []).slice(),
+    }));
+    // 留档里没归到任何一步上的改动单独列出来，而不是丢掉：
+    // 它们在磁盘上是真发生过的，界面少画一块，用户就会以为没改过
+    const known = new Set(groups.flatMap(group => group.changes.map(change => fileKey(change.path))));
+    const loose = list.filter(change => !known.has(fileKey(change.path)));
+    if (loose.length) groups.push({ step: null, changes: loose });
+    return groups;
+  }
+  const plan = (steps || []).filter(step => step && step.index > 0);
+  if (plan.length < 2 || !list.length) {
+    return [{ step: null, changes: list }];
+  }
+  const groups = plan.map(step => ({
+    step: { index: step.index, goal: step.goal || '', state: '' },
+    changes: [],
+  }));
+  const owner = new Map();
+  plan.forEach((step, at) => {
+    for (const file of step.files || []) {
+      const key = fileKey(file);
+      if (!owner.has(key)) owner.set(key, groups[at]);
+    }
+  });
+  const loose = [];
+  for (const change of list) {
+    const group = owner.get(fileKey(change.path));
+    if (group) group.changes.push(change);
+    else loose.push(change);
+  }
+  const filled = groups.filter(group => group.changes.length);
+  if (!filled.length) {
+    // 一个文件都对不上：别硬分组，按老样子画
+    return [{ step: null, changes: list }];
+  }
+  if (loose.length) filled.push({ step: null, changes: loose });
+  return filled;
+}
+
+// ---------- 施工单：方案面板上那一块 ----------
+
+/** 施工单整块：标题行 + 机器查出来的「哪一步做不了」 + 一排行 + 「加一步」。 */
+function stepsBlock() {
+  const box = document.createElement('div');
+  box.className = 'steps';
+  // 有方案（= 走过检查）时这份单子可以在界面上改；没有方案时它是引擎开工前
+  // 现生成的那一份，这一轮照它走、改了也发不回去——那种情况下摆出输入框比不给更糟
+  const editable = !!state.plan;
+
+  const head = document.createElement('div');
+  head.className = 'steps-head';
+  const title = document.createElement('b');
+  title.textContent = '施工单';
+  const meta = document.createElement('span');
+  meta.className = 'steps-source';
+  const source = STEP_SOURCE_LABEL[state.stepsSource] || '';
+  meta.textContent = (source ? source + '，' : '') + '共 ' + state.steps.length + ' 步';
+  head.append(title, meta);
+  if (state.stepsEdited) {
+    // 一直挂着，不是一个弹四秒就走的提示：改完到真点「运行」之间可能隔很久，
+    // 那时候界面必须还写着「待会儿按这份跑」
+    const edited = document.createElement('span');
+    edited.className = 'steps-edited';
+    edited.textContent = '已改，将按这份施工单执行';
+    head.appendChild(edited);
+  }
+  box.appendChild(head);
+
+  const findings = stepAuditFindings(state.stepAudit);
+  if (findings.length) {
+    box.appendChild(stepsAuditBlock(findings));
+  }
+  // 提示只显示、不拦人：中间态偏多这一类是「这么切可能不好」，不是「这么做会卡住」
+  for (const hint of (state.stepAudit && state.stepAudit.hints) || []) {
+    const line = document.createElement('div');
+    line.className = 'hint';
+    line.textContent = hint;
+    box.appendChild(line);
+  }
+
+  if (!state.steps.length) {
+    const empty = document.createElement('div');
+    empty.className = 'steps-empty';
+    empty.textContent = '这份方案里没有施工单：这次运行会按单步执行'
+        + '（一次调模型把整件事做完，中途失败只能整轮重来）。';
+    box.appendChild(empty);
+    return box;
+  }
+
+  state.steps.forEach((step, at) => box.appendChild(stepRow(step, at, editable)));
+
+  if (!editable) {
+    const why = document.createElement('div');
+    why.className = 'hint';
+    why.id = 'steps-readonly';
+    why.textContent = '这份施工单是这次运行开工前现生成的：它已经照着往下做了，'
+        + '所以这里只能看。想在上面改，先点「先检查」，改完再运行。';
+    box.appendChild(why);
+    return box;
+  }
+
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'ghost small';
+  add.id = 'step-add';
+  add.textContent = '＋ 加一步';
+  add.onclick = () => editSteps(list => appendStep(list),
+      { index: state.steps.length + 1, act: 'step-goal' });
+  box.appendChild(add);
+  return box;
+}
+
+/**
+ * 施工单里的「执行不了」。
+ *
+ * <p>和方案那份 audit 长得像但分成两块：它说的是另一件事（哪一步做不了），
+ * 原因与出路都不一样。两块共用同一个放行开关（state.forced），不新造一套。
+ */
+function stepsAuditBlock(findings) {
+  const box = document.createElement('div');
+  box.className = 'steps-audit';
+
+  const heading = document.createElement('h3');
+  heading.textContent = '这份施工单有 ' + findings.length + ' 处执行不了（照着做会卡住）';
+  box.appendChild(heading);
+
+  for (const finding of findings) {
+    const row = document.createElement('div');
+    row.className = 'item';
+    const where = document.createElement('div');
+    where.className = 'where';
+    where.textContent = stepFindingLabel(finding.step);
+    const why = document.createElement('div');
+    why.className = 'why';
+    why.textContent = finding.reason;
+    row.append(where, why);
+    box.appendChild(row);
+  }
+
+  const gate = document.createElement('div');
+  gate.className = 'gate';
+  gate.textContent = '不解决就点「运行」的话，这几步会卡在那儿。'
+      + '也可以直接在下面改施工单，改完按新的那份跑。';
+  const force = document.createElement('button');
+  force.className = 'ghost force-run';
+  force.textContent = '我知道，仍然继续';
+  force.onclick = () => {
+    state.forced = true;
+    run();
+  };
+  gate.appendChild(force);
+  box.appendChild(gate);
+  return box;
+}
+
+/** 施工单上的一行：第几步、做什么（可改）、涉及哪些文件、怎么算做完、状态、以及几个编辑按钮。 */
+function stepRow(step, at, editable) {
+  const meta = stepStateMeta(stepState(step.index));
+  const row = document.createElement('div');
+  row.className = 'step';
+  row.dataset.step = String(step.index);
+  row.dataset.state = meta[0];
+
+  const head = document.createElement('div');
+  head.className = 'step-head';
+
+  const index = document.createElement('span');
+  index.className = 'step-index';
+  index.textContent = '第 ' + step.index + ' 步';
+
+  let goal;
+  if (editable) {
+    goal = document.createElement('input');
+    goal.type = 'text';
+    goal.className = 'step-goal';
+    goal.value = step.goal || '';
+    goal.placeholder = '这一步做什么';
+    goal.dataset.act = 'step-goal';
+    goal.setAttribute('aria-label', '第 ' + step.index + ' 步做什么');
+    // onchange 而不是 oninput：每敲一个字就写回 state 会让状态比眼睛快，
+    // 真正要的是「改完了告诉我一声」
+    goal.onchange = () => changeGoal(step.index, goal.value);
+  } else {
+    goal = document.createElement('span');
+    goal.className = 'step-goal-read';
+    goal.textContent = step.goal || '（这一步没写做什么）';
+  }
+
+  const chip = document.createElement('span');
+  chip.className = 'step-state ' + meta[0];
+  chip.textContent = meta[1];
+
+  head.append(index, goal, chip);
+  // 状态标签说的是「此刻怎么样了」，中间态说的是「这一步的约定」，
+  // 两者会同时成立（比如中间态成功了），所以两个都画
+  if (step.intermediate) {
+    const flag = document.createElement('span');
+    flag.className = 'step-flag';
+    flag.textContent = '中间态';
+    head.appendChild(flag);
+  }
+  row.appendChild(head);
+
+  if ((step.files || []).length) {
+    const files = document.createElement('div');
+    files.className = 'step-files';
+    files.textContent = '涉及：' + step.files.join('、');
+    row.appendChild(files);
+  }
+  if (step.check) {
+    const check = document.createElement('div');
+    check.className = 'step-check';
+    check.textContent = '算做完：' + step.check;
+    row.appendChild(check);
+  }
+  if (!editable) {
+    return row;
+  }
+
+  const tools = document.createElement('div');
+  tools.className = 'step-tools';
+  const intermediate = document.createElement('label');
+  const toggle = document.createElement('input');
+  toggle.type = 'checkbox';
+  toggle.className = 'step-intermediate';
+  toggle.dataset.act = 'step-intermediate';
+  toggle.checked = !!step.intermediate;
+  toggle.onchange = () => changeIntermediate(step.index, toggle.checked);
+  const label = document.createElement('span');
+  label.textContent = '这一步做完项目可能编不过（中间态）';
+  intermediate.append(toggle, label);
+
+  tools.append(intermediate,
+      stepButton('↑ 上移', 'step-up', () => editSteps(list => moveStep(list, at, -1),
+          { index: at, act: 'step-up' })),
+      stepButton('↓ 下移', 'step-down', () => editSteps(list => moveStep(list, at, 1),
+          { index: at + 2, act: 'step-down' })),
+      stepButton('删除', 'step-remove', () => editSteps(list => removeStep(list, at))));
+
+  const rounds = stepRounds(step.index);
+  if (rounds) {
+    const spent = document.createElement('span');
+    spent.className = 'step-rounds';
+    spent.textContent = rounds;
+    tools.appendChild(spent);
+  }
+  row.appendChild(tools);
+  return row;
+}
+
+function stepButton(text, act, onClick) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'ghost small';
+  button.textContent = text;
+  button.dataset.act = act;
+  button.onclick = onClick;
+  return button;
+}
+
+/** 这一步实际花了多少轮（运行详情里的 rounds）。没跑过就没有这句话。 */
+function stepRounds(index) {
+  const hit = (state.stepDetail || []).find(step => step.index === index);
+  return hit && hit.rounds > 0 ? '这一步花了 ' + hit.rounds + ' 轮' : '';
+}
+
+/**
+ * 施工单的编辑落点。
+ *
+ * <p>三步走：改 state.steps → 同步写回 state.plan.steps（payload 发的是 plan）→ 重画。
+ * 只改 state.steps 而不写回 plan，就成了「界面上改了，发出去的还是旧的」。
+ *
+ * @param change 收下当前施工单、返回新的一份（见上面的 moveStep / appendStep / removeStep）
+ * @param focus  重画之后把焦点放回哪：{index, act}；不传就随它去
+ */
+function editSteps(change, focus) {
+  state.steps = change(state.steps);
+  if (state.plan) state.plan.steps = state.steps;
+  state.stepsEdited = true;
+  renderPlan();
+  if (focus) {
+    focusStepControl(focus.index, focus.act);
+  }
+  notice('ok', '已改，将按这份施工单执行。');
+}
+
+/** 重画之后把焦点放回同一个控件：上移下移会让这些行整块重建，焦点会掉到 body 上。 */
+function focusStepControl(index, act) {
+  if (!(index > 0)) return;
+  const hit = document.querySelector('#plan .step[data-step="' + index + '"] [data-act="' + act + '"]');
+  if (hit) hit.focus();
+}
+
+/** 改某一步做什么。步号不跟着文字走，所以按步号找回那一行。 */
+function changeGoal(index, goal) {
+  editSteps(list => list.map(step => step.index === index ? { ...step, goal } : step),
+      { index, act: 'step-goal' });
+}
+
+/** 勾/取消中间态。 */
+function changeIntermediate(index, intermediate) {
+  editSteps(list => list.map(step => step.index === index ? { ...step, intermediate } : step),
+      { index, act: 'step-intermediate' });
+}
+
+/**
+ * 只把每步的状态标签刷新一遍，不整块重画。
+ *
+ * <p>运行中每来一条带步号的事件就重画整块的话，用户正在改的那一行输入框会被清掉
+ * （光标、没提交的文字一起没）。所以这里只动 class 和文案。
+ */
+function renderStepStates() {
+  for (const row of document.querySelectorAll('#plan .step')) {
+    const meta = stepStateMeta(stepState(Number(row.dataset.step)));
+    row.dataset.state = meta[0];
+    const chip = row.querySelector('.step-state');
+    if (chip) {
+      chip.className = 'step-state ' + meta[0];
+      chip.textContent = meta[1];
+    }
+  }
+}
+
+/** 一条运行事件对施工单的影响：定下来的单子（plan）与某一步的状态（step 字段）。 */
+function applyStepEvent(event) {
+  if (!event) return;
+  if (event.type === 'plan') {
+    adoptSteps(event.payload);
+    return;
+  }
+  const next = stepEventState(event);
+  if (!next) return;
+  state.stepStates.set(event.step, next);
+  renderStepStates();
+}
+
+/**
+ * 施工单定下来了（plan 事件）：整份换掉、步态清零。
+ *
+ * <p>换掉是必须的：没有检查结果时引擎会现生成一份施工单，那一份界面从来没见过。
+ * 而步态清零是为了不撒谎——「第 3 步成功」不能从上一轮运行挂到这一轮上。
+ */
+function adoptSteps(payload) {
+  const steps = normalizeSteps((payload && payload.steps) || [], false);
+  state.steps = steps;
+  if (state.plan) state.plan.steps = steps;
+  state.stepsSource = (payload && payload.source) || '';
+  state.stepStates = new Map();
+  renderPlan();
+
+  // 为拿施工单多花的调用不算轮次，但一样是用户掏的钱，所以要单独说一句
+  const probeCalls = (payload && payload.probeCalls) || 0;
+  if (probeCalls > 0) {
+    notice('warn', '这份施工单是开工前现生成的：为了拿它多花了 ' + probeCalls
+        + ' 次模型调用（不算进轮次）。');
+  }
+}
+
+/**
+ * 开跑前记住此刻最新的那条运行记录。
+ *
+ * <p>为什么要记：运行详情是按记录 id 取的，而 POST /api/run 回的是运行标识（一个 UUID），
+ * 两者对不上号。跑完再列一次，凡不是「跑之前那条最新」的第一条，就是这一次产生的。
+ */
+async function rememberRecordBaseline() {
+  try {
+    const body = await getJson('/api/runs');
+    state.recordBaseline = ((body.runs || [])[0] || {}).id || '';
+  } catch (e) {
+    // 拿不到就当不知道。宁可这一次不校正（事件已经画过一遍了），
+    // 也不要拿一条老记录去改界面上的步态
+    state.recordBaseline = null;
+  }
+}
+
+/**
+ * 运行结束后，用运行详情里那份每步留档再校正一遍。
+ *
+ * <p>为什么非要校正：事件是流式推的，可能丢、也可能因为刷新页面从半截接上，
+ * 而施工单是「步与步之间」的东西——错一步，后面全错位。留档是运行结束时一次写死的。
+ * 顺带拿到「哪一步改了哪些文件」：按文件猜归属会猜错（两步碰同一个文件），留档不会。
+ */
+async function adoptRunDetail() {
+  let newest;
+  try {
+    const body = await getJson('/api/runs');
+    newest = newRecordSince(state.recordBaseline, body.runs);
+  } catch (e) {
+    return;   // 拉不到就保持事件画出来的样子，不弹错打扰用户
+  }
+  if (!newest) return;
+  state.recordBaseline = newest.id;   // 下一次开跑，它就是新的基线
+  try {
+    applyRunDetail(await getJson('/api/run-detail?id=' + encodeURIComponent(newest.id)));
+  } catch (e) { /* 同上：校正拿不到不影响已经画出来的东西 */ }
+}
+
+/**
+ * 跑完之后，列表里哪一条留档是「这一次」的；认不出来就返回 null。
+ *
+ * <p>三种认不出来的情况分开处理，混在一起就会出错：
+ * <ul>
+ *   <li>基线是 {@code null}——开跑前那一次请求就没成功，我们不知道本次之前有哪些记录。
+ *       这时候宁可不校正，也不能拿一条老记录去改界面上的步态；</li>
+ *   <li>最新的还是基线那一条——这次运行没留下记录（没跑成、或者被拒了），没什么可校正的；</li>
+ *   <li>一条记录都没有。</li>
+ * </ul>
+ * 注意空串（{@code ''}）与 {@code null} 不是一回事：前者是「跑之前一条记录都没有」，
+ * 那次运行留下的第一条正是本次的。
+ *
+ * @param baseline 开跑前最新记录 id；{@code null} = 不知道，{@code ''} = 当时没有记录
+ * @param runs     /api/runs 的列表，按时间倒序
+ */
+function newRecordSince(baseline, runs) {
+  const newest = (runs || [])[0];
+  if (!newest) return null;
+  if (baseline === null || baseline === undefined) return null;
+  return baseline === newest.id ? null : newest;
+}
+
+/** 拿运行详情校正界面：步态、每步花了多少轮、每步改了哪些文件。 */
+function applyRunDetail(record) {
+  const steps = ((record && record.steps) || []).filter(step => step && step.index > 0);
+  // 单步执行、老记录：压根没有步骤信息，界面就保持现在的样子
+  if (!steps.length) return;
+  state.stepDetail = steps;
+  state.stepsSource = record.stepsSource || state.stepsSource;
+  for (const step of steps) {
+    if (step.state) state.stepStates.set(step.index, step.state);
+  }
+  // 事件一条都没画过施工单（刷新过页面、或事件被截断）：至少按留档把步子补出来
+  if (!state.steps.length) state.steps = normalizeSteps(steps, false);
+  renderPlan();
+  // 结果区那份 diff 也按步重画一遍：留档比按文件猜准
+  if (state.lastResult) renderResult(state.lastResult);
+}
+
+/** 结果区里的一组改动：哪一步、什么状态、几个文件。 */
+function stepChangeGroup(group) {
+  const box = document.createElement('div');
+  box.className = 'step-group';
+
+  const head = document.createElement('div');
+  head.className = 'step-group-head';
+  if (group.step) {
+    const known = group.step.state || (state.stepStates.has(group.step.index)
+        ? stepState(group.step.index) : '');
+    if (known) {
+      const meta = stepStateMeta(known);
+      const chip = document.createElement('span');
+      chip.className = 'step-state ' + meta[0];
+      chip.textContent = meta[1];
+      head.appendChild(chip);
+    }
+    const where = document.createElement('span');
+    where.textContent = '第 ' + group.step.index + ' 步';
+    const goal = document.createElement('span');
+    goal.className = 'goal';
+    goal.textContent = '：' + (group.step.goal || '（这一步没写做什么）');
+    head.append(where, goal);
+    if (group.step.rounds > 0) {
+      const rounds = document.createElement('span');
+      rounds.className = 'goal';
+      rounds.textContent = '（' + group.step.rounds + ' 轮）';
+      head.appendChild(rounds);
+    }
+  } else {
+    head.textContent = '不属于施工单上任何一步的改动';
+  }
+  box.appendChild(head);
+
+  if (!group.changes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'step-group-empty';
+    empty.textContent = '（这一步没有落盘的改动）';
+    box.appendChild(empty);
+  }
+  for (const change of group.changes) {
+    box.appendChild(changePanel(change));
+  }
+  return box;
+}
+
 // ---------- 待处置的改动 ----------
 // 一次运行成功后，改动会一直留在磁盘上，直到用户明确选「保留」或「撤回」。
 // 界面在这里要做的就三件事：说清磁盘上留了什么、把那两个选择摆出来、
@@ -3801,9 +4682,12 @@ function diffHtml(text) {
  * 「canAccept 决定哪两个按钮、谁是主谁是次」——按 canAccept 分成两条完全不同的路，
  * 值得让 src/test/js/web.test.js 直接喂四种输入看一眼，而不是只能靠肉眼开浏览器。
  *
- * @param open 展开与否；不传（或 null）时按改动多少自动决定。
+ * @param open  展开与否；不传（或 null）时按改动多少自动决定。
+ * @param steps 施工单；给了就按步分组（哪一步改了哪些文件），不给就是老样子。
+ *              待处置的改动来自磁盘快照，它自己不知道步号——步号是界面这边
+ *              按施工单里「这一步要动哪些文件」对上去的
  */
-function pendingPanelHtml(data, open) {
+function pendingPanelHtml(data, open, steps) {
   if (!data || !data.present) {
     return '';
   }
@@ -3821,12 +4705,22 @@ function pendingPanelHtml(data, open) {
           + '<span class="pending-alert">这些改动没有经过校验：上一次运行是被打断的，'
           + '「保留当前内容」不会再替你验一遍。</span>';
 
+  const groups = changeGroups(files, null, steps);
   let body = '';
-  for (const file of files) {
-    body += '<details class="change"' + (files.length <= PENDING_OPEN_LIMIT ? ' open' : '') + '>'
-        + '<summary>' + (file.created ? '新建 ' : '修改 ') + escapeHtml(file.path) + '</summary>'
-        + '<div class="diff">' + diffHtml(file.diff) + '</div>'
-        + '</details>';
+  if (groups.length === 1 && !groups[0].step) {
+    body = files.map(file => pendingChangeHtml(file, files.length)).join('');
+  } else {
+    for (const group of groups) {
+      const where = group.step
+          ? '第 ' + group.step.index + ' 步：' + escapeHtml(group.step.goal || '（这一步没写做什么）')
+          : '不属于施工单上任何一步';
+      body += '<div class="step-group"><div class="step-group-head">'
+          + '<span>' + where + '</span>'
+          + '<span class="goal">（' + group.changes.length + ' 个文件）</span>'
+          + '</div>'
+          + group.changes.map(file => pendingChangeHtml(file, files.length)).join('')
+          + '</div>';
+    }
   }
 
   return '<section class="pending" data-open="' + expanded + '">'
@@ -3843,6 +4737,14 @@ function pendingPanelHtml(data, open) {
       + (body || '<div class="empty">后端没给出这次改动的文件明细</div>')
       + '</div>'
       + '</section>';
+}
+
+/** 一个文件的改动块。分不分组都要画它，所以只写一处。 */
+function pendingChangeHtml(file, total) {
+  return '<details class="change"' + (total <= PENDING_OPEN_LIMIT ? ' open' : '') + '>'
+      + '<summary>' + (file.created ? '新建 ' : '修改 ') + escapeHtml(file.path) + '</summary>'
+      + '<div class="diff">' + diffHtml(file.diff) + '</div>'
+      + '</details>';
 }
 
 /**
@@ -3882,7 +4784,8 @@ async function refreshPending() {
 
 function renderPending() {
   const box = $('pending');
-  box.innerHTML = pendingPanelHtml(state.pending, state.pendingOpen);
+  // 施工单一起传进去：待处置的改动只有文件路径，按步分组得靠「这一步要动哪些文件」对上去
+  box.innerHTML = pendingPanelHtml(state.pending, state.pendingOpen, state.steps);
   wirePanel(box, open => { state.pendingOpen = open; }, act => resolvePending(act));
 }
 
@@ -4065,6 +4968,7 @@ const STATUS_TEXT = {
 };
 
 function renderResult(result) {
+  state.lastResult = result;   // 运行详情回来之后要按它重画一遍 diff
   const [kind, text] = STATUS_TEXT[result.status] || ['bad', result.status];
   const box = $('result');
   box.innerHTML = '';
@@ -4079,8 +4983,18 @@ function renderResult(result) {
   detail.textContent = result.detail || '';
   box.appendChild(detail);
 
-  for (const change of result.changes || []) {
-    box.appendChild(changePanel(change));
+  // 分步执行时，改动按步分组摆出来（哪一步改了哪些文件）；
+  // 单步、没有施工单、老记录时分不出来，那就还是老样子：一个文件一块
+  const groups = changeGroups(result.changes, state.stepDetail, state.steps);
+  const flat = groups.length === 1 && !groups[0].step;
+  for (const group of groups) {
+    if (flat) {
+      for (const change of group.changes) {
+        box.appendChild(changePanel(change));
+      }
+      continue;
+    }
+    box.appendChild(stepChangeGroup(group));
   }
 
   // 新建的文件要出现在树里，否则下一轮想改它还得手输路径
