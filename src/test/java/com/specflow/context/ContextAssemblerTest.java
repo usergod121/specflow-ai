@@ -44,7 +44,8 @@ class ContextAssemblerTest {
                 system: 你是后端工程师
                 """);
 
-        String system = assembler.systemMessage(TestSpecs.builder().template("t").build(), templates);
+        String system = assembler.systemMessage(TestSpecs.builder().template("t").build(), templates,
+                PatchProtocol.INSTRUCTIONS);
 
         assertThat(system).contains("## 模板约定").contains("java、spring-boot、mybatis");
         assertThat(system).contains("可以直接使用其中的注解");
@@ -60,7 +61,8 @@ class ContextAssemblerTest {
                 system: 你是工程师
                 """);
 
-        String system = assembler.systemMessage(TestSpecs.builder().template("t").build(), templates);
+        String system = assembler.systemMessage(TestSpecs.builder().template("t").build(), templates,
+                PatchProtocol.INSTRUCTIONS);
 
         assertThat(system).contains("## 模板约定").contains("script、python");
     }
@@ -73,7 +75,8 @@ class ContextAssemblerTest {
                 system: 你是工程师
                 """);
 
-        String system = assembler.systemMessage(TestSpecs.builder().template("t").build(), templates);
+        String system = assembler.systemMessage(TestSpecs.builder().template("t").build(), templates,
+                PatchProtocol.INSTRUCTIONS);
 
         assertThat(system).doesNotContain("## 模板约定");
     }
@@ -86,10 +89,41 @@ class ContextAssemblerTest {
                 system: 你是一个只会说「你好」的助手
                 """);
 
-        String system = assembler.systemMessage(TestSpecs.builder().template("t").build(), templates);
+        String system = assembler.systemMessage(TestSpecs.builder().template("t").build(), templates,
+                PatchProtocol.INSTRUCTIONS);
 
         assertThat(system).contains(PatchProtocol.SEARCH_MARKER);
         assertThat(system).contains("你是一个只会说「你好」的助手");
+    }
+
+    /**
+     * 两档协议的差别只有一个：要不要给模型一个说「信息不足」的出口。
+     * 检查过、方案已由人确认时不给（不递梯子，见 {@link PatchProtocol#INSTRUCTIONS_WITHOUT_NEED_CONTEXT}）；
+     * 没检查过时给——那时它确实可能缺料，堵死出口等于逼它猜。
+     */
+    @Test
+    @DisplayName("带出口的那份协议里有 NEED_CONTEXT 那几行，不带出口的那份里一个字都没有")
+    void protocolsDifferOnlyInTheNeedContextOutlet() {
+        assertThat(PatchProtocol.INSTRUCTIONS)
+                .contains(PatchProtocol.NEED_CONTEXT_PREFIX)
+                .contains(PatchProtocol.SEARCH_MARKER)
+                .contains("硬性规则");
+        assertThat(PatchProtocol.INSTRUCTIONS_WITHOUT_NEED_CONTEXT)
+                .doesNotContain("NEED_CONTEXT")
+                .doesNotContain("信息不足")
+                .contains(PatchProtocol.SEARCH_MARKER)
+                .contains("硬性规则");
+        // 「去掉那一段」而不是「换一份协议」：格式与硬性规则必须一模一样，
+        // 否则模型在检查过的那条路上会按另一套格式写补丁——那是另一类静默失败
+        assertThat(PatchProtocol.INSTRUCTIONS)
+                .startsWith(PatchProtocol.INSTRUCTIONS_WITHOUT_NEED_CONTEXT);
+        String extra = PatchProtocol.INSTRUCTIONS.substring(
+                PatchProtocol.INSTRUCTIONS_WITHOUT_NEED_CONTEXT.length()).stripTrailing();
+        assertThat(extra)
+                .as("差的只有那一段：一个空行加那几行，其余字符一个不差")
+                .startsWith("\n若你判断现有信息不足以完成修改")
+                .endsWith("猜错整个包都要返工")
+                .doesNotContain(PatchProtocol.SEARCH_MARKER);
     }
 
     @Test
@@ -132,7 +166,7 @@ class ContextAssemblerTest {
                 .prompt("给缓存加一个过期时间").build();
 
         // 系统消息里是模板的角色与标签
-        String system = assembler.systemMessage(spec, templates);
+        String system = assembler.systemMessage(spec, templates, PatchProtocol.INSTRUCTIONS);
         assertThat(system).contains("你是后端工程师").contains("## 模板约定").contains("mybatis");
         // 用户消息里的需求是 spec 自己写的那句话，模板提供不了它
         assertThat(assembler.userMessage(spec, templates)).contains("给缓存加一个过期时间");

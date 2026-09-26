@@ -19,17 +19,17 @@ class RunHubTest {
     void assignsIncrementingIds() {
         hub.startRun("run-1");
 
-        assertThat(hub.publish("info", 1, 0, "第一条").id()).isEqualTo(1);
-        assertThat(hub.publish("info", 1, 0, "第二条").id()).isEqualTo(2);
+        assertThat(hub.publish("info", 1, 0, null, "第一条").id()).isEqualTo(1);
+        assertThat(hub.publish("info", 1, 0, null, "第二条").id()).isEqualTo(2);
     }
 
     @Test
     @DisplayName("按游标只取新事件")
     void returnsEventsAfterCursor() {
         hub.startRun("run-1");
-        hub.publish("info", 1, 0, "一");
-        hub.publish("info", 1, 0, "二");
-        hub.publish("info", 1, 0, "三");
+        hub.publish("info", 1, 0, null, "一");
+        hub.publish("info", 1, 0, null, "二");
+        hub.publish("info", 1, 0, null, "三");
 
         assertThat(hub.view(0).events()).hasSize(3);
         assertThat(hub.view(2).events()).extracting(RunEvent::text).containsExactly("二", "三");
@@ -40,14 +40,14 @@ class RunHubTest {
     @DisplayName("开始新运行时清空上一轮的事件并换新的 runId")
     void newRunResetsHistory() {
         hub.startRun("run-1");
-        hub.publish("info", 1, 0, "旧事件");
+        hub.publish("info", 1, 0, null, "旧事件");
         hub.finish();
 
         hub.startRun("run-2");
 
         assertThat(hub.runId()).isEqualTo("run-2");
         assertThat(hub.view(0).events()).isEmpty();
-        assertThat(hub.publish("info", 1, 0, "新事件").id()).isEqualTo(1);
+        assertThat(hub.publish("info", 1, 0, null, "新事件").id()).isEqualTo(1);
     }
 
     @Test
@@ -75,7 +75,7 @@ class RunHubTest {
     void capsEventCount() {
         hub.startRun("run-1");
         for (int i = 0; i < 600; i++) {
-            hub.publish("info", 1, 0, "第 " + i + " 条");
+            hub.publish("info", 1, 0, null, "第 " + i + " 条");
         }
 
         RunHub.RunView view = hub.view(0);
@@ -88,11 +88,32 @@ class RunHubTest {
     void logEventCarriesStep() {
         hub.startRun("run-1");
 
-        RunEvent event = hub.publish("warn", 4, 2, "第 2 步：校验未通过");
+        RunEvent event = hub.publish("warn", 4, 2, null, "第 2 步：校验未通过");
 
         assertThat(event.step()).isEqualTo(2);
         assertThat(event.round()).isEqualTo(4);
         assertThat(event.type()).isEqualTo(RunEvent.TYPE_LOG);
+    }
+
+    /**
+     * 步态是<b>结构化字段</b>，不是从文案里推出来的。
+     *
+     * <p>以前只推一句「第 2 步：加接口：成功」，界面得拿这句话去比对才画得出步态；
+     * Java 里改一句措辞，界面就静默错位。现在由引擎在事件上写清楚是哪一档。
+     */
+    @Test
+    @DisplayName("步级事件带着步态字段；轮级事件没有——它不改变某一步的状态")
+    void stepEventsCarryTheStepState() {
+        hub.startRun("run-1");
+
+        RunEvent started = hub.publish("info", 0, 2, RunEvent.STEP_RUNNING, "第 2 步：开始");
+        RunEvent finished = hub.publish("info", 0, 2, "SUCCESS", "第 2 步：成功");
+        RunEvent round = hub.publish("info", 7, 2, null, "第 7 轮：调用模型…");
+
+        assertThat(started.stepState()).isEqualTo(RunEvent.STEP_RUNNING);
+        assertThat(finished.stepState()).isEqualTo("SUCCESS");
+        assertThat(round.stepState()).as("轮级事件不带步态").isNull();
+        assertThat(round.step()).as("它照样带着步号——两件事不是一回事").isEqualTo(2);
     }
 
     @Test

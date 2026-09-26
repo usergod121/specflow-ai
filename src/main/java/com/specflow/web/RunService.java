@@ -307,7 +307,7 @@ public final class RunService implements AgentListener {
             }
         } catch (RuntimeException e) {
             log.warn("运行中断", e);
-            hub.publish("error", 0, 0, "运行中断：" + e.getMessage());
+            hub.publish("error", 0, 0, null, "运行中断：" + e.getMessage());
             hub.publishResult(payload("ERROR", 0, String.valueOf(e.getMessage()), List.of()));
         } finally {
             hub.finish();
@@ -342,45 +342,56 @@ public final class RunService implements AgentListener {
     @Override
     public void stepStarted(PlanStep step) {
         currentStep = step.index();
-        hub.publish("info", 0, currentStep, ProgressMessages.stepStarted(step));
+        hub.publish("info", 0, currentStep, RunEvent.STEP_RUNNING,
+                ProgressMessages.stepStarted(step));
     }
 
+    /**
+     * 一步的终态：步态用 {@code StepState} 的枚举名，<b>不给界面留「认中文」这条路</b>。
+     *
+     * <p>以前只推一句「第 2 步：加接口：中间态（编译未通过）」，界面靠比对这几句措辞
+     * 才知道该把哪一步画成什么状态。那种约定的坏处是：措辞一改，界面静默错位，
+     * 而两边各自的测试都还是绿的。
+     */
     @Override
     public void stepFinished(PlanStep step, AgentListener.StepState state) {
-        hub.publish(stepLevel(state), 0, currentStep, ProgressMessages.stepFinished(step, state));
+        hub.publish(stepLevel(state), 0, currentStep, state.name(),
+                ProgressMessages.stepFinished(step, state));
     }
 
     @Override
     public void stepRestored(PlanStep step, int round, String reason) {
-        hub.publish("warn", round, currentStep, ProgressMessages.stepRestored(step, reason));
+        // 回滚到该步开始前：这一步又回到「进行中」，而不是停在失败上
+        hub.publish("warn", round, currentStep, RunEvent.STEP_RUNNING,
+                ProgressMessages.stepRestored(step, reason));
     }
 
     @Override
     public void roundStarted(int round) {
-        hub.publish("info", round, currentStep, ProgressMessages.roundStarted(round));
+        hub.publish("info", round, currentStep, null, ProgressMessages.roundStarted(round));
     }
 
     @Override
     public void planRejected(int round, PatchConflictException failure) {
-        hub.publish("warn", round, currentStep, ProgressMessages.planRejected(failure));
+        hub.publish("warn", round, currentStep, null, ProgressMessages.planRejected(failure));
     }
 
     @Override
     public void filesApplied(int round, List<PatchApplier.FileChange> changes) {
-        hub.publish("info", round, currentStep, ProgressMessages.filesApplied(changes));
+        hub.publish("info", round, currentStep, null, ProgressMessages.filesApplied(changes));
     }
 
     @Override
     public void verificationFinished(int round, List<VerificationResult> results) {
         for (VerificationResult result : results) {
-            hub.publish(ProgressMessages.levelOf(result), round, currentStep,
+            hub.publish(ProgressMessages.levelOf(result), round, currentStep, null,
                     ProgressMessages.verified(result));
         }
     }
 
     @Override
     public void workspaceRestored(int round, String reason) {
-        hub.publish("warn", round, currentStep, ProgressMessages.restored(reason));
+        hub.publish("warn", round, currentStep, null, ProgressMessages.restored(reason));
     }
 
     /** 中间态和失败都要看得见：它们意味着此刻磁盘上的代码是编不过的。 */

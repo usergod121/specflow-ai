@@ -1956,14 +1956,20 @@ async function main() {
           payload: { source: 'APPROVED', probeCalls: 0,
                      steps: window.__planEventSteps || window.__plan22.steps } },
         // 步级事件在真后端里 round=0（RunService：hub.publish(level, 0, currentStep, …)）：
-        // 轮次是「调了一次模型」，步是施工单上的一步，两件事别混着写
-        { id: 2, type: 'log', level: 'info', round: 0, step: 1,
+        // 轮次是「调了一次模型」，步是施工单上的一步，两件事别混着写。
+        // 步态走 stepState 字段（引擎给的枚举名），界面不再认 text 里的中文——
+        // 下面第 5 条就是为这件事造的：它的文字按老办法会被读成「成功」，而字段说失败
+        { id: 2, type: 'log', level: 'info', round: 0, step: 1, stepState: 'SUCCESS',
           text: '第 1 步：给 OrderMapper 加按号查询：成功' },
-        { id: 3, type: 'log', level: 'warn', round: 0, step: 2,
+        { id: 3, type: 'log', level: 'warn', round: 0, step: 2, stepState: 'INTERMEDIATE',
           text: '第 2 步：Controller 暴露接口：中间态（编译未通过）' },
-        // 轮级那一句带着步号，但它不是步态：第 3 步该停在「未做」
+        // 轮级那一句带着步号，但它不是步态（没有 stepState）：第 3 步该停在「未做」
         { id: 4, type: 'log', level: 'info', round: 3, step: 3,
           text: '第 3 轮：调用模型…' },
+        // 步号 4 不在施工单里，所以它不会动到上面那三个 chip；这里要看的是「界面记下了什么」：
+        // 文字老办法读成 SUCCESS，字段说 FAILED —— 必须按字段记
+        { id: 5, type: 'log', level: 'warn', round: 0, step: 4, stepState: 'FAILED',
+          text: '第 4 步：这一步的文字是故意造出来的：成功' },
       ];
       const inner = window.fetch;
       window.__inner22 = inner;
@@ -2168,7 +2174,7 @@ async function main() {
     // 桩自己也得照真后端来：步级事件 round=0（RunService 里是 hub.publish(level, 0, currentStep, …)），
     // 只有轮级那条带轮号。桩写错不会让别的断言变红，但「轮次」和「步」就被搅在一起了——
     // 这一链第一次跑就是栽在「手写的桩和真后端不一致」上，所以这一条专门盯着桩自己
-    check(await evaluate(`JSON.stringify(window.__makeEvents22().map(event => event.round))`) === '[0,0,0,3]',
+    check(await evaluate(`JSON.stringify(window.__makeEvents22().map(event => event.round))`) === '[0,0,0,3,0]',
         '桩的轮号照真后端来：步级事件 round=0，只有轮级那条带轮号：'
             + (await evaluate(`JSON.stringify(window.__makeEvents22().map(event => event.round))`)));
 
@@ -2189,6 +2195,17 @@ async function main() {
             === 'intermediate', '整行的状态也跟着走（不只是那个小标签）');
     check(await evaluate(`document.querySelector('#plan .step[data-step="3"]').dataset.state`)
             === 'pending', '轮级那句带着步号，但它不是步态：第 3 步该停在「未做」');
+    // 步态认的是事件上的 stepState 字段，不是文案。第 5 条事件（步号 4）就是为这一条造的：
+    // 它的文字按老办法会被读成「成功」，而字段说 FAILED —— 界面必须按字段记。
+    // 老办法（拿 text 去比 ProgressMessages 的中文）在这一条上会记成 SUCCESS。
+    // 步号 4 不在施工单里，所以它不出现在图上，这里直接看界面记下的东西
+    check(await evaluate(`state.stepStates.get(4)`) === 'FAILED',
+        '步态按事件上的 stepState 字段记，不认文案（那一条的文字老办法会读成「成功」）：'
+            + (await evaluate(`String(state.stepStates.get(4))`)));
+    check(await evaluate(`[...state.stepStates.entries()].map(entry => entry.join('=')).join(',')`)
+            === '1=SUCCESS,2=INTERMEDIATE,4=FAILED',
+        '记下来的就这三步：没有 stepState 的那条事件（步号 3）一步都没动：'
+            + (await evaluate(`[...state.stepStates.entries()].map(entry => entry.join('=')).join(',')`)));
     check(await evaluate(`document.getElementById('plan').textContent`)
             .then(t => t.includes('检查阶段产出的施工单')), 'plan 事件说了单子是哪来的，界面照写');
     check(await evaluate(`[...document.querySelectorAll('#log .line')]

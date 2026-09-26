@@ -477,9 +477,17 @@ class RunStoreTest {
         assertThat(record.stepsSource()).isNull();
     }
 
+    /**
+     * 单步执行（没有施工单）也要留下<b>一条</b>步级记录。
+     *
+     * <p>引擎在这种运行里不发步级事件，于是留档里一步都没有：历史详情里看不到
+     * 「这一步做了什么、几轮、改了哪些文件」，而分步看得到——同一件事两种说法，
+     * 事后翻记录的人只能靠猜。这里补的那一条，步子来自引擎报的施工单，
+     * 轮次与改动直接来自运行结果。
+     */
     @Test
-    @DisplayName("单步执行（没有施工单）时按步记录是空列表，不是 null")
-    void writesEmptyStepsForSingleStepRuns() {
+    @DisplayName("单步执行也留一条步级记录：目标、状态、几轮、改了什么都照实记")
+    void writesOneStepForSingleStepRuns() {
         RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
         RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
                 null, AgentListener.NOOP);
@@ -487,12 +495,77 @@ class RunStoreTest {
         recorder.stepsResolved(List.of(step(1, "按需求把这件事一次做完", false)),
                 AgentListener.StepsSource.SINGLE, 2);
         recorder.roundStarted(1);
-        recorder.finished(AgentResult.success(1, List.of(), List.of()));
+        recorder.filesApplied(1, List.of(change("Foo.java", "+实现")));
+        recorder.verificationFinished(1, List.of(VerificationResult.passed("编译校验", "mvn", "")));
+        recorder.finished(AgentResult.success(1, List.of(change("Foo.java", "+实现")), List.of()));
 
         RunRecord record = store.load(store.list().get(0).id());
 
-        assertThat(record.steps()).as("新记录里这一项总是在的，老记录才没有").isEmpty();
         assertThat(record.stepsSource()).isEqualTo("SINGLE");
+        assertThat(record.steps()).as("新记录里这一项总是在的，老记录才没有").singleElement()
+                .satisfies(only -> {
+                    assertThat(only.index()).isEqualTo(1);
+                    assertThat(only.goal()).isEqualTo("按需求把这件事一次做完");
+                    assertThat(only.state()).isEqualTo("SUCCESS");
+                    assertThat(only.rounds()).as("整次运行的轮次就是这一步的轮次").isEqualTo(1);
+                    assertThat(only.changes()).singleElement()
+                            .satisfies(change -> assertThat(change.path()).isEqualTo("Foo.java"));
+                });
+    }
+
+    /**
+     * 单步失败时那条记录也得照实：它没做成，所以步态是失败、轮次照记。
+     *
+     * <p>「失败」这一档同时盖住人工中断、模型说缺料、环境问题——它们对那一步的含义是同一个：
+     * 这一步没做成。具体是哪种，同一条记录的时间线里写着。
+     *
+     * <p>改动照留：磁盘上已经回滚了，差异只有在留档里还看得见，
+     * 而「它当时改了什么」正是事后最想知道的那件事（和整次运行那一栏的 changes 一个口径）。
+     */
+    @Test
+    @DisplayName("单步失败（含被中断）时记成失败，改动照实留着而不是假装成功")
+    void recordsFailedSingleStepRun() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+
+        recorder.stepsResolved(List.of(step(1, "按需求把这件事一次做完", false)),
+                AgentListener.StepsSource.SINGLE, 2);
+        recorder.roundStarted(1);
+        recorder.finished(AgentResult.cancelled(1, List.of(change("Foo.java", "+改了一半")),
+                List.of()));
+
+        RunRecord record = store.load(store.list().get(0).id());
+
+        assertThat(record.steps()).singleElement().satisfies(only -> {
+            assertThat(only.state()).isEqualTo("FAILED");
+            assertThat(only.rounds()).isEqualTo(1);
+            assertThat(only.changes()).singleElement()
+                    .satisfies(change -> assertThat(change.diff()).contains("改了一半"));
+            assertThat(only.changes()).isEqualTo(record.changes());
+        });
+    }
+
+    /**
+     * 一步都没跑的那种运行不补记录。
+     *
+     * <p>「上一次的改动还没处置」被拒、或者刚开工就被叫停：那一步压根没开始，
+     * 记成「失败、0 轮」比空着更容易让人误判成「它做了一步然后失败了」。
+     */
+    @Test
+    @DisplayName("一步都没跑时不补记录：那一步压根没开始")
+    void writesNoStepWhenNothingRan() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+
+        recorder.stepsResolved(List.of(step(1, "按需求把这件事一次做完", false)),
+                AgentListener.StepsSource.SINGLE, 2);
+        recorder.finished(AgentResult.cancelled(0, List.of(), List.of()));
+
+        RunRecord record = store.load(store.list().get(0).id());
+
+        assertThat(record.steps()).isEmpty();
     }
 
     private static PlanStep step(int index, String goal, boolean intermediate) {

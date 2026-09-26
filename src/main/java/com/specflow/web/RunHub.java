@@ -43,8 +43,18 @@ public final class RunHub {
         return runId;
     }
 
-    public synchronized RunEvent publish(String level, int round, int step, String text) {
-        RunEvent event = RunEvent.log(nextId++, level, round, step, text);
+    /**
+     * 推一条日志事件。
+     *
+     * @param step      属于第几步；不属于某一步时传 0
+     * @param stepState 这条事件把这一步推到了哪个步态（{@link RunEvent#STEP_RUNNING}
+     *                  或 {@code AgentListener.StepState} 的枚举名）；
+     *                  <b>不是步级事件时传 {@code null}</b>——那表示「不改变某一步的状态」，
+     *                  轮级事件正是这样：它说的是「正在调模型」，不是「这一步成了 / 败了」
+     */
+    public synchronized RunEvent publish(String level, int round, int step, String stepState,
+                                         String text) {
+        RunEvent event = RunEvent.log(nextId++, level, round, step, stepState, text);
         append(event);
         return event;
     }

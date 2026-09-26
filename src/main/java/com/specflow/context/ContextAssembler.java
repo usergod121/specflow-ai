@@ -54,17 +54,16 @@ public final class ContextAssembler {
      *
      * <p>协议部分是常量且不可被模板覆盖：模板可以改变模型「怎么想」，
      * 但不能改变引擎「怎么读」。
-     */
-    public String systemMessage(Spec spec, TemplateRegistry templates) {
-        return systemMessage(spec, templates, PatchProtocol.INSTRUCTIONS);
-    }
-
-    /**
-     * 换一套协议。
      *
      * <p>检查阶段和开发阶段看到的是<b>同一份上下文</b>，只是要回答的问题不同：
      * 一个说「你打算怎么做」，一个说「把代码交出来」。所以上下文组装只有一份，
-     * 变的只是最前面那段协议。
+     * 变的只是最前面那段协议——因此协议由调用方传进来。
+     *
+     * <p><b>这里刻意没有默认值</b>：开发阶段有两档协议
+     * （{@link PatchProtocol#INSTRUCTIONS} 与
+     * {@link PatchProtocol#INSTRUCTIONS_WITHOUT_NEED_CONTEXT}），
+     * 差别正是「要不要给模型一个说信息不足的出口」。留个默认值，就等于让调用方
+     * 有可能在「检查过、方案已确认」的场合悄悄拿到带出口的那份——那正是要避免的。
      */
     public String systemMessage(Spec spec, TemplateRegistry templates, String protocol) {
         if (spec.template() == null) {

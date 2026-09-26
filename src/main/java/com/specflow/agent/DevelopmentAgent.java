@@ -68,6 +68,10 @@ import java.util.Objects;
  * <p><b>没有施工单时（{@code steps} 只有一步）走的就是上面这条路的特例</b>——
  * 一个步骤、没有步级事件、没有步级指令。老的单步行为不需要另写一段代码来保持。
  *
+ * <p>唯一另一处输入差异是提示词的措辞：检查过、方案已由人确认时用
+ * {@link PatchProtocol#INSTRUCTIONS_WITHOUT_NEED_CONTEXT}（不递「缺料就认输」这个梯子），
+ * 没检查过时用带出口的 {@link PatchProtocol#INSTRUCTIONS}。两条路共用同一套循环与回滚。
+ *
  * <p><b>回滚先于重试</b>是这里最关键的一个决定。它保证每一轮的起点都是
  * 「需求 + 该步开始前的代码」，因此模型每一轮都可以按那份原文写 SEARCH 锚点，
  * 不必追踪「上一轮改到哪了」——而这恰恰是模型最不擅长的事。
@@ -190,16 +194,23 @@ public final class DevelopmentAgent {
         }
 
         List<ChatMessage> messages = new ArrayList<>();
-        messages.add(ChatMessage.system(assembler.systemMessage(spec, templates)));
-        messages.add(ChatMessage.user(userMessage(spec, approved)));
+        // 施工单从哪来，是「这次运行和别人不一样」的唯一一处输入差异；定下来就先说出去，
+        // 界面才能一次画出「一共几步」。它同时决定提示词用哪一档协议、要不要叮嘱它别再来要东西，
+        // 所以这一步必须排在拼消息之前
+        Steps steps = stepsFor(spec, approved);
+        boolean confirmedPlan = steps.source() == StepsSource.APPROVED;
+        // 检查过、方案已由人确认：协议里不出现「信息不足」那一段（不递梯子），
+        // 回给模型的话也明说不要再要求补充信息。没检查过时仍走带出口的那一份
+        messages.add(ChatMessage.system(assembler.systemMessage(spec, templates,
+                confirmedPlan
+                        ? PatchProtocol.INSTRUCTIONS_WITHOUT_NEED_CONTEXT
+                        : PatchProtocol.INSTRUCTIONS)));
+        messages.add(ChatMessage.user(userMessage(spec, approved, confirmedPlan)));
         if (resume != null) {
             messages.add(ChatMessage.assistant(resume.modelSaid()));
-            messages.add(ChatMessage.user(resumePrompt(resume.force())));
+            messages.add(ChatMessage.user(resumePrompt(resume.force(), confirmedPlan)));
         }
 
-        // 施工单从哪来，是「这次运行和别人不一样」的唯一一处输入差异；定下来就先说出去，
-        // 界面才能一次画出「一共几步」
-        Steps steps = stepsFor(spec, approved);
         listener.stepsResolved(steps.list(), steps.source(), steps.probeCalls());
 
         List<Path> targets = targets(spec);
@@ -236,7 +247,7 @@ public final class DevelopmentAgent {
                 // 落盘的话，崩溃之后它会变成一个和 WorkspaceSnapshot 抢恢复判据的目录
                 entry = StepCheckpoint.of(pathResolver, targets);
                 listener.stepStarted(step);
-                messages.add(ChatMessage.user(stepInstruction(step, steps.list().size())));
+                messages.add(ChatMessage.user(stepInstruction(step, steps.list().size(), confirmedPlan)));
             }
 
             int verificationRetries = 0;
@@ -413,7 +424,9 @@ public final class DevelopmentAgent {
     private Steps generateSteps(Spec spec, PlanReview approved) {
         List<ChatMessage> probe = new ArrayList<>();
         probe.add(ChatMessage.system(assembler.systemMessage(spec, templates, StepsProtocol.INSTRUCTIONS)));
-        probe.add(ChatMessage.user(userMessage(spec, approved)));
+        // 「现生成施工单」和「检查过、已确认」是互斥的两条路：走到这里就说明没有已确认的单子，
+        // 所以这一份用户消息照旧留着「信息确实不足」那个出口
+        probe.add(ChatMessage.user(userMessage(spec, approved, false)));
 
         for (int attempt = 1; attempt <= STEP_GENERATION_TRIES; attempt++) {
             String response = llm.complete(probe);
@@ -474,8 +487,12 @@ public final class DevelopmentAgent {
      * <p>为什么非要多发一条：模型看到的是<b>整份需求</b>，而「现在只做第 3 步」这件事
      * 没有任何地方写着。不写清楚，它会把后面几步一起做掉——那些步骤的上下文和重试预算
      * 都还没轮到，最后表现为「它一口气写完、编译失败，却不知道是哪一步的错」。
+     *
+     * @param confirmedPlan 有已确认的方案/施工单。这时要明说「不要再要求补充信息」：
+     *                      提示词里已经没有那个出口了，但还是得用一句人话说清楚——
+     *                      模型对「这里可以认输」的印象往往来自它见过的别的提示词
      */
-    private static String stepInstruction(PlanStep step, int total) {
+    private static String stepInstruction(PlanStep step, int total, boolean confirmedPlan) {
         StringBuilder out = new StringBuilder();
         out.append("## 本步施工指令（第 ").append(step.index()).append(" 步，共 ")
                 .append(total).append(" 步）\n");
@@ -494,6 +511,10 @@ public final class DevelopmentAgent {
                     + "这是事先约定好的，不必为了让别处编过而改动这一步之外的地方。\n");
         }
         out.append("\n按这一步的范围给出补丁块；不要输出与这一步无关的改动。");
+        if (confirmedPlan) {
+            out.append("\n按施工单做，不要再要求补充信息：需要的上下文已经给全了，"
+                    + "做不到的部分用补丁或校验结果说话。");
+        }
         return out.toString();
     }
 
@@ -669,15 +690,22 @@ public final class DevelopmentAgent {
      *
      * <p>方案拼在最后而不是最前：模型对结尾的内容印象更深，而「按这张图施工」
      * 正是本轮最需要它记住的事。
+     *
+     * @param confirmedPlan 这份方案是检查过、由人确认过的那一份。老的那句话里
+     *                      「或者信息确实不足」是个隐藏的出口——它和提示词里那段
+     *                      「缺料就直说」是一对，去了后一半就得连它一起去掉
      */
-    private String userMessage(Spec spec, PlanReview approved) {
+    private String userMessage(Spec spec, PlanReview approved, boolean confirmedPlan) {
         String message = assembler.userMessage(spec, templates);
         if (approved == null || approved.render().isEmpty()) {
             return message;
         }
-        return message + "\n## 已确认的实现方案（已由人确认，请按它实现）\n"
-                + "除非遇到硬性障碍（要动目标清单之外的文件、或者信息确实不足），"
-                + "否则按这张方案做，不要另起一套。\n\n"
+        String how = confirmedPlan
+                ? "除非遇到硬性障碍（要动目标清单之外的文件），否则按这张方案做，不要另起一套；"
+                        + "按施工单做，不要再要求补充信息——该给的上下文已经给全了。"
+                : "除非遇到硬性障碍（要动目标清单之外的文件、或者信息确实不足），"
+                        + "否则按这张方案做，不要另起一套。";
+        return message + "\n## 已确认的实现方案（已由人确认，请按它实现）\n" + how + "\n\n"
                 + approved.render() + "\n";
     }
 
@@ -687,9 +715,12 @@ public final class DevelopmentAgent {
      * <p>两种语气不一样：「补了料」是告诉它新材料在哪、顺着往下做；「直接放行」要更强硬——
      * 用户已经表态不再补了，这时再喊缺就是白烧一轮。仍然允许它说「做不到哪一部分」，
      * 但不允许它再要东西。
+     *
+     * <p>有已确认方案时一律走强硬那一档：那份方案就是它这次能拿到的全部材料，
+     * 系统提示词里也没了那个出口——再写一句「仍然缺就说出来」，等于自己把梯子搭回去。
      */
-    private static String resumePrompt(boolean force) {
-        if (force) {
+    private static String resumePrompt(boolean force, boolean confirmedPlan) {
+        if (force || confirmedPlan) {
             return "你上一次要求补充信息，但没有更多材料了：目标文件清单之外的文件你改不了，"
                     + "也不会再有新的上下文。请用上面这些信息直接给出补丁；"
                     + "确实做不到的部分，说清是哪一处、为什么做不到，不要再要求补充信息。";

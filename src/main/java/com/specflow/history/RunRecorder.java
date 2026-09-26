@@ -51,6 +51,14 @@ public final class RunRecorder implements AgentListener {
     private String stepsSource;
 
     /**
+     * 施工单上那一步——单步执行时的全部内容。
+     *
+     * <p>只记「恰好一步」这一种：多于一步时每一步都有步级事件，账在 {@link #steps} 里攒着，
+     * 这里不需要兜底；一步都没有（连施工单都没报过）时它也是 {@code null}。
+     */
+    private PlanStep singleStep;
+
+    /**
      * 正在跑的那一步，以及它自己的账。
      *
      * <p>步级的账（几轮、改了哪些文件）必须单独攒：一次运行的改动是<b>按步累积</b>的，
@@ -98,6 +106,9 @@ public final class RunRecorder implements AgentListener {
     public void stepsResolved(List<PlanStep> resolved, AgentListener.StepsSource source,
                               int probeCalls) {
         this.stepsSource = source.name();
+        // 单步执行（现生成的施工单核不过、或者压根没跑过检查）时引擎**不发步级事件**，
+        // 于是留档里一步都没有。留着这一份，写记录时才能替它补上一条（见 stepsOf）
+        this.singleStep = resolved.size() == 1 ? resolved.get(0) : null;
         record(round, "info", ProgressMessages.stepsResolved(resolved, source, probeCalls));
         delegate.stepsResolved(resolved, source, probeCalls);
     }
@@ -187,7 +198,7 @@ public final class RunRecorder implements AgentListener {
                 spec.prompt(), spec.acceptance(), contextOf(spec), spec.trace().requirementId(),
                 spec.targets(), result.attempts(), result.detail(),
                 approved == null ? List.of() : approved.missing(),
-                changesOf(result.changes()), List.copyOf(steps), stepsSource,
+                changesOf(result.changes()), stepsOf(result), stepsSource,
                 List.copyOf(timeline));
         try {
             store.save(record);
@@ -202,6 +213,44 @@ public final class RunRecorder implements AgentListener {
                 .map(change -> new RunRecord.Change(change.relative(), change.created(),
                         change.bytes(), change.diff()))
                 .toList();
+    }
+
+    /**
+     * 这次运行留下哪些步级记录。
+     *
+     * <p>分步执行时每一步都有 {@code stepStarted} / {@code stepFinished}，账在 {@link #steps} 里攒好了。
+     * <b>单步执行不发步级事件</b>（那正是它和分步的差别），于是留档里一步都没有：
+     * 历史详情里看不到「这一步做了什么、几轮、改了哪些文件」，而分步看得到——
+     * 同一件事两种说法，事后翻记录的人只能靠猜。所以这里替它补一条：
+     * 步子用引擎报的那一步（连 goal 一起），轮次与改动直接来自运行结果。
+     *
+     * <p>一步都没跑（开工就被叫停）时不补：那一步压根没开始，记成「失败」比空着更容易让人误判。
+     * 被判「上一次的改动还没处置」而拒开的运行属于这一类——它连施工单都没见过。
+     */
+    private List<RunRecord.Step> stepsOf(AgentResult result) {
+        if (!steps.isEmpty()) {
+            return List.copyOf(steps);
+        }
+        if (singleStep == null || result.attempts() == 0) {
+            return List.of();
+        }
+        return List.of(new RunRecord.Step(singleStep.index(), singleStep.goal(),
+                singleStep.intermediate(), singleStepState(result), result.attempts(),
+                changesOf(result.changes())));
+    }
+
+    /**
+     * 单步执行的步态：从这次运行的终态倒推。
+     *
+     * <p>只可能是两档。中间态不在其中——它是<b>施工单上的约定</b>（「这一步做完项目允许编不过」），
+     * 单步没有单子可约定；而「人工中断 / 模型说缺料 / 环境问题」都意味着这一步<b>没做成</b>、
+     * 磁盘也已经回滚，记成失败是实话，具体原因在同一条记录的时间线上。
+     */
+    private static String singleStepState(AgentResult result) {
+        return switch (result.status()) {
+            case SUCCESS, SUCCESS_UNVERIFIED -> AgentListener.StepState.SUCCESS.name();
+            default -> AgentListener.StepState.FAILED.name();
+        };
     }
 
     /**

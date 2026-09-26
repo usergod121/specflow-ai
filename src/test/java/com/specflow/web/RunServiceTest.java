@@ -99,6 +99,38 @@ class RunServiceTest {
         assertThat(events.get(2).text()).contains("第 1 轮");
         assertThat(events.get(3).level()).as("中间态要显眼：此刻磁盘上的代码是坏的").isEqualTo("warn");
         assertThat(events.get(5).level()).isEqualTo("info");
+        // 步态是结构化字段：步开始/结束各推一档，轮级那条不推（它不改变某一步的状态）
+        assertThat(events).filteredOn(event -> event.stepState() != null)
+                .extracting(RunEvent::stepState)
+                .containsExactly(RunEvent.STEP_RUNNING, "INTERMEDIATE", RunEvent.STEP_RUNNING, "SUCCESS");
+        assertThat(events.get(2).stepState()).as("「第 1 轮：调用模型…」不是步态").isNull();
+
+        service.shutdown();
+    }
+
+    /**
+     * 步态由引擎在事件里说清楚，界面不再拿中文文案去猜。
+     *
+     * <p>这一条盯的是「上游真的发了这个字段」：只改界面、上游不发，
+     * 每一步都会停在「未做」——那看起来像界面没画，其实是没人告诉它。
+     * 三步都要在：开始（进行中）、回滚去重试（又回到进行中）、结束（终态枚举名）。
+     */
+    @Test
+    @DisplayName("步级事件的步态：开始是进行中，回滚后回到进行中，结束给终态枚举名")
+    void pushesStructuredStepState() {
+        RunService service = service();
+        PlanStep first = new PlanStep(1, "先加接口", List.of("Foo.java"), "能编译", false);
+        PlanStep second = new PlanStep(2, "接上实现", List.of("Bar.java"), "能编译", false);
+
+        service.stepStarted(first);
+        service.stepRestored(first, 1, "校验未通过");
+        service.stepFinished(first, AgentListener.StepState.SUCCESS);
+        service.stepStarted(second);
+        service.stepFinished(second, AgentListener.StepState.FAILED);
+
+        assertThat(service.hub().view(0).events()).extracting(RunEvent::stepState)
+                .containsExactly(RunEvent.STEP_RUNNING, RunEvent.STEP_RUNNING, "SUCCESS",
+                        RunEvent.STEP_RUNNING, "FAILED");
 
         service.shutdown();
     }

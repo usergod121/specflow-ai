@@ -30,7 +30,10 @@ import java.util.List;
  * @param detail    面向人的结论
  * @param missing   检查阶段报出的缺失依赖；没跑过检查时为空
  * @param changes   落盘过的改动（失败时这些改动已回滚，但差异本身留在这里）
- * @param steps     按施工单的步记下的过程；单步执行（没有施工单）时为空。
+ * @param steps     按施工单的步记下的过程。分步执行时每一步一条；
+ *                  单步执行（没有施工单）时也是<b>一条</b>——那一步就是整次运行，
+ *                  引擎为它不发步级事件，由录制器按运行结果补上（见 {@code RunRecorder}），
+ *                  否则同一次运行在历史详情里会有两种说法。
  *                  老记录里没有这一项，读出来是 {@code null}
  * @param stepsSource 施工单是从哪来的（{@code APPROVED} / {@code GENERATED} / {@code SINGLE}）；
  *                    没有施工单这个概念的记录里是 {@code null}
@@ -76,7 +79,9 @@ public record RunRecord(
      * @param state        终态：{@code SUCCESS} / {@code INTERMEDIATE} / {@code FAILED}，
      *                     与 {@code AgentListener.StepState} 同名
      * @param rounds       这一步实际调了几次模型（含失败的那些）
-     * @param changes      这一步落盘的改动；本步失败已回滚时为空
+     * @param changes      这一步落盘的改动。步内重试前被回滚掉的那一版不算在它名下
+     *                     （磁盘上已经不在了）；但整次运行回滚时已经落盘的改动会留着——
+     *                     磁盘上同样看不出来了，留档是唯一还答得出「它当时改了什么」的地方
      */
     public record Step(int index, String goal, boolean intermediate, String state,
                        int rounds, List<Change> changes) {

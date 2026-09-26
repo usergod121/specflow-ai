@@ -495,7 +495,7 @@ check(suspendedPanelHtml({ present: true, runId: 'r', need: '', attempts: 1, rep
 // 每步的状态画成什么、用户在界面上改的那份有没有跟着发回去、
 // 点「运行」被拦下来时说的到底是哪一步。全是纯逻辑，直接喂输入看一眼。
 const step = load('index.html',
-    ['STEP_STATES', 'STEP_SOURCE_LABEL', 'stepStateMeta', 'stepState', 'stepEventState',
+    ['STEP_STATES', 'STEP_SOURCE_LABEL', 'stepStateMeta', 'stepState',
      'normalizeSteps', 'moveStep', 'removeStep', 'appendStep', 'planForRun', 'roundBudget',
      'stepFindingLabel', 'stepAuditFindings', 'blockedRunMessage', 'changeGroups', 'fileKey'],
     '// ---------- 施工单 ----------', 'async function refreshPending');
@@ -515,6 +515,10 @@ check(step.STEP_STATES.PENDING[1] !== step.STEP_STATES.RUNNING[1]
     '五档文案两两不同（同一个词出现在两档上，标签就等于没写）');
 check(Object.keys(step.STEP_SOURCE_LABEL).join(',') === 'APPROVED,GENERATED,SINGLE',
     '施工单的三个来源都有对应的说法（现生成的那份必须说得出来）');
+// 事件里的步态就是这几个名字：Java 那边发的是 StepState 的枚举名加一个 RUNNING，
+// 界面多认或少认一档都会让某一步静默停在别的状态上
+check(Object.keys(step.STEP_STATES).join(',') === 'PENDING,RUNNING,SUCCESS,INTERMEDIATE,FAILED',
+    '步态档位与引擎发的名字一一对应：' + Object.keys(step.STEP_STATES).join(','));
 
 console.log('施工单：某一步此刻的状态：');
 state.stepStates = new Map();
@@ -525,28 +529,22 @@ check(step.stepState(7) === 'FAILED', '记过之后按记的来');
 check(step.stepState(8) === 'PENDING', '别的步号不受影响');
 state.stepStates = new Map();
 
-console.log('施工单：从运行事件里读步态：');
-const ev = (stepNo, text, type) => ({ type: type || 'log', level: 'info', round: 1, step: stepNo, text });
-check(step.stepEventState(ev(0, '第 3 轮：调用模型…')) === null,
-    'step=0 的事件不属于任何一步：不去改任何一步的状态');
-check(step.stepEventState(ev(3, '第 3 轮：调用模型…')) === null,
-    '轮级那句不带步态，认不出来就什么都不做（宁可停在「进行中」）');
-check(step.stepEventState(ev(3, '第 3 步：给 OrderMapper 加方法（涉及 a/Mapper.java）')) === 'RUNNING',
-    '「（涉及 …）」那句说明这一步开始了');
-check(step.stepEventState(ev(3, '第 3 步：给 OrderMapper 加方法：成功')) === 'SUCCESS', '一步成功');
-check(step.stepEventState(ev(3, '第 3 步：加接口：中间态（编译未通过）')) === 'INTERMEDIATE',
-    '中间态未通过：不是成功，也不是失败');
-check(step.stepEventState(ev(3, '第 3 步：加接口：失败')) === 'FAILED', '一步失败');
-check(step.stepEventState(ev(3, '第 3 步：加接口：标的是中间态，实际编译通过了')) === 'SUCCESS',
-    '标了中间态但真的编过了：按成功算（它确实编过了）');
-check(step.stepEventState(ev(3, '第 3 步：补丁被拒绝，已回滚到该步开始前的状态')) === 'RUNNING',
-    '这一步被回滚去重试：它又回到「进行中」，而不是停在失败上');
-check(step.stepEventState({ type: 'plan', level: 'info', round: 0, step: 0,
-    text: '共 5 步', payload: { steps: [] } }) === null, 'plan 事件走另一条路，不当成步态');
-check(step.stepEventState({ type: 'result', level: 'info', round: 0, step: 0, text: '任务结束' }) === null,
-    '终态事件也不当步态');
-check(step.stepEventState(null) === null && step.stepEventState(undefined) === null,
-    '没有事件时也不炸');
+console.log('施工单：步态只认事件上的结构化字段：');
+// 以前这里测的是一个靠中文文案推步态的函数（「：成功」结尾就是成功）。那套机制的问题不是
+// 推得准不准，而是「错位时没有任何东西会红」：Java 里改一句措辞，界面静默停在旧步态上，
+// 两边的测试都还是绿的。现在步态由引擎写在事件的 stepState 字段上，界面只读它。
+// 行为（读字段之后画成什么）由浏览器链那条桩出来的事件流验；这里钉住的是那段判断本身：
+// 它只许看字段，一个字都不许去看文案。
+const pageSource = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8');
+const judgeAt = pageSource.indexOf('function applyStepEvent');
+const judge = pageSource.slice(judgeAt, pageSource.indexOf('\n}\n', judgeAt));
+check(judgeAt > 0 && judge.includes('event.stepState'), '步态判定读的是事件上的 stepState 字段');
+check(!judge.includes('event.text'),
+    '步态判定不看 text（一去看文案，措辞一改界面就静默错位，而且没有测试会红）');
+check(!/includes\(|endsWith\(|indexOf\(/.test(judge),
+    '步态判定里没有字符串比对：' + judge.split('\n').filter(line => /includes\(|endsWith\(/.test(line)).join(' '));
+check(!pageSource.includes('stepEventState'),
+    '靠中文文案猜步态的那个函数已经删掉（不留兼容壳：留着它就是留一条会静默错位的路）');
 
 console.log('施工单：编辑（改、增删、上下移、勾中间态）：');
 const rawSteps = [

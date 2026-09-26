@@ -20,7 +20,13 @@ public final class PatchProtocol {
     public static final String DIVIDER = "=======";
     public static final String REPLACE_MARKER = ">>>>>>> REPLACE";
 
-    public static final String INSTRUCTIONS = """
+    /**
+     * 格式与硬性规则：协议里不带任何「认输」措辞的那一半。
+     *
+     * <p>拆出来是为了让「要不要给模型一个说信息不足的出口」变成一次显式的选择，
+     * 而不是一段永远拼在提示词里的套话——见下面两个常量的分工。
+     */
+    private static final String RULES = """
             你是一个代码修改引擎。你不与用户对话，只输出补丁。
 
             输出格式：对每一处修改输出一个补丁块，块之间不要有任何解释性文字。
@@ -56,7 +62,16 @@ public final class PatchProtocol {
             %s
             <完整文件内容>
             %s
+            """.formatted(SEARCH_MARKER, DIVIDER, REPLACE_MARKER,
+            SEARCH_MARKER, DIVIDER, REPLACE_MARKER);
 
+    /**
+     * 「信息不足」那一段：一个出口，也是一句认输措辞。
+     *
+     * <p>它只在<b>没有已确认方案</b>时才拼进提示词。理由很直白：人已经确认过「信息足够」，
+     * 还把「你要是缺料就说出来」摆在它面前，等于请它再要一次东西。
+     */
+    private static final String NEED_CONTEXT_SECTION = """
             若你判断现有信息不足以完成修改，不要猜测，只输出下面这几行（**整段最多 3 行**，
             超了引擎就不认，会被当成普通回答处理）：
 
@@ -77,8 +92,28 @@ public final class PatchProtocol {
             NEED_CONTEXT: 我要给 OrderService 加一个按 id 查询
             需要: src/main/java/com/demo/mapper/OrderMapper.java 的现有写法（要照它的风格）
             为什么: 不知道项目里 SQL 走注解还是 XML，猜错整个包都要返工
-            """.formatted(SEARCH_MARKER, DIVIDER, REPLACE_MARKER,
-            SEARCH_MARKER, DIVIDER, REPLACE_MARKER);
+            """;
+
+    /**
+     * 完整的补丁协议：<b>带</b>「信息不足就说出来」那个出口。
+     *
+     * <p>用它的场合是「这次没有已确认的方案」——没跑过检查（施工单是开工前现生成的），
+     * 或者连施工单都没拿到（单步执行）。那时模型确实可能缺料，
+     * 不给出口它就只能猜，而猜错的代价是整轮白跑。
+     *
+     * <p>拼接只补一个换行：文本块自己就带一个结尾换行，所以 {@code RULES + "\n"} 得到的是
+     * 「样例段 + 一个空行」，和拆开之前逐字相同（少补一个就贴在一起，多补一个就多空一行）。
+     */
+    public static final String INSTRUCTIONS = RULES + "\n" + NEED_CONTEXT_SECTION;
+
+    /**
+     * 同一份协议，但<b>去掉</b>了「信息不足」那一段：有已确认的方案/施工单时用它。
+     *
+     * <p>为什么不递这个梯子：检查阶段已经确认过「信息足够」，<b>不递梯子</b>就是那次确认的兑现。
+     * 它真做不下去时的表现应该回到<b>硬信号</b>——补丁对不上（那几个错误码）或者校验失败，
+     * 那是引擎读得懂、用户看得见的东西；而「挂起等你补料」是留给没检查过的那种情形的出口。
+     */
+    public static final String INSTRUCTIONS_WITHOUT_NEED_CONTEXT = RULES;
 
     /** 模型表示信息不足时的前缀，由 Agent 识别并中止本轮。 */
     public static final String NEED_CONTEXT_PREFIX = "NEED_CONTEXT:";

@@ -622,6 +622,99 @@ class DevelopmentAgentTest {
         assertThat(llm.calls()).as("没有任何多余的调用").hasSize(2);
     }
 
+    /**
+     * 有已确认的方案时，提示词里不能留「缺料就认输」那个出口。
+     *
+     * <p>这一条盯的是两处：系统提示词里那一段的<b>存在与否</b>，和回给模型的话里
+     * <b>有没有明说</b>「不要再要求补充信息」。只删提示词里那一段而话里不说，
+     * 模型照样会按它见过的别的提示词行事；反过来只说不删，等于一边递梯子一边说别爬。
+     */
+    @Test
+    @DisplayName("检查过、方案已确认：提示词里没有 NEED_CONTEXT 那一段，话里明说不要再要求补充信息")
+    void approvedPlanDropsTheNeedContextOutlet() {
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"));
+
+        agent(llm, new ScriptedVerifier(passed()), new RecordingListener()).run(
+                TestSpecs.spec(List.of("Foo.java")),
+                planWithSteps(step(1, "第一步", false, "Foo.java"), step(2, "第二步", false, "Foo.java")));
+
+        List<ChatMessage> first = llm.patches().get(0);
+        assertThat(first.get(0).role()).isEqualTo(ChatMessage.SYSTEM);
+        assertThat(first.get(0).content()).as("协议照旧，但那个出口没了")
+                .contains("<<<<<<< SEARCH")
+                .doesNotContain("NEED_CONTEXT")
+                .doesNotContain("信息不足");
+        assertThat(first.get(1).content()).as("已确认方案那一段明说别再要东西")
+                .contains("不要再要求补充信息")
+                .doesNotContain("信息确实不足");
+        assertThat(first.get(first.size() - 1).content()).as("每一步开工前那条施工指令也说一遍")
+                .contains("按施工单做，不要再要求补充信息");
+    }
+
+    /**
+     * 与上一条相反的方向：没检查过时那个出口必须还在。
+     *
+     * <p>现生成施工单和单步执行是两条不同的路，两条都要留——否则模型缺料时只能猜，
+     * 而猜错的代价是整轮白跑。
+     */
+    @Test
+    @DisplayName("没检查过、施工单是开工前现生成的：仍然留着 NEED_CONTEXT 出口")
+    void keepsTheNeedContextOutletWhenStepsAreGenerated() {
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"),
+                patch("int a = 3;", "int a = 4;"))
+                .answeringStepsWith(stepsAnswer(3, "第一步", "第二步", "第三步"));
+
+        agent(llm, new ScriptedVerifier(passed()), new RecordingListener())
+                .run(TestSpecs.spec(List.of("Foo.java")));
+
+        assertThat(llm.patches().get(0).get(0).content())
+                .as("现生成施工单那条路：出口还在").contains("NEED_CONTEXT");
+        assertThat(lastUserMessage(llm)).as("而且不叮嘱它「不要要求补充信息」")
+                .doesNotContain("不要再要求补充信息");
+    }
+
+    @Test
+    @DisplayName("没检查过、连施工单都没拿到（单步执行）：出口也还在")
+    void keepsTheNeedContextOutletWhenFallingBackToSingleStep() {
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
+
+        agent(llm, new ScriptedVerifier(passed()), new RecordingListener())
+                .run(TestSpecs.spec(List.of("Foo.java")));
+
+        assertThat(llm.patches().get(0).get(0).content())
+                .as("单步执行那条路：出口也还在").contains("NEED_CONTEXT");
+        assertThat(lastUserMessage(llm)).doesNotContain("不要再要求补充信息");
+    }
+
+    /**
+     * 续跑那条路也归这一条管：有已确认方案时不再说「仍然缺就说出来」。
+     *
+     * <p>不说的话，系统提示词里刚拆掉的出口会被这句叮嘱原地搭回来——
+     * 而那一次续跑的用户已经点过确认，他不会再补料。
+     */
+    @Test
+    @DisplayName("有已确认方案时续跑也不递梯子：不写「仍然缺就说出来」那一句")
+    void resumeWithApprovedPlanKeepsTellingItNotToAsk() {
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"));
+
+        agent(llm, new ScriptedVerifier(passed()), new RecordingListener()).resume(
+                TestSpecs.spec(List.of("Foo.java")),
+                planWithSteps(step(1, "第一步", false, "Foo.java"), step(2, "第二步", false, "Foo.java")),
+                "NEED_CONTEXT: 缺东西", false);
+
+        List<ChatMessage> sent = llm.patches().get(0);
+        assertThat(sent.get(0).content()).doesNotContain("NEED_CONTEXT");
+        assertThat(sent.get(3).content()).as("该强硬的时候没有软下来")
+                .contains("不要再要求补充信息")
+                .doesNotContain("最多 3 行");
+    }
+
     @Test
     @DisplayName("没跑过检查：开工前现生成施工单，来源记为 GENERATED，花掉的调用不算轮次")
     void generatesStepsWhenThereIsNoPlan() {

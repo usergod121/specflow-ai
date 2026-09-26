@@ -3981,31 +3981,6 @@ function stepState(index) {
 }
 
 /**
- * 一条运行事件把某一步推到了哪个状态；推不出来时返回 null。
- *
- * <p>事件里没有结构化的步态字段（只有 text、level 和 step），所以只能认
- * ProgressMessages 里那几句话——好在它们和 StepState 一一对应，而且是同一份代码写出来的。
- * 认不出来时**什么都不做**：宁可这一步停在「进行中」，也不要把一句
- * 「第 2 轮：调用模型…」误读成「第 2 步成功了」。
- */
-function stepEventState(event) {
-  if (!event || !(event.step > 0) || event.type === 'plan' || event.type === 'result') {
-    return null;
-  }
-  const text = String(event.text || '');
-  // 这一步重试：回滚到该步开始前，于是它又回到「进行中」
-  if (text.includes('，已回滚到该步开始前的状态')) return 'RUNNING';
-  // 「标的是中间态，实际编译通过了」是好消息：它确实编过了
-  if (text.includes('标的是中间态，实际编译通过了')) return 'SUCCESS';
-  if (text.endsWith('：成功')) return 'SUCCESS';
-  if (text.endsWith('：中间态（编译未通过）')) return 'INTERMEDIATE';
-  if (text.endsWith('：失败')) return 'FAILED';
-  // 「第 3 步：做点什么（涉及 a.java）」——stepStarted 那一句的固定尾巴
-  if (text.includes('（涉及 ')) return 'RUNNING';
-  return null;
-}
-
-/**
  * 施工单规范化。
  *
  * @param steps    原始步子（可能来自模型、也可能是界面上改过的）
@@ -4474,15 +4449,24 @@ function renderStepStates() {
   }
 }
 
-/** 一条运行事件对施工单的影响：定下来的单子（plan）与某一步的状态（step 字段）。 */
+/**
+ * 一条运行事件对施工单的影响：定下来的单子（plan）与某一步的状态（step 字段）。
+ *
+ * <p>步态<b>只认事件上的结构化字段</b> {@code event.stepState}——引擎在产生事件的那一刻
+ * 就写好了它是哪一档，界面不再拿 text 去认 ProgressMessages 里那几句中文。以前那样做，
+ * Java 里改一句措辞，界面就静默停在旧步态上，而且两边各自的测试都不会红。
+ *
+ * <p>字段没值（轮级事件就是如此）时**什么都不做**：宁可这一步停在「进行中」，
+ * 也不要把「第 2 轮：调用模型…」误读成「第 2 步成功了」。
+ */
 function applyStepEvent(event) {
   if (!event) return;
   if (event.type === 'plan') {
     adoptSteps(event.payload);
     return;
   }
-  const next = stepEventState(event);
-  if (!next) return;
+  const next = event.step > 0 ? event.stepState : null;
+  if (!STEP_STATES[next]) return;
   state.stepStates.set(event.step, next);
   renderStepStates();
 }
