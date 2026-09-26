@@ -203,6 +203,9 @@ public final class WebServer implements AutoCloseable {
                                 // 「它标的阻断最后真的阻断了吗」那一行汇总要的数据
                                 "missingStats", now.runs().history().missingStats()));
                 case "/api/cancel" -> cancelRun(now, exchange);
+                case "/api/pending" -> Http.sendJson(exchange, 200, now.runs().pending());
+                case "/api/accept" -> decidePending(now, exchange, false);
+                case "/api/rollback" -> decidePending(now, exchange, true);
                 case "/api/run-detail" -> Http.sendJson(exchange, 200,
                         now.runs().history().load(Http.query(exchange, "id", "")));
                 case "/api/templates" -> now.workspace().templates(exchange);
@@ -555,6 +558,25 @@ public final class WebServer implements AutoCloseable {
         }
         project.runs().cancel();
         Http.sendJson(exchange, 200, Map.of("cancelling", true));
+    }
+
+    /**
+     * 处置上一次留下的改动：接受（保留）或撤回（恢复原样）。
+     *
+     * <p>没有待处置的改动时抛 {@link IllegalStateException} → 409：界面据此能确定
+     * 「现在没有东西可处置」，而不是显示一个永远不会兑现的结果。
+     */
+    private void decidePending(OpenProject project, HttpExchange exchange, boolean rollback)
+            throws IOException {
+        if (!Http.requirePost(exchange)) {
+            return;
+        }
+        if (rollback) {
+            project.runs().rollback();
+        } else {
+            project.runs().accept();
+        }
+        Http.sendJson(exchange, 200, Map.of("done", true));
     }
 
     private RunHub.RunView events(OpenProject project, HttpExchange exchange) {

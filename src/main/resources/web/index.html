@@ -571,6 +571,50 @@
   .actions { display: flex; gap: 10px; align-items: center; margin: 14px 0; }
   .actions .note { color: var(--muted); font-size: 12px; margin-left: auto; }
 
+  /* ---------- 待处置的改动 ---------- */
+  /* 这份改动已经在磁盘上了，用户没明确处置之前它一直有效，而它挡住的正是「运行」——
+     所以面板就贴着运行按钮上方，用警示色，别让它混进旁边那堆普通表单里。
+     #pending 是个空壳：没有待处置的改动时里面什么都不放，靠 :empty 收掉，
+     否则会留一个带边框的空框杵在那儿。 */
+  #pending { margin: 14px 0; }
+  #pending:empty { display: none; }
+  .pending {
+    border: 1px solid var(--warn-line);
+    border-radius: 8px;
+    background: var(--warn);
+    overflow: hidden;
+  }
+  .pending-head { display: flex; align-items: baseline; gap: 12px; padding: 10px 12px 6px; }
+  .pending-head b { font-size: 13px; }
+  /* 摘要让它自己换行，不截断：这一行是「磁盘上到底留了什么」的全部信息 */
+  .pending-summary { flex: 1; min-width: 0; color: var(--warn-text-soft); font-size: 12px; }
+  .pending-toggle { margin-left: auto; flex: none; }
+  .pending-why { padding: 0 12px 8px; color: var(--warn-text-soft); font-size: 12px; }
+  .pending-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 0 12px 10px;
+  }
+  .pending-actions button { padding: 6px 16px; font-size: 13px; }
+  /* 「没校验过」这句必须挨着「保留当前内容」：那两个按钮和跑成功之后长得一样，
+     不点明的话，用户没理由想到点下去拿到的是一份没编译过的改动。 */
+  .pending-alert {
+    flex: 1;
+    min-width: 220px;
+    padding: 4px 8px;
+    border: 1px solid var(--error-line);
+    border-radius: 4px;
+    background: var(--error);
+    color: var(--error-text);
+    font-size: 12px;
+  }
+  .pending-body { padding: 0 12px 12px; max-height: 420px; overflow-y: auto; }
+  .pending-body:empty { display: none; }
+  /* 每个文件复用运行结果区那套 details.change / .diff：同一个东西在两处不该长得不一样 */
+  .pending .change { background: var(--panel); }
+
   /* ---------- 实现方案 ---------- */
   #plan:empty { display: none; }
   #plan {
@@ -1041,6 +1085,9 @@
       </label>
     </div>
 
+    <!-- 待处置的改动。它挡着的正是「运行」，所以摆在运行按钮正上方。 -->
+    <div id="pending"></div>
+
     <div class="actions">
       <button id="review" class="ghost">先检查</button>
       <button id="run">运行</button>
@@ -1170,6 +1217,8 @@ const state = {
   running: false,
   cursor: 0,
   runId: '',
+  pending: null,        // 最近一次拉到的待处置改动；null = 还没拉到过
+  pendingOpen: null,    // 面板收起/展开；null = 按改动多少自动决定
 };
 const $ = id => document.getElementById(id);
 
@@ -1573,6 +1622,9 @@ async function startWorkspace() {
   renderAcceptance([]);
 
   wireWorkspace();
+  // 进项目时先看一眼磁盘上有没有上次留下的、还没处置的改动：有的话一进来就该按住「运行」，
+  // 而不是等用户填完需求、点下去，才发现这一次根本开不出来。
+  refreshPending();
 }
 
 /**
@@ -2688,6 +2740,9 @@ async function run() {
     notice(response.status === 409 ? 'warn' : 'error',
         (body.problems || [body.error || '请求失败']).join('\n'));
     setRunning(false);
+    // 409 里最要紧的一种就是「上一次的改动还没处置」。这时候把面板拉出来，
+    // 用户才能就地处置；只给一句话的话，他还得自己去找那两个按钮在哪。
+    refreshPending();
     return;
   }
   state.runId = body.runId;
@@ -2712,8 +2767,14 @@ async function poll() {
     if (event.type === 'result') renderResult(event.payload);
     else appendLog(event);
   }
-  if (view.running) setTimeout(poll, 400);
-  else setRunning(false);
+  if (view.running) {
+    setTimeout(poll, 400);
+    return;
+  }
+  setRunning(false);
+  // 一次运行刚结束，正是「磁盘上有没有留下要处置的改动」翻牌的时刻。
+  // 这里不拉一次，面板就要等到用户手动刷新页面才出现。
+  refreshPending();
 }
 
 function appendLog(event) {
@@ -3652,6 +3713,198 @@ function emptyLine(text) {
   return div;
 }
 
+// ---------- 待处置的改动 ----------
+// 一次运行成功后，改动会一直留在磁盘上，直到用户明确选「保留」或「撤回」。
+// 界面在这里要做的就三件事：说清磁盘上留了什么、把那两个选择摆出来、
+// 并且在这之前按住「运行」——不然用户只会一次次撞后端的 409。
+
+/** 改动少时直接摊开，多时只给一行摘要——十几个文件全摊开会把「运行」顶出屏幕，而用户此刻要看的是那个按钮。 */
+const PENDING_OPEN_LIMIT = 3;
+
+/**
+ * 差异行的分类：`+` 是新增行、`-` 是删除行，其余是上下文。
+ *
+ * <p>运行结果区和待处置面板渲染的是同一种 diff，分类只写这一处。
+ * 两边各写一遍的话，迟早会一边标底色、一边不标，同一个改动在两块地方长得不一样。
+ */
+function diffLineClass(raw) {
+  if (raw.startsWith('+')) return 'add';
+  if (raw.startsWith('-')) return 'del';
+  return '';
+}
+
+/** 面板是拼字符串拼出来的，而路径和 diff 都是模型写进去的内容，一律转义。 */
+function escapeHtml(text) {
+  return String(text === null || text === undefined ? '' : text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+}
+
+/** 把一段 diff 正文渲染成 .diff 里的那几行；没有正文时，和运行结果区说同一句话。 */
+function diffHtml(text) {
+  if (!text) {
+    return '（内容无变化）';
+  }
+  return text.split('\n').map(raw => {
+    const cls = diffLineClass(raw);
+    return '<div' + (cls ? ' class="' + cls + '"' : '') + '>'
+        + escapeHtml(raw === '' ? ' ' : raw) + '</div>';
+  }).join('');
+}
+
+/**
+ * 待处置面板的 HTML。
+ *
+ * <p>纯函数、返回字符串，而不是像别处那样拼 DOM 节点：这块面板最要紧的判断是
+ * 「canAccept 决定哪两个按钮、谁是主谁是次」——按 canAccept 分成两条完全不同的路，
+ * 值得让 src/test/js/web.test.js 直接喂四种输入看一眼，而不是只能靠肉眼开浏览器。
+ *
+ * @param open 展开与否；不传（或 null）时按改动多少自动决定。
+ */
+function pendingPanelHtml(data, open) {
+  if (!data || !data.present) {
+    return '';
+  }
+  const files = data.files || [];
+  const expanded = typeof open === 'boolean' ? open : files.length <= PENDING_OPEN_LIMIT;
+
+  // 校验过和没校验过是两条路：后者主按钮直接是「恢复到运行前」，
+  // 而且必须在次按钮旁边说清「这份改动没验过」——两块面板长得一样的话，
+  // 用户没理由想到，点「保留当前内容」拿到的是一份没编译过的改动。
+  const actions = data.canAccept
+      ? '<button type="button" data-act="accept">保留改动</button>'
+          + '<button type="button" class="ghost" data-act="rollback">撤回改动</button>'
+      : '<button type="button" data-act="rollback">恢复到运行前</button>'
+          + '<button type="button" class="ghost" data-act="accept">保留当前内容</button>'
+          + '<span class="pending-alert">这些改动没有经过校验：上一次运行是被打断的，'
+          + '「保留当前内容」不会再替你验一遍。</span>';
+
+  let body = '';
+  for (const file of files) {
+    body += '<details class="change"' + (files.length <= PENDING_OPEN_LIMIT ? ' open' : '') + '>'
+        + '<summary>' + (file.created ? '新建 ' : '修改 ') + escapeHtml(file.path) + '</summary>'
+        + '<div class="diff">' + diffHtml(file.diff) + '</div>'
+        + '</details>';
+  }
+
+  return '<section class="pending" data-open="' + expanded + '">'
+      + '<div class="pending-head">'
+      + '<b>待处置的改动</b>'
+      + '<span class="pending-summary">' + escapeHtml(data.summary) + '</span>'
+      + '<button type="button" class="ghost small pending-toggle" aria-expanded="' + expanded + '">'
+      + (expanded ? '收起' : '展开') + '</button>'
+      + '</div>'
+      + '<div class="pending-why">先处置这些改动，才能开始新的一次运行。'
+      + (data.canAccept ? '这份改动过了编译校验。' : '') + '</div>'
+      + '<div class="pending-actions">' + actions + '</div>'
+      + '<div class="pending-body"' + (expanded ? '' : ' hidden') + '>'
+      + (body || '<div class="empty">后端没给出这次改动的文件明细</div>')
+      + '</div>'
+      + '</section>';
+}
+
+/**
+ * 两个动作各打哪个接口。
+ *
+ * <p>单独拎出来是因为它接反的代价不对称：点「保留改动」却把文件撤回了，
+ * 用户会以为是工具把他的改动弄丢了。而这两条路在调用之前长得一模一样，
+ * 所以让 src/test/js/web.test.js 直接钉住它。
+ */
+function pendingActionPath(act) {
+  return act === 'accept' ? '/api/accept' : '/api/rollback';
+}
+
+/**
+ * 拉一次待处置的改动并重画面板。
+ *
+ * <p>三处要拉：进项目时、每次运行结束时、以及处置完之后。少拉一次的表现很具体——
+ * 磁盘上明明留着改动，界面却让用户再跑一次，点下去只会拿到 409。
+ */
+async function refreshPending() {
+  let data;
+  try {
+    data = await getJson('/api/pending');
+  } catch (e) {
+    // 读不到不等于「没有」：这时候把面板收掉，会顺手把「运行」按钮解开，
+    // 而磁盘上的改动还在。所以只报错，界面维持原样。
+    notice('error', '读取待处置的改动失败：' + e.message);
+    return;
+  }
+  // 换了一份新的改动就回到默认展开状态：上一份的「收起」是冲着上一份内容做的决定
+  if (!state.pending || state.pending.id !== data.id) {
+    state.pendingOpen = null;
+  }
+  state.pending = data;
+  renderPending();
+}
+
+function renderPending() {
+  const box = $('pending');
+  box.innerHTML = pendingPanelHtml(state.pending, state.pendingOpen);
+
+  const panel = box.querySelector('.pending');
+  if (!panel) {
+    updateRunButton();
+    return;
+  }
+
+  const toggle = panel.querySelector('.pending-toggle');
+  const body = panel.querySelector('.pending-body');
+  body.hidden = panel.dataset.open !== 'true';
+  toggle.onclick = () => {
+    // 只翻这一块，不整块重画：重画会把键盘焦点从刚按下的按钮上抖掉，
+    // 键盘用户按一下「收起」就不知道焦点跑哪去了。
+    const open = panel.dataset.open !== 'true';
+    panel.dataset.open = open ? 'true' : 'false';
+    body.hidden = !open;
+    toggle.textContent = open ? '收起' : '展开';
+    toggle.setAttribute('aria-expanded', String(open));
+    state.pendingOpen = open;
+  };
+
+  // 两个按钮由面板自己接：面板是重画出来的，用 data-act 认动作比逐个存元素引用稳
+  for (const button of panel.querySelectorAll('[data-act]')) {
+    button.onclick = () => resolvePending(button.dataset.act);
+  }
+  updateRunButton();
+}
+
+/**
+ * 处置这份改动：accept = 保留磁盘上的内容，rollback = 恢复成改动之前的样子。
+ *
+ * <p>成功之前一个字都不改界面：撤回失败（比如快照已经被别处处置掉了）时改动还在磁盘上，
+ * 面板先消失就等于骗用户「已经处理好了」。失败说明由 sendJson 摆出来，不吞。
+ */
+async function resolvePending(act) {
+  const accepting = act === 'accept';
+  const result = await sendJson('POST', pendingActionPath(act), '{}');
+  if (!result.ok) {
+    return;
+  }
+  notice('ok', accepting
+      ? '已保留改动：它们就这样留在磁盘上。'
+      : '已撤回改动：文件都回到了改动之前的样子。');
+  state.pendingOpen = null;
+  await refreshPending();
+  // 撤回会把文件改回去（新建的会消失），保留也可能让新文件正式出现在树里；
+  // 树还照着老样子画就是在骗人。
+  refreshFiles();
+}
+
+/**
+ * 「运行」按钮能不能点，由两件事共同决定：这次运行在不在跑，上一份改动处置了没有。
+ *
+ * <p>两边各写一次 disabled 会互相覆盖——一次运行结束时解锁的那一下，
+ * 会顺手把「有待处置的改动」这件事抹掉，用户于是能开出第二次运行，然后拿到后端的 409。
+ */
+function updateRunButton() {
+  const blocked = !!(state.pending && state.pending.present);
+  $('run').disabled = state.running || blocked;
+  $('run').title = blocked ? '先处置上面的改动：保留或撤回之后才能再运行' : '';
+}
+
 // ---------- 结果 ----------
 const STATUS_TEXT = {
   // 「成功」说的是哪一步通过：编译校验通过 ≠ 需求做完了（验收标准没人管，那是另一回事）。
@@ -3662,6 +3915,8 @@ const STATUS_TEXT = {
   NEEDS_ENVIRONMENT: ['bad', '这不是改代码能解决的：依赖或环境问题，已回滚到运行前'],
   CANCELLED: ['mid', '已中断：改动已回滚到运行前'],
   NEEDS_CONTEXT: ['mid', '模型要求补充信息，未改动任何文件'],
+  // 不是失败：磁盘上那份改动是好的，只是还没被人处置，所以这一次什么都没做
+  PENDING_DECISION: ['mid', '上一次的改动还没处置，本次没有改动任何文件'],
   ERROR: ['bad', '运行中断'],
 };
 
@@ -3704,8 +3959,8 @@ function changePanel(change) {
   if (change.diff) {
     for (const raw of change.diff.split('\n')) {
       const line = document.createElement('div');
-      if (raw.startsWith('+')) line.className = 'add';
-      else if (raw.startsWith('-')) line.className = 'del';
+      const cls = diffLineClass(raw);
+      if (cls) line.className = cls;
       line.textContent = raw || ' ';
       diff.appendChild(line);
     }
@@ -3747,7 +4002,7 @@ function clearNotice() {
 function setRunning(running) {
   state.running = running;
   $('review').disabled = running;
-  $('run').disabled = running;
+  updateRunButton();
   $('run').textContent = running ? '运行中…' : '运行';
   // 停止只在跑的时候有用；引擎是在「轮与轮之间」看这个请求，所以文案说清它不会立刻断
   $('stop').hidden = !running;
@@ -3760,7 +4015,7 @@ function setRunning(running) {
 function setReviewing(reviewing) {
   state.running = reviewing;
   $('review').disabled = reviewing;
-  $('run').disabled = reviewing;
+  updateRunButton();
   $('review').textContent = reviewing ? '检查中…' : '先检查';
 }
 

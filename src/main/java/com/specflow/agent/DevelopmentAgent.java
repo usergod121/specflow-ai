@@ -3,6 +3,7 @@ package com.specflow.agent;
 import com.specflow.context.ContextAssembler;
 import com.specflow.context.PatchProtocol;
 import com.specflow.exception.PatchConflictException;
+import com.specflow.exception.SpecflowException;
 import com.specflow.llm.ChatMessage;
 import com.specflow.llm.LlmClient;
 import com.specflow.patch.PatchApplier;
@@ -58,7 +59,7 @@ public final class DevelopmentAgent {
     private static final Logger log = LoggerFactory.getLogger(DevelopmentAgent.class);
 
     /** 补丁冲突的重试上限：磁盘未改动，可以多给几次机会。 */
-    private static final int MAX_CONFLICT_RETRIES = 2;
+    private static final int MAX_CONFLICT_RETRIES = 3;
 
     /** {@code NEED_CONTEXT} 声明的行数上限——正常补丁里附带的一句话不应被当成中止信号。 */
     private static final int NEED_CONTEXT_MAX_LINES = 3;
@@ -120,6 +121,17 @@ public final class DevelopmentAgent {
     }
 
     private AgentResult execute(Spec spec, PlanReview approved) {
+        // 上一次的改动还在等人表态：磁盘上那份是好的，但没经过人确认。
+        // 在它之上再叠一轮，等于让人在一个自己没看过的状态上继续施工。
+        List<WorkspaceSnapshot> undisposed = WorkspaceSnapshot.undisposed(pathResolver, snapshotRoot());
+        if (!undisposed.isEmpty()) {
+            String waits = String.join("、", undisposed.stream()
+                    .map(snapshot -> snapshot.directory().getFileName().toString())
+                    .toList());
+            return AgentResult.pendingDecision("上一次的改动还没处置（" + waits
+                    + "）：请先接受或撤回它，再开始新的运行");
+        }
+
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(ChatMessage.system(assembler.systemMessage(spec, templates)));
         messages.add(ChatMessage.user(userMessage(spec, approved)));
@@ -251,7 +263,9 @@ public final class DevelopmentAgent {
         if (firstFailure(results) != null) {
             rollback(snapshot, round, "校验未通过");
         } else if (snapshot != null) {
-            snapshot.discard();
+            // 校验通过不等于用户满意：改动留在磁盘上，快照改名等着人表态。
+            // 在这里 discard 就等于替人做了「接受」，而编译通过只证明语法没错。
+            snapshot.markPending();
         }
         return new Applied(changes, results);
     }
@@ -302,6 +316,24 @@ public final class DevelopmentAgent {
         }
         List<String> restored = snapshot.restore();
         log.warn("{}，已回滚 {} 个文件：{}", reason, restored.size(), String.join(", ", restored));
+        discardQuietly(snapshot, reason);
+    }
+
+    /**
+     * 回滚之后这份快照就没用了，删掉它。
+     *
+     * <p>必须删：引擎把「磁盘上还有可用快照」当成「上一次还没处置」，
+     * 留一份已经作废的快照会把下一次运行挡在门外。
+     *
+     * <p>删不掉只警告、不改写原有的失败原因——真正的问题（比如磁盘满）比清理更要紧，
+     * 而残留的那一份用户在界面上点一下「接受」也能清掉。
+     */
+    private void discardQuietly(WorkspaceSnapshot snapshot, String reason) {
+        try {
+            snapshot.discard();
+        } catch (SpecflowException e) {
+            log.warn("{}之后清理快照失败，请手工删除 {}：{}", reason, snapshot.directory(), e.getMessage());
+        }
     }
 
     private AgentResult finish(int attempts, Applied applied) {

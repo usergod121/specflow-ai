@@ -1,6 +1,9 @@
 package com.specflow.cli;
 
 import com.specflow.SpecflowCli;
+import com.specflow.project.SnapshotConfig;
+import com.specflow.snapshot.WorkspaceSnapshot;
+import com.specflow.util.SafePathResolver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -8,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -126,6 +130,53 @@ class SpecflowCliTest {
     @DisplayName("没有子命令时打印帮助并返回 0")
     void printsUsageWithoutSubcommand() {
         assertThat(SpecflowCli.execute()).isZero();
+    }
+
+    @Test
+    @DisplayName("没有待处置的改动时 accept 与 rollback 都是 0，不做任何事")
+    void decidingWithNothingPendingSucceeds() {
+        assertThat(SpecflowCli.execute("accept", "-p", project)).isZero();
+        assertThat(SpecflowCli.execute("rollback", "-p", project)).isZero();
+    }
+
+    @Test
+    @DisplayName("rollback 按快照把文件恢复原样，并把快照清掉")
+    void rollbackRestoresFilesFromSnapshot() throws Exception {
+        Path file = root.resolve("Foo.java");
+        Files.writeString(file, "old");
+        markPendingSnapshot(file);
+        Files.writeString(file, "new");
+
+        assertThat(SpecflowCli.execute("rollback", "-p", project)).isZero();
+
+        assertThat(Files.readString(file)).isEqualTo("old");
+        assertThat(undisposedSnapshots()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("accept 保留磁盘上的改动，只把快照清掉")
+    void acceptKeepsFilesAndClearsSnapshot() throws Exception {
+        Path file = root.resolve("Foo.java");
+        Files.writeString(file, "old");
+        markPendingSnapshot(file);
+        Files.writeString(file, "new");
+
+        assertThat(SpecflowCli.execute("accept", "-p", project)).isZero();
+
+        assertThat(Files.readString(file)).isEqualTo("new");
+        assertThat(undisposedSnapshots()).isEmpty();
+    }
+
+    /** 造一份「校验通过、等人处置」的快照，模拟上一次运行留下的东西。 */
+    private void markPendingSnapshot(Path file) {
+        WorkspaceSnapshot.capture(new SafePathResolver(root),
+                        root.resolve(SnapshotConfig.DEFAULT_DIR), List.of(file))
+                .markPending();
+    }
+
+    private List<WorkspaceSnapshot> undisposedSnapshots() {
+        return WorkspaceSnapshot.undisposed(new SafePathResolver(root),
+                root.resolve(SnapshotConfig.DEFAULT_DIR));
     }
 
     private void writeSpec(String yaml) throws Exception {

@@ -34,7 +34,13 @@ public record AgentResult(
         /** 被人工中断，磁盘已回滚到初始状态。 */
         CANCELLED,
         /** 模型声明信息不足，未做任何改动。 */
-        NEEDS_CONTEXT
+        NEEDS_CONTEXT,
+        /**
+         * 上一次的改动还没被处置（接受或撤回），引擎拒绝开工。
+         *
+         * <p>它不是失败：磁盘上那份改动是好的，只是在等人表态。
+         */
+        PENDING_DECISION
     }
 
     public static AgentResult success(int attempts, List<PatchApplier.FileChange> changes,
@@ -72,6 +78,13 @@ public record AgentResult(
 
     public static AgentResult needsContext(int attempts, String detail) {
         return new AgentResult(Status.NEEDS_CONTEXT, attempts, List.of(), List.of(), detail);
+    }
+
+    /**
+     * 上一次运行的改动还在等人处置，因此这一次一个字节都没碰。
+     */
+    public static AgentResult pendingDecision(String detail) {
+        return new AgentResult(Status.PENDING_DECISION, 0, List.of(), List.of(), detail);
     }
 
     public boolean succeeded() {

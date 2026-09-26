@@ -10,6 +10,7 @@ import com.specflow.project.LlmConfig;
 import com.specflow.project.ProjectConfig;
 import com.specflow.project.SnapshotConfig;
 import com.specflow.review.PlanReview;
+import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.VerifySpec;
 import com.specflow.template.TemplateRegistry;
@@ -108,7 +109,7 @@ class DevelopmentAgentTest {
                 .run(TestSpecs.spec(List.of("Foo.java")));
 
         assertThat(result.status()).isEqualTo(AgentResult.Status.FAILED);
-        assertThat(result.attempts()).isEqualTo(3);
+        assertThat(result.attempts()).isEqualTo(4);
         assertThat(read("Foo.java")).isEqualTo(ORIGINAL);
     }
 
@@ -411,6 +412,58 @@ class DevelopmentAgentTest {
     }
 
     // ---------- 辅助 ----------
+
+    @Test
+    @DisplayName("成功之后留下待处置的快照，不再自动删掉")
+    void keepsSnapshotWaitingForDecisionAfterSuccess() throws IOException {
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()))
+                .run(TestSpecs.spec(List.of("Foo.java")));
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(snapshotNames()).hasSize(1);
+        assertThat(snapshotNames().get(0)).endsWith(WorkspaceSnapshot.PENDING_SUFFIX);
+    }
+
+    @Test
+    @DisplayName("上一次的改动还没处置时拒绝开工：模型不调、磁盘不碰")
+    void refusesToStartWhilePreviousChangeUndisposed() {
+        ScriptedLlm first = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
+        agent(first, new ScriptedVerifier(passed())).run(TestSpecs.spec(List.of("Foo.java")));
+
+        ScriptedLlm second = new ScriptedLlm(patch("int a = 2;", "int a = 3;"));
+        AgentResult result = agent(second, new ScriptedVerifier(passed()))
+                .run(TestSpecs.spec(List.of("Foo.java")));
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.PENDING_DECISION);
+        assertThat(result.attempts()).isZero();
+        assertThat(second.calls()).isEmpty();
+        assertThat(read("Foo.java")).contains("int a = 2;");
+    }
+
+    @Test
+    @DisplayName("校验失败回滚之后删掉本轮快照，不在磁盘上留下作废的档案")
+    void removesSnapshotAfterRollback() throws IOException {
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
+
+        AgentResult result = agent(llm, new ScriptedVerifier(failed()))
+                .run(TestSpecs.spec(List.of("Foo.java"), new VerifySpec(true, null, 0)));
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.FAILED);
+        assertThat(read("Foo.java")).isEqualTo(ORIGINAL);
+        assertThat(snapshotNames()).isEmpty();
+    }
+
+    private List<String> snapshotNames() throws IOException {
+        Path directory = root.resolve(SnapshotConfig.DEFAULT_DIR);
+        if (!Files.isDirectory(directory)) {
+            return List.of();
+        }
+        try (var stream = Files.list(directory)) {
+            return stream.map(path -> path.getFileName().toString()).sorted().toList();
+        }
+    }
 
     private DevelopmentAgent agent(LlmClient llm, Verifier verifier) {
         return new DevelopmentAgent(root, ProjectConfig.DEFAULT, TemplateRegistry.empty(),

@@ -30,6 +30,9 @@ import java.util.concurrent.Callable;
  *   <li>{@code 0} 成功（含「落盘成功但没校验」——改动确实在磁盘上）</li>
  *   <li>{@code 1} 失败，磁盘已回滚</li>
  *   <li>{@code 2} 模型声明信息不足，磁盘未被触碰</li>
+ *   <li>{@code 3} 人工中断，磁盘已回滚</li>
+ *   <li>{@code 4} 卡在环境/依赖上，磁盘已回滚</li>
+ *   <li>{@code 5} 上一次的改动还没处置，本次一个字节都没碰（先跑 accept 或 rollback）</li>
  * </ul>
  */
 @Command(name = "run", description = "按 spec 让模型产出补丁，校验后落盘")
@@ -105,6 +108,10 @@ public final class RunCommand implements Callable<Integer> {
                 Console.warn("已中断（完成 %d 轮）", result.attempts());
                 Console.detail("磁盘状态已回滚到运行前");
             }
+            case PENDING_DECISION -> {
+                Console.warn("%s", result.detail());
+                Console.detail("保留改动：specflow accept    撤回改动：specflow rollback");
+            }
         }
     }
 
@@ -122,6 +129,7 @@ public final class RunCommand implements Callable<Integer> {
             case NEEDS_CONTEXT -> 2;
             case CANCELLED -> 3;
             case NEEDS_ENVIRONMENT -> 4;
+            case PENDING_DECISION -> 5;
         };
     }
 }

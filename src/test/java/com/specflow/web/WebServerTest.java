@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.specflow.project.ProjectConfig;
 import com.specflow.project.RecentProjects;
+import com.specflow.project.SnapshotConfig;
+import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.template.TemplateRegistry;
+import com.specflow.util.SafePathResolver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -719,6 +722,62 @@ class WebServerTest {
         assertThat(recent).hasSize(1);
         // 灰掉那一条就够了，用户还能点它右边的「×」把自己救出来
         assertThat(recent.get(0).path("exists").asBoolean()).isFalse();
+    }
+
+    @Test
+    @DisplayName("待处置的改动：查得到、会挡住下一次运行、撤回之后文件真的回到原样")
+    void pendingChangesBlockRunsAndCanBeRolledBack() throws Exception {
+        Path foo = root.resolve("src/main/java/com/demo/Foo.java");
+        Files.writeString(foo, "class Foo { int a = 1; }\n");
+        WorkspaceSnapshot snapshot = WorkspaceSnapshot.capture(
+                new SafePathResolver(root), root.resolve(SnapshotConfig.DEFAULT_DIR), List.of(foo));
+        Files.writeString(foo, "class Foo { int a = 2; }\n");
+        snapshot.markPending();
+
+        JsonNode pending = body(get("/api/pending"));
+        assertThat(pending.path("present").asBoolean()).isTrue();
+        assertThat(pending.path("canAccept").asBoolean()).isTrue();
+        assertThat(pending.path("summary").asText()).isEqualTo("1 个文件：新增 0、修改 1");
+        assertThat(pending.path("files").get(0).path("path").asText())
+                .isEqualTo("src/main/java/com/demo/Foo.java");
+        assertThat(pending.path("files").get(0).path("diff").asText())
+                .contains("+class Foo { int a = 2; }");
+
+        // 引擎自己也会拦，这里要的是「点下的瞬间」就拿到 409
+        HttpResponse<String> run = post("/api/run", "{\"prompt\":\"做点什么\"}");
+        assertThat(run.statusCode()).isEqualTo(409);
+        assertThat(run.body()).contains("还没处置");
+
+        assertThat(post("/api/rollback", "{}").statusCode()).isEqualTo(200);
+        assertThat(Files.readString(foo)).isEqualTo("class Foo { int a = 1; }\n");
+        assertThat(body(get("/api/pending")).path("present").asBoolean()).isFalse();
+    }
+
+    @Test
+    @DisplayName("保留改动：快照被删掉，磁盘上的改动一动不动")
+    void acceptingKeepsTheChangeOnDisk() throws Exception {
+        Path foo = root.resolve("src/main/java/com/demo/Foo.java");
+        Files.writeString(foo, "class Foo { int a = 1; }\n");
+        WorkspaceSnapshot snapshot = WorkspaceSnapshot.capture(
+                new SafePathResolver(root), root.resolve(SnapshotConfig.DEFAULT_DIR), List.of(foo));
+        Files.writeString(foo, "class Foo { int a = 2; }\n");
+        snapshot.markPending();
+
+        assertThat(post("/api/accept", "{}").statusCode()).isEqualTo(200);
+
+        assertThat(Files.readString(foo)).isEqualTo("class Foo { int a = 2; }\n");
+        assertThat(body(get("/api/pending")).path("present").asBoolean()).isFalse();
+    }
+
+    @Test
+    @DisplayName("没有待处置的改动时处置接口报 409，并且只接受 POST")
+    void decidingWithoutPendingIsAConflict() throws Exception {
+        assertThat(get("/api/pending").statusCode()).isEqualTo(200);
+        assertThat(body(get("/api/pending")).path("present").asBoolean()).isFalse();
+
+        assertThat(get("/api/accept").statusCode()).isEqualTo(405);
+        assertThat(post("/api/accept", "{}").statusCode()).isEqualTo(409);
+        assertThat(post("/api/rollback", "{}").statusCode()).isEqualTo(409);
     }
 
     // ---------- 辅助 ----------

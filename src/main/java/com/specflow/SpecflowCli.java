@@ -1,6 +1,8 @@
 package com.specflow;
 
+import com.specflow.cli.AcceptCommand;
 import com.specflow.cli.InitCommand;
+import com.specflow.cli.RollbackCommand;
 import com.specflow.cli.RunCommand;
 import com.specflow.cli.TemplatesCommand;
 import com.specflow.cli.ValidateCommand;
@@ -28,7 +30,9 @@ import picocli.CommandLine.Command;
                 WebCommand.class,
                 ValidateCommand.class,
                 TemplatesCommand.class,
-                InitCommand.class
+                InitCommand.class,
+                AcceptCommand.class,
+                RollbackCommand.class
         }
 )
 public final class SpecflowCli implements Runnable {

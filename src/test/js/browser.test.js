@@ -1749,6 +1749,108 @@ async function main() {
       return 'ok';
     })()`);
 
+    // ---------- 链 20：待处置的改动 ----------
+    // 这一链验的是界面对「磁盘上留着一份还没处置的改动」的反应。桩住 /api/pending 与两个
+    // 处置接口：真去改项目里的文件就是拿用户的项目当试验田，而这里要看的是按钮打没打对接口、
+    // 「运行」有没有被按住。
+    console.log('\n链 20　待处置的改动：挡得住运行，两个按钮各打各的接口：');
+
+    await evaluate(`(() => {
+      window.__decisions = [];
+      window.__pending = {
+        present: true, id: 'probe.pending', canAccept: true,
+        summary: '2 个文件：新增 1、修改 1',
+        files: [
+          { path: 'a/New.java', created: true, diff: '+class New {}' },
+          { path: 'a/Foo.java', created: false, diff: ' class Foo {\\n-int a = 1;\\n+int a = 2;\\n }' },
+        ],
+      };
+      const inner = window.fetch;
+      window.fetch = (url, opts) => {
+        const u = String(url);
+        if (u.endsWith('/api/pending')) {
+          return Promise.resolve(new Response(JSON.stringify(window.__pending),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (u.endsWith('/api/accept') || u.endsWith('/api/rollback')) {
+          window.__decisions.push(u.slice(u.lastIndexOf('/') + 1));
+          window.__pending = { present: false, id: null, canAccept: false,
+            summary: '没有待处置的改动', files: [] };
+          return Promise.resolve(new Response(JSON.stringify({ done: true }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return inner(url, opts);
+      };
+      return 'ok';
+    })()`);
+    await evaluate(`refreshPending()`);
+    await waitFor(`document.querySelector('#pending .pending') !== null`, '待处置面板出现');
+
+    check(await evaluate(`document.querySelector('#pending .pending-summary').textContent`)
+            === '2 个文件：新增 1、修改 1',
+        '面板说清了磁盘上留了什么');
+    check(await evaluate(`document.getElementById('run').disabled`) === true,
+        '有待处置的改动时「运行」被按住');
+    check(await evaluate(`document.getElementById('run').title`).then(t => t.length > 0),
+        '而且说明了为什么点不了');
+    check(await evaluate(`document.querySelectorAll('#pending .pending-body details.change').length`) === 2,
+        '两个文件各占一行');
+    check(await evaluate(`document.querySelector('#pending .diff .add') !== null`)
+            && await evaluate(`document.querySelector('#pending .diff .del') !== null`),
+        'diff 里的增删行分得开（复用了运行结果区那套 class）');
+
+    // 收起/展开：键盘用户按一下不该丢焦点，所以只翻这一块，不整块重画
+    await evaluate(`document.querySelector('#pending .pending-toggle').click(); 'ok'`);
+    check(await evaluate(`document.querySelector('#pending .pending-body').hidden`) === true,
+        '点「收起」之后正文收起来');
+    await evaluate(`document.querySelector('#pending .pending-toggle').click(); 'ok'`);
+    check(await evaluate(`document.querySelector('#pending .pending-body').hidden`) === false,
+        '再点一下又展开');
+
+    // 点「保留改动」：必须打 /api/accept
+    await evaluate(`document.querySelector('#pending [data-act="accept"]').click(); 'ok'`);
+    await waitFor(`document.querySelector('#pending .pending') === null`, '处置之后面板消失');
+    check(JSON.stringify(await evaluate(`window.__decisions`)) === '["accept"]',
+        '「保留改动」打的是 /api/accept：' + JSON.stringify(await evaluate(`window.__decisions`)));
+    check(await evaluate(`document.getElementById('run').disabled`) === false,
+        '处置完之后「运行」解锁');
+
+    // 没校验过的那一种：主按钮换成「恢复到运行前」，并且必须说清「保留当前内容」没验过
+    await evaluate(`(() => {
+      window.__pending = {
+        present: true, id: 'probe2', canAccept: false, summary: '1 个文件：新增 0、修改 1',
+        files: [{ path: 'a/Foo.java', created: false, diff: '-a\\n+b' }],
+      };
+      return 'ok';
+    })()`);
+    await evaluate(`refreshPending()`);
+    await waitFor(`document.querySelector('#pending .pending') !== null`, '第二份改动出现');
+
+    check(await evaluate(`document.querySelector('#pending [data-act="rollback"]').textContent`)
+            === '恢复到运行前' && await evaluate(
+            `document.querySelector('#pending [data-act="rollback"]').classList.contains('ghost')`) === false,
+        '没校验过时主按钮是「恢复到运行前」');
+    check(await evaluate(`document.querySelector('#pending .pending-alert').textContent`)
+            .then(t => t.includes('没有经过校验')),
+        '并且说清了「保留当前内容」拿到的是没验过的改动');
+    check(await evaluate(`document.querySelector('#pending .pending-actions').lastElementChild.className`)
+            === 'pending-alert',
+        '那句警示就贴在按钮旁边，不会被挤到别处');
+
+    await evaluate(`document.querySelector('#pending [data-act="accept"]').click(); 'ok'`);
+    await waitFor(`document.querySelector('#pending .pending') === null`, '第二份也处置完');
+    check(JSON.stringify(await evaluate(`window.__decisions`)) === '["accept","accept"]',
+        '「保留当前内容」也是打 /api/accept');
+
+    // 桩撤掉，界面回到真接口上
+    await evaluate(`(() => {
+      window.fetch = window.__realFetch;
+      window.__pending = null;
+      setRunning(false);
+      return 'ok';
+    })()`);
+    await evaluate(`refreshPending()`);
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,

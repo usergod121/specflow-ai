@@ -353,5 +353,97 @@ check(yaml.includes('  - name: "订单表结构"'), '上下文的内联条目被
 check(yaml.includes('CREATE TABLE orders'), '内联内容不丢');
 check(typeof templateToYaml({}) === 'string', '空对象也能转，不抛异常');
 
+// ---------- 待处置的改动 ----------
+// 这块面板最要紧的判断只有一个：canAccept 真和假时，两个按钮的主次与文案正好相反。
+// 弄反了的后果不对称——该恢复原样的那一次，用户顺手点了主按钮，
+// 于是把一份没校验过的改动留在了磁盘上。而两块面板看起来又几乎一样，
+// 肉眼过一遍很容易漏，所以把它渲染成字符串，直接对着字符串断言。
+const { pendingPanelHtml, diffLineClass, pendingActionPath } = load('index.html',
+    ['pendingPanelHtml', 'diffLineClass', 'pendingActionPath'],
+    '// ---------- 待处置的改动 ----------', 'async function refreshPending');
+
+console.log('差异行的分类：');
+check(diffLineClass('+class New {}') === 'add', '+ 开头是新增行');
+check(diffLineClass('-int a = 1;') === 'del', '- 开头是删除行');
+check(diffLineClass(' int a = 1;') === '', '空格开头是上下文，不标底色');
+check(diffLineClass('') === '', '空行不标底色');
+
+console.log('处置动作打到哪个接口：');
+check(pendingActionPath('accept') === '/api/accept', '「保留」打 /api/accept');
+check(pendingActionPath('rollback') === '/api/rollback', '「撤回」打 /api/rollback');
+check(pendingActionPath('accept') !== pendingActionPath('rollback'),
+    '两个动作不会落到同一个接口上（落同一个就是「点保留却撤回了」）');
+
+console.log('待处置的改动面板：');
+const pendingFile = (path, created, diff) => ({ path, created, diff });
+const verified = {
+  present: true,
+  id: '20260214-103012-451.pending',
+  canAccept: true,
+  summary: '2 个文件：新增 1、修改 1',
+  files: [
+    pendingFile('src/main/java/demo/New.java', true, '+class New {}'),
+    pendingFile('src/main/java/demo/Foo.java', false, '-int a = 1;\n+int a = 2;'),
+  ],
+};
+
+check(pendingPanelHtml({ present: false, id: null, canAccept: false, summary: '没有待处置的改动', files: [] }) === '',
+    '没有待处置的改动时一个字符都不渲染（#pending 靠 :empty 收掉）');
+
+const okHtml = pendingPanelHtml(verified);
+check(okHtml.includes('2 个文件：新增 1、修改 1'), 'summary 摆出来了');
+check(okHtml.includes('<button type="button" data-act="accept">保留改动</button>'),
+    '校验过时主按钮是「保留改动」，不带 ghost（它就是主路径）');
+check(okHtml.includes('<button type="button" class="ghost" data-act="rollback">撤回改动</button>'),
+    '次按钮是「撤回改动」');
+check(okHtml.indexOf('data-act="accept"') < okHtml.indexOf('data-act="rollback"'),
+    '主按钮排在次按钮前面（两个按钮长得几乎一样，顺序就是唯一的提示）');
+check(!okHtml.includes('class="pending-alert"'), '校验过的这一份不该挂「没校验」的警示');
+check(okHtml.includes('才能开始新的一次运行'), '面板里写明「运行」为什么按不动');
+
+check(okHtml.includes('新建 src/main/java/demo/New.java'), '新建的文件标成「新建」');
+check(okHtml.includes('修改 src/main/java/demo/Foo.java'), '改过的文件标成「修改」');
+check(okHtml.includes('<div class="diff">'), 'diff 复用运行结果区那套 .diff');
+check(okHtml.includes('<div class="add">+class New {}</div>'), '新增行渲染成 .add');
+check(okHtml.includes('<div class="del">-int a = 1;</div>'), '删除行渲染成 .del');
+check(okHtml.includes('<div class="add">+int a = 2;</div>'), '同一段 diff 里增删混着也不会串类');
+
+const unverified = pendingPanelHtml({ ...verified, canAccept: false, summary: '1 个文件：修改 1' });
+check(unverified.includes('<button type="button" data-act="rollback">恢复到运行前</button>'),
+    '没校验过时主按钮是「恢复到运行前」');
+check(unverified.includes('data-act="accept">保留当前内容</button>'), '次按钮是「保留当前内容」');
+check(unverified.indexOf('data-act="rollback"') < unverified.indexOf('data-act="accept"'),
+    '没校验过时主次正好反过来');
+check(!unverified.includes('保留改动'), '这一份里不该出现「保留改动」这个说法（它和上面那份不是一回事）');
+check(unverified.includes('data-act="accept">保留当前内容</button><span class="pending-alert">'),
+    '「没经过校验」这句就贴在这个次按钮旁边');
+check(unverified.includes('没有经过校验'), '警示必须写明没验过');
+
+const noFiles = pendingPanelHtml({ present: true, id: 'x.pending', canAccept: true, summary: '磁盘上没留下改动', files: [] });
+check(noFiles.includes('磁盘上没留下改动') && noFiles.includes('data-act="accept"'),
+    'present 为真但 files 为空时照样把两个按钮摆出来，不是一片空白');
+check(!noFiles.includes('<details'), '没有文件明细就不画文件块');
+
+console.log('待处置面板的收起与展开：');
+const many = { ...verified, files: [1, 2, 3, 4].map(i => pendingFile('src/F' + i + '.java', false, '+x')) };
+check(pendingPanelHtml(verified).includes('data-open="true"'), '改动少时默认展开');
+check(pendingPanelHtml(many).includes('data-open="false"'), '改动多时默认收起');
+check(pendingPanelHtml(many).includes('<div class="pending-body" hidden>'), '收起时正文整块藏起来');
+check(pendingPanelHtml(verified).includes('<details class="change" open>'), '改动少时每个文件的 diff 直接摊开');
+check(!pendingPanelHtml(many).includes('<details class="change" open>'), '改动多时只给一行摘要');
+check(pendingPanelHtml(many, true).includes('data-open="true"')
+    && pendingPanelHtml(many, true).includes('>收起</button>'), '用户自己展开过就听用户的，不按文件数猜');
+check(pendingPanelHtml(verified).includes('>收起</button>')
+    && pendingPanelHtml(many).includes('>展开</button>'), '收起/展开按钮的文案跟着状态走');
+
+console.log('待处置面板的转义：');
+const nasty = pendingPanelHtml({
+  present: true, id: 'x.pending', canAccept: true, summary: '1 个文件',
+  files: [pendingFile('src/<b>a</b>.java', false, '+<img src=x onerror=1>')],
+});
+check(nasty.includes('src/&lt;b&gt;a&lt;/b&gt;.java') && !nasty.includes('<b>a</b>'),
+    '路径里的尖括号被转义（路径是模型写出来的）');
+check(nasty.includes('&lt;img src=x onerror=1&gt;'), 'diff 正文里的尖括号也被转义');
+
 console.log(failed ? '\n失败 ' + failed + ' 项' : '\n全部通过');
 process.exitCode = failed ? 1 : 0;

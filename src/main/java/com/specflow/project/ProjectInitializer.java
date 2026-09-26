@@ -150,7 +150,7 @@ public final class ProjectInitializer {
         if (Files.exists(file) && !(replaceBlank && isEmptyShell(file, root))) {
             return;
         }
-        ProjectFiles.write(file, content, shown(root, file));
+        ProjectFiles.writeAtomic(file, content, shown(root, file));
         written.add(shown(root, file));
     }
 

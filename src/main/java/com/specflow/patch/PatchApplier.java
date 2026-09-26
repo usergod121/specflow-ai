@@ -53,7 +53,7 @@ public final class PatchApplier {
         String rendered = plan.render(file, normalized);
         String output = TextNormalizer.applyLineSeparator(rendered, separator);
 
-        ProjectFiles.write(file, output, shown);
+        ProjectFiles.writeAtomic(file, output, shown);
 
         // 差异在这里算，因为原始内容此刻正好还在手上——换个地方算就得再读一次磁盘。
         String diff = TextDiff.unified(original, output);

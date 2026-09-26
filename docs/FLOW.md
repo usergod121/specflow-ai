@@ -34,7 +34,7 @@
 | 锚点必须逐字存在且唯一 | 硬拦 | 会。不存在是 `ANCHOR_NOT_FOUND`，匹配到多处是 `ANCHOR_AMBIGUOUS`（新建文件时 SEARCH 留空，不走这条） | `SearchReplaceStrategy.planInPlaceEdit`、`TextNormalizer` |
 | 同一文件的改动不许重叠 | 硬拦 | 会。`EDIT_OVERLAP` | `SearchReplaceStrategy.assertNoOverlap` |
 | 不许整文件覆盖已存在的文件 | 硬拦 | 会。`TARGET_EXISTS`；反过来，给了锚点而文件不存在是 `TARGET_MISSING` | `SearchReplaceStrategy.planNewFile` |
-| 解析不出补丁块 | 硬拦 | 会。`NO_BLOCK_PARSED`，按一次补丁冲突计（这个预算是 2 次） | `PatchParser.parse`、`DevelopmentAgent.MAX_CONFLICT_RETRIES` |
+| 解析不出补丁块 | 硬拦 | 会。`NO_BLOCK_PARSED`，按一次补丁冲突计（这个预算是 3 次） | `PatchParser.parse`、`DevelopmentAgent.MAX_CONFLICT_RETRIES` |
 | 落盘前先快照 | 硬拦 | 会，前提是快照没在 `project.yaml` 里关掉；关了就没有回滚，只剩一句警告 | `DevelopmentAgent.applyAndVerify`、`WorkspaceSnapshot.capture` |
 | 编译校验 | 硬拦 | 会。退出码非 0 → 回滚 → 回喂 → 下一轮，预算 `max-retry`（默认 6）；没配编译命令是 `SKIPPED`，不算通过 | `CompileVerifier.run`、`VerifySpec` |
 | 环境问题早停 | 硬拦 | 会。输出命中缺依赖 / JDK 级别 / 权限这类字样就判成 `ENVIRONMENT`，立刻停、回滚，不再喂给模型 | `CompileFailure.classify`、`VerificationResult.environmental()`、`AgentResult.needsEnvironment` |

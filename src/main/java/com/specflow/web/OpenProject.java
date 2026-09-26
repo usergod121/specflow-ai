@@ -3,8 +3,10 @@ package com.specflow.web;
 import com.specflow.project.ContextLibrary;
 import com.specflow.project.ProjectConfig;
 import com.specflow.project.ProjectConfigLoader;
+import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.task.TaskStore;
 import com.specflow.template.TemplateStore;
+import com.specflow.util.SafePathResolver;
 
 import java.nio.file.Path;
 
@@ -60,6 +62,10 @@ public final class OpenProject implements AutoCloseable {
     public static OpenProject open(Path root) {
         Path normalized = root.toAbsolutePath().normalize();
         ProjectConfig config = new ProjectConfigLoader().load(normalized);
+        SafePathResolver resolver = new SafePathResolver(normalized);
+        // 打开项目时先把上一次留下的残局收一下：没写完的快照目录、写了一半的临时文件。
+        // 放在这里而不是每次运行前：这是「进这个项目」的唯一入口，收一次就够
+        WorkspaceSnapshot.cleanUp(resolver, resolver.resolve(config.snapshot().dir()));
         TemplateStore templates = new TemplateStore(normalized.resolve(TemplateStore.DEFAULT_DIR));
         return new OpenProject(normalized, config, templates,
                 new ProjectIndex(normalized),

@@ -16,6 +16,7 @@ import com.specflow.review.PlanAudit;
 import com.specflow.review.PlanReview;
 import com.specflow.review.PlanReviewer;
 import com.specflow.review.ReviewOutcome;
+import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.SpecValidator;
 import com.specflow.template.TemplateRegistry;
@@ -125,6 +126,11 @@ public final class RunService implements AgentListener {
         if (hub.running()) {
             throw new IllegalStateException("已有任务正在运行，请等它结束");
         }
+        // 引擎自己也会拦（见 DevelopmentAgent）。这里先拦一遍是为了让界面在点下的
+        // 瞬间就拿到 409，而不是等一个注定被拒的任务跑起来才知道
+        if (waitingSnapshot() != null) {
+            throw new IllegalStateException("上一次的改动还没处置：请先「保留改动」或「撤回改动」");
+        }
         // 清掉上一次留下的停止请求。放在并发判断<b>之后</b>：
         // 这次提交被拒的时候，上一次运行可能正跑到一半，它的停止请求不该被顺手抹掉
         cancelRequested = false;
@@ -180,6 +186,55 @@ public final class RunService implements AgentListener {
         Spec spec = request.toSpec();
         new SpecValidator().validate(spec, new SafePathResolver(projectRoot));
         return spec;
+    }
+
+    /**
+     * 磁盘上那份还没被处置的改动；没有就返回 {@code null}。
+     */
+    public PendingChanges pending() {
+        WorkspaceSnapshot snapshot = waitingSnapshot();
+        return snapshot == null ? PendingChanges.none() : PendingChanges.of(snapshot);
+    }
+
+    /**
+     * 接受：把快照删掉，磁盘上的改动保持不动。
+     *
+     * <p>「接受」不需要动文件——改动早就写进去了，快照留着只是为了让人还来得及撤回。
+     */
+    public void accept() {
+        dispose(false);
+    }
+
+    /**
+     * 撤回：按快照把文件恢复原样，然后删掉快照。
+     */
+    public void rollback() {
+        dispose(true);
+    }
+
+    private void dispose(boolean restore) {
+        WorkspaceSnapshot snapshot = waitingSnapshot();
+        if (snapshot == null) {
+            throw new IllegalStateException("没有待处置的改动");
+        }
+        if (restore) {
+            snapshot.restore();
+        }
+        snapshot.discard();
+    }
+
+    /**
+     * 最早的那一份未处置快照。
+     *
+     * <p>正常情况下最多只有一份：引擎在它被处置之前会拒绝开新的运行。
+     * 多份只可能来自「清理快照失败」这类残留，那就从最早的一份开始算。
+     */
+    private WorkspaceSnapshot waitingSnapshot() {
+        SafePathResolver resolver = new SafePathResolver(projectRoot);
+        return WorkspaceSnapshot.undisposed(resolver, resolver.resolve(project.snapshot().dir()))
+                .stream()
+                .findFirst()
+                .orElse(null);
     }
 
     private void execute(Spec spec, LlmClient llm, PlanReview approved) {
