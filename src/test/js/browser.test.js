@@ -1681,6 +1681,11 @@ async function main() {
     const detailText = await evaluate(`document.getElementById('rundetail').textContent`);
     check(detailText.includes('当时参考了 1 条上下文') && detailText.includes('orders 表结构'),
         '运行详情里能看到当时喂了什么上下文：' + detailText.slice(0, 160));
+    // 时间线那一行同理：留档里每行也带着轮号，而那句文案自己写着「第 1 轮」
+    check(await evaluate(`document.querySelector('#rundetail .timeline div').textContent`)
+            === '第 1 轮：调用模型…',
+        '留档时间线上轮号也只出现一次（不然就是「第 1 轮第 1 轮：调用模型…」）：'
+            + (await evaluate(`document.querySelector('#rundetail .timeline div').textContent`)));
 
     // 收拾干净
     await evaluate(`(() => {
@@ -1884,6 +1889,25 @@ async function main() {
     check(!(await evaluate(`document.getElementById('runstage').hidden`)),
         '这一句是看得见的（不是标着 hidden 还在那儿）');
 
+    // 轮次只说一遍：轮级那句文案自己带着轮号，事件上另有一个 round 字段，
+    // 两处都画就成了实测看到的「第 1 轮第 1 步第 1 轮：调用模型…」。
+    // 文案自己没提轮次的那些（编译校验、已写入几个文件）照旧挂标签——那是它们唯一的轮次信息。
+    await evaluate(`(() => {
+      document.getElementById('log').innerHTML = '';
+      appendLog({ id: 91, round: 1, step: 1, level: 'info', text: '第 1 轮：调用模型…' });
+      appendLog({ id: 92, round: 1, step: 0, level: 'info', text: '编译校验：通过' });
+      return 'ok';
+    })()`);
+    const roundLine = await evaluate(`document.querySelectorAll('#log .line')[0].textContent`);
+    const otherLine = await evaluate(`document.querySelectorAll('#log .line')[1].textContent`);
+    check(roundLine === '第 1 步第 1 轮：调用模型…',
+        '轮级那句只出现一次轮号（标签让位给文案里的那个）：' + roundLine);
+    check(otherLine === '第 1 轮编译校验：通过',
+        '文案里没提轮次的照旧挂轮次标签（轮次信息不能丢）：' + otherLine);
+    check(await evaluate(`document.querySelectorAll('#log .line')[1].querySelector('.round').textContent`)
+            === '第 1 轮',
+        '挂上去的标签就是那个轮次标签（不是别的什么东西）');
+
     // ② 日志分级：级别靠左侧色条，而不是只换个字色
     await evaluate(`(() => {
       appendLog({ id: 3, round: 1, level: 'warn', text: '补丁被拒绝，文件未改动' });
@@ -2004,6 +2028,84 @@ async function main() {
     check(await evaluate(`document.querySelector('#pending .diff .add') !== null`)
             && await evaluate(`document.querySelector('#pending .diff .del') !== null`),
         'diff 里的增删行分得开（复用了运行结果区那套 class）');
+
+    // 按步分组：面板只拿**每步留档**分组。快照里只有一份「运行前 vs 现在」的累计 diff，
+    // 拿它配到步上，第 1 步就会顶着含第 2 步改动的 diff（实测踩过这个）。
+    // 这里就让两份数据故意打架：快照里 Foo.java 那份 diff 含第 2 步补的行，
+    // 而留档说那一行是第 2 步写的——面板必须听留档的。
+    await evaluate(`(() => {
+      window.__pending = {
+        present: true, id: 'probe.pending', canAccept: true,
+        summary: '2 个文件：新增 1、修改 1',
+        files: [
+          { path: 'a/Foo.java', created: false,
+            diff: ' class Foo {\\n-int a = 1;\\n+int a = 2;\\n+int b = 3;\\n }' },
+          { path: 'a/New.java', created: true, diff: '+class New {}' },
+        ],
+      };
+      state.stepDetail = [
+        { index: 1, goal: '改 Foo', state: 'SUCCESS', rounds: 1,
+          changes: [{ path: 'a/Foo.java', created: false, bytes: 10,
+                      diff: '-int a = 1;\\n+int a = 2;' }] },
+        { index: 2, goal: '加 New', state: 'SUCCESS', rounds: 1,
+          changes: [{ path: 'a/Foo.java', created: false, bytes: 10, diff: '+int b = 3;' },
+                    { path: 'a/New.java', created: true, bytes: 12, diff: '+class New {}' }] },
+      ];
+      // 施工单也摆在这儿（界面上那份是运行事件里的 plan 给的）。面板要是拿
+      // 「这一步声明要动哪些文件」去配快照里那份累计 diff，下面两条就会红——
+      // 那正是实测看到的错法，所以留着它，让这条断言真能抓住回归
+      state.steps = [
+        { index: 1, goal: '改 Foo', files: ['a/Foo.java'], check: '', intermediate: false },
+        { index: 2, goal: '加 New', files: ['a/New.java'], check: '', intermediate: false },
+      ];
+      return 'ok';
+    })()`);
+    await evaluate(`refreshPending()`);
+    check(await evaluate(`document.querySelectorAll('#pending .step-group').length`) === 2,
+        '待处置面板按每步留档分成两组');
+    const pendingHeads = await evaluate(`[...document.querySelectorAll('#pending .step-group-head')]
+        .map(head => head.textContent)`);
+    check(JSON.stringify(pendingHeads)
+            === JSON.stringify(['第 1 步：改 Foo（1 个文件）', '第 2 步：加 New（2 个文件）']),
+        '每一组写明是哪一步、几个文件：' + JSON.stringify(pendingHeads));
+    const firstPendingGroup = await evaluate(
+        `document.querySelector('#pending .step-group').textContent`);
+    check(firstPendingGroup.includes('int a = 2') && !firstPendingGroup.includes('int b = 3'),
+        '第 1 步那组里只有这一步真写的改动（快照那份累计 diff 会把 int b = 3 也带进来）：'
+            + firstPendingGroup);
+    check(await evaluate(`[...document.querySelectorAll('#pending .step-group')][1].textContent`)
+            .then(t => t.includes('int b = 3')),
+        '第 2 步那组里是它自己写的那一行');
+    check(await evaluate(`document.querySelectorAll('#pending .step-group details.change').length`) === 3,
+        '改动一个不少：两步各自的文件块都在（分组不吞东西）');
+    check(await evaluate(`[...document.querySelectorAll('#pending .step-group summary')]
+            .filter(node => node.textContent.includes('a/Foo.java')).length`) === 2,
+        '同一个文件被两步都改过时两组里各出现一次（实测那个 Calculator.java 就是这个形状）');
+    // 留档撤掉（老记录、刷新过页面）：宁可一个文件一块，也不给改动乱安步号
+    await evaluate(`(() => {
+      state.stepDetail = null;
+      state.steps = [];
+      renderPending();
+      return 'ok';
+    })()`);
+    check(await evaluate(`document.querySelectorAll('#pending .step-group').length`) === 0
+            && await evaluate(`document.querySelectorAll('#pending .pending-body details.change').length`) === 2,
+        '没有每步留档时不分组：两个文件各占一行（不拿施工单去猜）');
+
+    // 桩里那份改动恢复原样，后面几条（收起展开、两个按钮）接着用
+    await evaluate(`(() => {
+      window.__pending = {
+        present: true, id: 'probe.pending', canAccept: true,
+        summary: '2 个文件：新增 1、修改 1',
+        files: [
+          { path: 'a/New.java', created: true, diff: '+class New {}' },
+          { path: 'a/Foo.java', created: false, diff: ' class Foo {\\n-int a = 1;\\n+int a = 2;\\n }' },
+        ],
+      };
+      return 'ok';
+    })()`);
+    await evaluate(`refreshPending()`);
+    await waitFor(`document.querySelector('#pending .pending') !== null`, '待处置面板还在');
 
     // 收起/展开：键盘用户按一下不该丢焦点，所以只翻这一块，不整块重画
     await evaluate(`document.querySelector('#pending .pending-toggle').click(); 'ok'`);

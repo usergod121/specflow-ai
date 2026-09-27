@@ -547,6 +547,26 @@ check(nasty.includes('src/&lt;b&gt;a&lt;/b&gt;.java') && !nasty.includes('<b>a</
     '路径里的尖括号被转义（路径是模型写出来的）');
 check(nasty.includes('&lt;img src=x onerror=1&gt;'), 'diff 正文里的尖括号也被转义');
 
+// ---------- 日志行：轮次只说一遍 ----------
+// 实测渲染成「第 1 轮第 1 步第 1 轮：调用模型…」：轮级那句文案自己带着轮号，
+// 而事件/留档里另有一个 round 字段，两处都画就重了。
+// 判据是纯函数，所以在这里钉住；画成什么样由浏览器链盯着。
+const { saysRound } = load('index.html', ['saysRound'],
+    'function saysRound', 'function appendLog');
+
+console.log('日志行：轮次只说一遍：');
+check(saysRound('第 2 轮：调用模型…', 2) === true,
+    '文案自己写着「第 2 轮」：不再挂轮次标签（挂了就是「第 2 轮第 2 轮：调用模型…」）');
+check(saysRound('编译校验：通过', 2) === false,
+    '文案里没提轮次：标签照挂（它自己不说是第几轮，标签是唯一的轮次信息）');
+check(saysRound('已写入 2 个文件：a/A.java', 2) === false,
+    '数字对得上也不算提过轮次：要比的是「第 2 轮」整句，不是那个 2');
+check(saysRound('第 12 轮：调用模型…', 2) === false,
+    '第 12 轮不是第 2 轮：不能因为里面有个 2 就不挂标签');
+check(saysRound('第 1 轮第 1 步：调用模型…', 1) === true, '文案里出现轮号就认（不管它前后还有什么）');
+check(saysRound(undefined, 1) === false && saysRound(null, 1) === false && saysRound('', 1) === false,
+    '没有文案时也不炸，而且照样挂标签');
+
 // ---------- 挂起的运行 ----------
 // 这块面板最要紧的一条：接着跑**不能**把上下文重发一遍（那份钱用户已经付过了），
 // 所以两个动作必须打到两个不同的请求上；而「直接继续」还要带上 force，
@@ -798,27 +818,56 @@ check(step.fileKey(' a\\b/C.java ') === 'a/b/C.java', '路径归一：反斜杠�
 check(step.fileKey(null) === '' && step.fileKey(undefined) === '', '没有路径时给空串，不炸');
 
 console.log('施工单：待处置面板按步分组：');
+// 面板的按步依据只能是**每步留档**。快照里只有「运行前 vs 现在」这一份累计 diff，
+// 拿它配到步上，第 1 步就会顶着一份含第 2 步改动的 diff——实测就是这个现象。
 const pendingTwo = {
   present: true, id: 'x.pending', canAccept: true, summary: '2 个文件：新增 1、修改 1',
-  files: [pendingFile('a/A.java', false, '+x'), pendingFile('a/B.java', true, '+y')],
+  files: [pendingFile('a/A.java', false, '+x\n+第2步补的一行'), pendingFile('a/B.java', true, '+y')],
 };
-const groupedPending = pendingPanelHtml(pendingTwo, null, twoStepPlan);
-check(groupedPending.includes('<div class="step-group">'), '给了施工单就按步分组');
+const detailTwo = [
+  { index: 1, goal: '加接口', state: 'SUCCESS', rounds: 2,
+    changes: [{ path: 'a/A.java', created: false, diff: '+x' }] },
+  { index: 2, goal: '加实现', state: 'INTERMEDIATE', rounds: 3,
+    changes: [{ path: 'a/B.java', created: true, diff: '+y' },
+              { path: 'a/A.java', created: false, diff: '+第2步补的一行' }] },
+];
+const groupedPending = pendingPanelHtml(pendingTwo, null, detailTwo);
+check(groupedPending.includes('<div class="step-group">'), '给了每步留档就按步分组');
 check(groupedPending.includes('第 1 步：加接口') && groupedPending.includes('第 2 步：加实现'),
     '每一组写明是哪一步、做什么：' + groupedPending.slice(0, 200));
 check(groupedPending.indexOf('修改 a/A.java') < groupedPending.indexOf('第 2 步'),
     'a/A.java 落在第 1 步那一组里');
+check(groupedPending.split('修改 a/A.java').length - 1 === 2,
+    '同一个文件被两步都改过时，两组里各出现一次（实测那个 Calculator.java 就是这个形状）');
+// 这条就是那个 bug：分组没错，但每组的 diff 是「到目前为止的累计」
+const firstGroup = groupedPending.slice(0, groupedPending.indexOf('第 2 步'));
+check(firstGroup.includes('<div class="add">+x</div>'),
+    '第 1 步那组里是它自己写的那一行');
+check(!firstGroup.includes('第2步补的一行'),
+    '第 1 步那组里不含第 2 步的改动（累计 diff 会把它带进来）：' + firstGroup);
+check(groupedPending.includes('<div class="add">+y</div>')
+    && groupedPending.includes('<div class="add">+第2步补的一行</div>'),
+    '第 2 步自己的两处改动也在（每组各说各的，不是只剩一组）');
+check(!pendingPanelHtml(pendingTwo, null, []).includes('step-group')
+    && !pendingPanelHtml(pendingTwo, null, null).includes('step-group'),
+    '没有每步留档时一块都不分组：宁可一个文件一块，也不给改动乱安步号');
 check(pendingPanelHtml(pendingTwo).indexOf('<div class="step-group">') < 0,
-    '不给施工单时一块都不分组：老样子（链 20 盯着两个文件各占一行）');
-check(!pendingPanelHtml(pendingTwo, null, twoStepPlan.slice(0, 1)).includes('step-group'),
-    '施工单只有一步时也不分组');
-check(pendingPanelHtml(pendingTwo, null, twoStepPlan).includes(
+    '连留档都不给时也是老样子（链 20 盯着两个文件各占一行）');
+check(pendingPanelHtml(pendingTwo, null, detailTwo).includes(
     '<button type="button" data-act="accept">保留改动</button>'),
     '分组之后那两个按钮还在（分组只动正文）');
-check(pendingPanelHtml(pendingTwo, null, twoStepPlan).includes('<div class="add">+x</div>'),
+check(pendingPanelHtml(pendingTwo, null, detailTwo).includes('<div class="add">+x</div>'),
     '分组之后 diff 的底色也还在');
+// 留档里一步都没改文件时，那一步也得露出来（「这一步没动东西」本身是信息）
+const emptyStepDetail = [
+  { index: 1, goal: '加接口', state: 'SUCCESS', rounds: 1, changes: [{ path: 'a/A.java', diff: '+x' }] },
+  { index: 2, goal: '加实现', state: 'SUCCESS', rounds: 1, changes: [] },
+];
+check(pendingPanelHtml(pendingTwo, null, emptyStepDetail).includes('第 2 步：加实现'),
+    '没改文件的那一步也在（它只是没有文件块）');
 const nastyGoal = pendingPanelHtml(pendingTwo, null,
-    step.normalizeSteps([{ index: 1, goal: '<b>坏</b>', files: ['a/A.java'] }, { index: 2, goal: 'x', files: ['a/B.java'] }]));
+    [{ index: 1, goal: '<b>坏</b>', changes: [{ path: 'a/A.java', diff: '+x' }] },
+     { index: 2, goal: 'x', changes: [{ path: 'a/B.java', diff: '+y' }] }]);
 check(nastyGoal.includes('&lt;b&gt;坏&lt;/b&gt;') && !nastyGoal.includes('<b>坏</b>'),
     '分组标题里的 goal 也是模型写出来的，照样转义');
 

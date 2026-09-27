@@ -3084,11 +3084,24 @@ async function poll() {
   adoptRunDetail();
 }
 
+/**
+ * 文案里是不是已经写着「第 N 轮」。
+ *
+ * <p>轮次标签只在文案自己没提的时候才挂，理由和步号那条一样：轮级那句
+ * 「第 N 轮：调用模型…」（{@code ProgressMessages.roundStarted}）自带轮号，
+ * 而事件上另有一个 round 字段，两处都画就成了「第 1 轮第 1 轮：调用模型…」。
+ * 没提轮次的那些（「编译校验：通过」「已写入 2 个文件：…」）照旧挂标签——
+ * 它们自己不说是第几轮，标签是唯一的轮次信息。
+ */
+function saysRound(text, round) {
+  return String(text === null || text === undefined ? '' : text).includes('第 ' + round + ' 轮');
+}
+
 function appendLog(event) {
   updateStage(event);
   const div = document.createElement('div');
   div.className = 'line ' + (event.level === 'info' ? '' : event.level);
-  if (event.round) {
+  if (event.round && !saysRound(event.text, event.round)) {
     const round = document.createElement('span');
     round.className = 'round';
     round.textContent = '第 ' + event.round + ' 轮';
@@ -4067,7 +4080,8 @@ async function showRun(id) {
   for (const line of record.timeline || []) {
     const div = document.createElement('div');
     if (line.level !== 'info') div.className = line.level;
-    if (line.round) {
+    // 轮次只说一遍：留档里每行也带着轮号，而那句文案自己可能已经写着它
+    if (line.round && !saysRound(line.text, line.round)) {
       const round = document.createElement('span');
       round.className = 'round';
       round.textContent = '第 ' + line.round + ' 轮';
@@ -4294,7 +4308,8 @@ function fileKey(path) {
  *   <li>运行详情里每步的留档（{@code record.steps[].changes}）——它记的就是「这一步写了什么」，
  *       最准。两步碰同一个文件时，只有它答得出来；</li>
  *   <li>施工单里每步声明的文件——运行还没结束时只有这个，按文件归属去猜，
- *       猜错的情况（两个文件都被两步碰过）是已知的代价。</li>
+ *       猜错的情况（两个文件都被两步碰过）是已知的代价。第 2 条只给运行结果区用：
+ *       待处置面板传 {@code null} 把这条路关掉，理由见 {@code pendingPanelHtml}。</li>
  * </ol>
  * 分不出来时（单步执行、老记录、没有施工单）返回**一组、step 为 null**，
  * 调用方据此画成原来的样子。
@@ -4756,6 +4771,10 @@ function applyRunDetail(record) {
   renderPlan();
   // 结果区那份 diff 也按步重画一遍：留档比按文件猜准
   if (state.lastResult) renderResult(state.lastResult);
+  // 待处置面板同样按步分组，而它的依据也是这份留档：留档一到就把它重画一遍。
+  // 少了这一下，运行刚结束时那一次画面（留档还没拉回来）就是不分组的——
+  // 面板会一直停在那个样子上，除非用户去点一下收起/展开
+  renderPending();
 }
 
 /** 结果区里的一组改动：哪一步、什么状态、几个文件。 */
@@ -4853,11 +4872,16 @@ function diffHtml(text) {
  * 值得让 src/test/js/web.test.js 直接喂四种输入看一眼，而不是只能靠肉眼开浏览器。
  *
  * @param open  展开与否；不传（或 null）时按改动多少自动决定。
- * @param steps 施工单；给了就按步分组（哪一步改了哪些文件），不给就是老样子。
- *              待处置的改动来自磁盘快照，它自己不知道步号——步号是界面这边
- *              按施工单里「这一步要动哪些文件」对上去的
+ * @param stepDetail 运行留档里那几步（{@code record.steps[].changes}）。
+ *              它记的是「这一步真写了什么」，也是这块面板唯一的按步依据。
+ *
+ *              <p>为什么不去按施工单里「这一步要动哪些文件」配：待处置的改动来自磁盘快照，
+ *              而快照里只有「运行前 vs 现在」这一份<b>累计</b> diff——拿它配到步上，
+ *              第 1 步就会顶着一份含后面几步改动的 diff（实测：同一个文件在第 1 步组里
+ *              已经含着第 2 步的改动）。留档缺了就不分组：宁可一个文件一块，
+ *              也不给改动乱安步号。
  */
-function pendingPanelHtml(data, open, steps) {
+function pendingPanelHtml(data, open, stepDetail) {
   if (!data || !data.present) {
     return '';
   }
@@ -4875,7 +4899,8 @@ function pendingPanelHtml(data, open, steps) {
           + '<span class="pending-alert">这些改动没有经过校验：上一次运行是被打断的，'
           + '「保留当前内容」不会再替你验一遍。</span>';
 
-  const groups = changeGroups(files, null, steps);
+  // 第三个参数传 null：不许拿施工单里去猜归属（见上面 @param stepDetail）
+  const groups = changeGroups(files, stepDetail, null);
   let body = '';
   if (groups.length === 1 && !groups[0].step) {
     body = files.map(file => pendingChangeHtml(file, files.length)).join('');
@@ -4954,8 +4979,8 @@ async function refreshPending() {
 
 function renderPending() {
   const box = $('pending');
-  // 施工单一起传进去：待处置的改动只有文件路径，按步分组得靠「这一步要动哪些文件」对上去
-  box.innerHTML = pendingPanelHtml(state.pending, state.pendingOpen, state.steps);
+  // 每步留档一起传进去：面板按步分组的唯一依据就是它（快照只有一份累计 diff）
+  box.innerHTML = pendingPanelHtml(state.pending, state.pendingOpen, state.stepDetail);
   wirePanel(box, open => { state.pendingOpen = open; }, act => resolvePending(act));
 }
 
