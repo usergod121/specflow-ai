@@ -12,11 +12,15 @@
  *       B -->|是| C[文字]
  *       A --> B --> C                链式
  *       A --> B & C                  一对多
- *       subgraph 订单模块 ... end     分组，画成带标题的框
+ *       subgraph 订单模块 ... end     分组，画成带标题的框（可以嵌套）
  *   边的种类：--&gt; --- -.-> -.- ==&gt; === --x --o
  *   标签两种写法：`--&gt;|是|` 与 `-- 是 --&gt;`
  *   形状：[] () (()) [] [[]] {} {{}} &gt;]
  *   标签里可以有引号和换行符 &lt;br/&gt;
+ *
+ * <p><b>嵌套的分组会一层层画进去</b>：子分组占父分组框里的另一竖条，外框把整个家族
+ * 罩住。一行 {@code subgraph} 一个层级，深度不设限，但每深一层图就再宽一竖条——
+ * 这是「按竖条分列」这套摆法的代价，而它换来的是「框绝不会把外人的节点框进来」。
  *
  * <p><b>认不出来的行绝不吞掉。</b>以前是把每一行都当成「节点链」硬啃，
  * 于是 `style B fill:#f9f` 会变成一个名叫 `style` 的孤立方块、
@@ -74,8 +78,12 @@ const NODE_HEIGHT = 34;
 const LINE_HEIGHT = 17;
 const LAYER_GAP = 44;
 const NODE_GAP = 24;
+/** 画布上下各留的边距。分组框比节点靠外一圈，所以最靠上的那个框要另外让位（见 place）。 */
+const TOP_MARGIN = 12;
 const GROUP_PAD = 8;
 const GROUP_TITLE = 18;
+/** 嵌套时每深一层，框顶再往上让出的高度：父子两层的组名各占一条带子，不叠在一起。 */
+const NEST_GAP = 14;
 const CHAR_WIDTH = 7.6;
 const MIN_NODE_WIDTH = 76;
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -144,7 +152,16 @@ function parseFlow(text) {
   const edges = [];
   const groups = [];
   const ignored = [];
-  let open = null;
+  /**
+   * 开着的那几个分组，一层一个。
+   *
+   * <p>以前是<b>一个</b> open：内层 subgraph 一开，外层的组员就再也收不进来，
+   * 而内层 end 之后那些节点还会挂到内层名下。于是外层成了空框（干脆一个框都不画），
+   * 或者框住一堆不属于它的节点——图上少一块、还撒谎。分层就是这条账的答案。
+   */
+  const stack = [];
+  /** 已经属于某个分组的节点：一个节点只归一个组，别的组框不该把它算进自己怀里。 */
+  const claimed = new Set();
 
   const ignore = (line, reason) => ignored.push({ line: line, reason: reason });
 
@@ -175,8 +192,13 @@ function parseFlow(text) {
     else if (label && label !== id) { known.label = label; known.shape = shape; }
   };
 
+  /** 组员记在**最里面**那个开着的分组名下；已经归了组的节点不再改嫁。 */
   const join = id => {
-    if (open && !open.members.includes(id)) open.members.push(id);
+    const open = stack.length ? stack[stack.length - 1] : null;
+    if (open && !claimed.has(id)) {
+      open.members.push(id);
+      claimed.add(id);
+    }
   };
 
   /** 一段文本可能是一组节点：`A & B`。返回 id 数组；认不出来的部分记进 ignored。 */
@@ -206,11 +228,23 @@ function parseFlow(text) {
 
     const sub = line.match(SUBGRAPH);
     if (sub) {
-      open = { title: cleanLabel(sub[1]) || '（未命名分组）', members: [] };
-      groups.push(open);
+      const parent = stack.length ? stack[stack.length - 1] : null;
+      const group = {
+        title: cleanLabel(sub[1]) || '（未命名分组）',
+        members: [],
+        children: [],
+        depth: stack.length,
+      };
+      if (parent) parent.children.push(group);
+      groups.push(group);
+      stack.push(group);
       continue;
     }
-    if (line === 'end') { open = null; continue; }
+    // end 只关掉最里面那一层：外层的组员在它之后还得接着收进来
+    if (line === 'end') {
+      if (stack.length) stack.pop();
+      continue;
+    }
     if (line.includes('~~~')) { ignore(line, '不可见的连接（画不出来）'); continue; }
 
     const cleaned = line.replace(CLASS_SUFFIX, '');
@@ -378,21 +412,21 @@ function renderFlowchart(text, container) {
  * 两者之间隔着一条列间距，谁也框不住谁。
  *
  * <p>没有分组时只有一列，位置和从前一模一样。
+ *
+ * <p>嵌套的分组按出现顺序紧跟在外层后面（{@code parseFlow} 给出的是先序），
+ * 于是子分组占的是父分组框里的下一竖条，外框（整个家族的包围盒）看起来就是把它套住的。
  */
 function place(nodes, edges, groups) {
   const layers = layerize(nodes, edges);
   const sizes = new Map();
   nodes.forEach(node => sizes.set(node.id, nodeSize(node)));
 
-  const owner = new Map();
+  // 一个节点最多属于一个分组（见 parseFlow 里的 join），所以「不在任何分组里」就是
+  // 「谁的家族里都没有它」。子分组的组员已经在父分组的家族里，不用另外算一遍。
+  const owned = new Set(groups.flatMap(group => familyIds(group)));
+  const columns = [{ group: null, ids: [...nodes.keys()].filter(id => !owned.has(id)) }];
   for (const group of groups) {
-    for (const id of group.members) {
-      if (nodes.has(id) && !owner.has(id)) owner.set(id, group);
-    }
-  }
-  const columns = [{ group: null, ids: [...nodes.keys()].filter(id => !owner.has(id)) }];
-  for (const group of groups) {
-    columns.push({ group, ids: group.members.filter(id => nodes.has(id) && owner.get(id) === group) });
+    columns.push({ group, ids: group.members.filter(id => nodes.has(id)) });
   }
   const columnOf = new Map();
   columns.forEach((column, index) => column.ids.forEach(id => columnOf.set(id, index)));
@@ -416,12 +450,12 @@ function place(nodes, edges, groups) {
   const layerHeight = layers.map(layer =>
       layer.reduce((max, id) => Math.max(max, sizes.get(id).h), NODE_HEIGHT));
   const heightAt = [];
-  let used = 12;
+  let used = TOP_MARGIN;
   layers.forEach((layer, level) => {
     heightAt[level] = used;
     used += layerHeight[level] + LAYER_GAP;
   });
-  const totalHeight = used - LAYER_GAP + 12;
+  const totalHeight = used - LAYER_GAP + TOP_MARGIN;
 
   const positions = new Map();
   layers.forEach((layer, level) => {
@@ -436,7 +470,17 @@ function place(nodes, edges, groups) {
     });
   });
 
-  return { positions, totalWidth, totalHeight };
+  // 分组框比节点靠外一圈，顶上还要留一条写组名的带子（嵌套的再往上让一层）。
+  // 最上面那层的节点上方只有 TOP_MARGIN，装不下这个框——框顶连组名一起被画布裁掉，
+  // 用户看到的就是一个没有名字、或者只剩半截的框。所以整张图统一往下让这么多：
+  // 相对位置一个都不变，只是画布跟着长高。
+  const lift = groups.reduce((most, group) => Math.max(most,
+      GROUP_PAD + GROUP_TITLE + group.depth * NEST_GAP - TOP_MARGIN), 0);
+  if (lift > 0) {
+    positions.forEach(at => { at.y += lift; });
+  }
+
+  return { positions, totalWidth, totalHeight: totalHeight + lift };
 }
 
 function arrowMarker(colors) {
@@ -447,14 +491,29 @@ function arrowMarker(colors) {
   return defs;
 }
 
-/** 分组框的位置：包住所有组员的圆角矩形，顶上留一条放组名。组里没人就不画。 */
+/**
+ * 一个分组连同它里面套着的所有子分组的组员。
+ *
+ * <p>框要罩住整个家族：嵌套时子分组画在父分组的框里，只按直属组员算的话，
+ * 子分组的框会跑到父分组的框外面去——那正是「嵌套画错了」的样子。
+ */
+function familyIds(group) {
+  const ids = [...group.members];
+  for (const child of group.children) {
+    ids.push(...familyIds(child));
+  }
+  return ids;
+}
+
+/** 分组框的位置：包住整个家族（见 familyIds）的圆角矩形，顶上留一条放组名。组里没人就不画。 */
 function groupBox(group, positions) {
-  const boxes = group.members.map(id => positions.get(id)).filter(Boolean);
+  const boxes = familyIds(group).map(id => positions.get(id)).filter(Boolean);
   if (!boxes.length) return null;
   return {
     left: Math.min(...boxes.map(b => b.x)) - GROUP_PAD,
     right: Math.max(...boxes.map(b => b.x + b.w)) + GROUP_PAD,
-    top: Math.min(...boxes.map(b => b.y)) - GROUP_PAD - GROUP_TITLE,
+    // 嵌套的那几层各往上让一条组名带：不让的话，父子两层的组名会落在同一个位置上
+    top: Math.min(...boxes.map(b => b.y)) - GROUP_PAD - GROUP_TITLE - group.depth * NEST_GAP,
     bottom: Math.max(...boxes.map(b => b.y + b.h)) + GROUP_PAD,
   };
 }

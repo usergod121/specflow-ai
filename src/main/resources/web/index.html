@@ -989,11 +989,15 @@
     color: var(--muted);
   }
 
-  /* 读不出来的模板。不弹窗、不挡路，但要摆在明面上——
-     藏起来的话用户只会看到模板少了一个，然后对着「找不到模板」猜。 */
-  #tplbroken { margin-top: 10px; }
-  #tplbroken .broken-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-  #tplbroken .broken-row {
+  /* 读不出来的模板 / 上下文文件。不弹窗、不挡路，但要摆在明面上——
+     藏起来的话用户只会看到少了一个，然后对着「找不到」猜。 */
+  #tplbroken, #ctx-import-broken { margin-top: 10px; }
+  #tplbroken .broken-title, #ctx-import-broken .broken-title {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  #tplbroken .broken-row, #ctx-import-broken .broken-row {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1004,9 +1008,41 @@
     border-radius: 6px;
     font-size: 12px;
   }
-  #tplbroken .broken-row .text {
+  #tplbroken .broken-row .text, #ctx-import-broken .broken-row .text {
     flex: 1;
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 项目根下的明文密钥文件。它是一条「别提交」的提醒，不是错误：
+     拦人没有意义——密钥不在我们手里，能做的只有说出来。 */
+  #secrets {
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    background: var(--warn);
+    border: 1px solid var(--warn-line);
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.6;
+    /* 文件名是用户自己起的，长到没边也不能把界面撑出横向滚动条 */
+    overflow-wrap: anywhere;
+  }
+
+  /* 模板自带的那几条上下文。复用主界面依赖清单那几个形状（ctx-kind/ctx-name/ctx-note），
+     让人一眼认出「这就是会被加进依赖清单的东西」。 */
+  #tf-context .ctx-item {
+    padding: 6px 8px;
+    margin-bottom: 4px;
+    background: var(--bg);
+    border-radius: 6px;
+  }
+  #tf-context .ctx-item .where {
+    flex: 1;
+    min-width: 0;
+    color: var(--muted);
+    font: 11px ui-monospace, Consolas, monospace;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1115,6 +1151,8 @@
   <section class="panel" id="main-panel">
 
     <div id="setup" hidden></div>
+    <!-- 项目根下明文躺着的密钥文件。不拦人、不去动它，但要在明面上说一句 -->
+    <div id="secrets" hidden></div>
 
     <div class="tpl-head">
       <h2 style="margin:0">模板</h2>
@@ -1123,6 +1161,9 @@
     </div>
     <select id="tpl"></select>
     <div class="hint" id="tpldesc"></div>
+    <!-- 模板不只带角色提示词，还可能自带几条上下文。不说的话，用户看不出
+         「这个模板还带了东西」——那几条会在他没注意的时候加进下面的依赖清单 -->
+    <div class="hint" id="tplctx" hidden></div>
     <div id="tplbroken"></div>
 
     <div class="field" style="margin-top:14px">
@@ -1177,6 +1218,9 @@
             <select id="ctx-import-pick"></select>
             <button class="ghost" id="ctx-import-preview">预览</button>
           </div>
+          <!-- 读不出来的那几份。跳过它们，但要说清是哪一份、为什么——
+               不说的话用户只会发现自己导出过的那套不在列表里 -->
+          <div id="ctx-import-broken"></div>
           <div id="ctx-import-box"></div>
         </div>
       </details>
@@ -1260,6 +1304,17 @@
         <div class="field">
           <label>角色提示词</label>
           <textarea id="tf-system" rows="6"></textarea></div>
+        <!-- 模板自带的那几条上下文。它们本来只存在于 YAML 里，表单上看不见——
+             于是「选了这个模板，依赖清单里多出两条」变成一件用户没做过、
+             也说不清来路的事。这里只读地列出来（要改就去「源码」视图改） -->
+        <div class="field">
+          <label>自带上下文</label>
+          <div id="tf-context"></div>
+          <div class="hint">
+            选了这个模板时，这几条会自动加进主界面的「上下文依赖」，不用每次重新粘。
+            要增删就去上面的「源码」视图改 <span class="mono">context:</span>。
+          </div>
+        </div>
         <div class="hint">
           需求不写在这里——需求每次都不一样，写进模板就等于一个模板只能匹配一种需求。
         </div>
@@ -1328,6 +1383,7 @@ const state = {
   dirPaths: [],         // 全部目录路径，「展开全部」用
   templates: [],
   brokenTemplates: [], // 目录里读不出来的那几份，附原因；照列出来并提供删除
+  plaintextKeyFiles: [], // 项目根下明文躺着的密钥文件（key.env 之类）；只提示，不读也不动
   templateChoice: null, // 模板下拉框里上一次真实选中的项；null = 还没选过
   context: [],          // 本次的上下文依赖；模板默认项带 from='template' 标记
   ctxUnchecked: new Set(),   // 上下文里没勾的那些（存"没勾的"：默认全勾，新加的天然勾上）
@@ -1746,11 +1802,13 @@ async function startWorkspace() {
   const [config, files] = await Promise.all([getJson('/api/config'), getJson('/api/files')]);
   state.templates = config.templates || [];
   state.brokenTemplates = config.brokenTemplates || [];
+  state.plaintextKeyFiles = config.plaintextKeyFiles || [];
   state.compileCommand = config.compileCommand;
   applyFiles(files);
 
   $('workspace').hidden = false;
   renderSetup(config);
+  renderSecrets();
   renderTemplateSelect();
   renderAcceptance([]);
 
@@ -1780,6 +1838,32 @@ function renderMeta() {
   $('meta').textContent = (state.compileCommand
       ? '编译校验：' + state.compileCommand
       : '未配置编译命令，运行时不会自检') + ' · ' + state.files.length + ' 个文件';
+}
+
+/**
+ * 项目根下那些明文密钥文件的一句话提醒。
+ *
+ * <p>为什么只提示、不动手：这个工具没有跨平台的密钥库可用（JDK 自带的那个要一个口令，
+ * 口令本身又得存在某处），而改写或删掉用户的文件是越权——那里面可能还有他别的工具要用的东西。
+ * 能做的只有两件：让这些名字进 .gitignore，以及在这里明说一句「别提交」。
+ *
+ * <p>纯逻辑、不碰 DOM，所以 src/test/js/web.test.js 直接读这段源码来测。
+ *
+ * @returns 没有这类文件时返回空串（调用方据此把整块收起来）
+ */
+function secretsWarning(files) {
+  if (!files || !files.length) {
+    return '';
+  }
+  return '项目根下有明文密钥文件：' + files.join('、')
+      + '。specflow 不读它——密钥只认环境变量和 .specflow/local.env（那份已经在 .gitignore 里），'
+      + '这几个文件也别提交到版本库。';
+}
+
+function renderSecrets() {
+  const text = secretsWarning(state.plaintextKeyFiles);
+  $('secrets').hidden = !text;
+  $('secrets').textContent = text;
 }
 
 function wireWorkspace() {
@@ -2317,6 +2401,27 @@ function currentTemplate() {
 }
 
 /**
+ * 模板自带几条上下文的一句话说明。
+ *
+ * <p>为什么非说不可：模板的 {@code context} 是「选它时自动加进依赖清单」的东西，
+ * 而它只写在 YAML 里。不点破的话，依赖清单里会凭空多出两条用户没加过的条目，
+ * 他既看不出是谁加的，也不知道能不能删（能，删了就只是这一次不用它）。
+ *
+ * <p>纯逻辑、不碰 DOM，所以 src/test/js/web.test.js 直接读这段源码来测。
+ *
+ * @returns 这个模板不带上下文时返回空串（调用方据此把整行收起来）
+ */
+function templateContextNote(template) {
+  const items = (template && template.context) || [];
+  if (!items.length) {
+    return '';
+  }
+  return '这个模板自带 ' + items.length + ' 条上下文（'
+      + items.map(item => item.name).join('、')
+      + '），已经加进下面的「上下文依赖」；这次不想用就把它取消勾选。';
+}
+
+/**
  * 模板切换时只更新「角色与标签」的展示，并替换掉模板带来的默认上下文。
  *
  * <p>需求、验收标准、目标文件都不受模板影响——它们每次都不一样。
@@ -2329,6 +2434,10 @@ function renderTemplateForm() {
   $('tpldesc').textContent = template
       ? (template.description || '')
       : '不用模板时，需求就是下面那一段文字，没有角色与标签的预设';
+
+  const note = templateContextNote(template);
+  $('tplctx').hidden = !note;
+  $('tplctx').textContent = note;
 
   applyTemplateContext(template);
 }
@@ -2552,6 +2661,7 @@ async function refreshContextLibrary() {
   } catch (e) {
     return; // 拉不到就先不填，不打扰用户
   }
+  renderBrokenContexts(body.broken || []);
   const select = $('ctx-import-pick');
   select.innerHTML = '';
   const bundles = body.bundles || [];
@@ -2568,6 +2678,35 @@ async function refreshContextLibrary() {
     option.textContent = bundle.name + '（' + bundle.items.length + ' 条，来自 '
         + (bundle.project || '?') + '）';
     select.appendChild(option);
+  }
+}
+
+/**
+ * 读不出来的那几份上下文文件。
+ *
+ * <p>它们进不了下拉框（读不出内容就没法预览、更没法导入），但也不能不声不响地消失：
+ * 那样用户只会发现自己导出过的那套不在列表里，然后对着空列表猜是不是被删了。
+ * 这些文件是能手改的，写坏一个字符就长这样——所以要说清是哪一份、为什么。
+ */
+function renderBrokenContexts(broken) {
+  const box = $('ctx-import-broken');
+  box.innerHTML = '';
+  if (!broken.length) {
+    return;
+  }
+  const title = document.createElement('div');
+  title.className = 'broken-title';
+  title.textContent = '这些上下文文件读不出来，已跳过（修好或删掉它就会回到上面）：';
+  box.appendChild(title);
+  for (const item of broken) {
+    const row = document.createElement('div');
+    row.className = 'broken-row';
+    const text = document.createElement('span');
+    text.className = 'text';
+    text.textContent = item.reason;
+    text.title = item.reason;
+    row.appendChild(text);
+    box.appendChild(row);
   }
 }
 
@@ -3308,9 +3447,11 @@ async function reloadConfig() {
   const config = await getJson('/api/config');
   state.templates = config.templates || [];
   state.brokenTemplates = config.brokenTemplates || [];
+  state.plaintextKeyFiles = config.plaintextKeyFiles || [];
   state.compileCommand = config.compileCommand;
   renderTagOptions(config.commonTags || []);
   renderMeta();
+  renderSecrets();
   renderBrokenTemplates();
   renderTemplateSelect();
 }
@@ -3447,6 +3588,48 @@ function renderTemplateDraft() {
   $('tf-desc').value = draft.description || '';
   $('tf-system').value = draft.system || '';
   renderTagChips(draft.tags || []);
+  renderDraftContext(draft.context || []);
+}
+
+/**
+ * 模板自带的上下文，只读地列出来。
+ *
+ * <p>只读是有意的：这几条的编辑入口是「源码」视图，那里已经有 YAML 的
+ * 增删改和校验（后端 parse + save 都会拦）。表单里再养一套增删逻辑，
+ * 等于同一份数据两个入口、两套行为——而这个表单本来就只是给人看清楚
+ * 「这个模板还带了什么」。
+ */
+function renderDraftContext(items) {
+  const box = $('tf-context');
+  box.innerHTML = '';
+  if (!items.length) {
+    box.appendChild(emptyLine('（没有自带上下文。要加就在「源码」视图里写 context:）'));
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = 'ctx-item';
+
+    const kind = document.createElement('span');
+    kind.className = 'ctx-kind';
+    kind.textContent = item.ref ? '引用' : '文本';
+
+    const name = document.createElement('span');
+    name.className = 'ctx-name';
+    name.textContent = item.name;
+
+    const note = document.createElement('span');
+    note.className = 'ctx-note';
+    note.textContent = item.note || '';
+
+    // 引用给路径、文本给首行：两者都只到「够认出是哪一条」为止
+    const where = document.createElement('span');
+    where.className = 'where';
+    where.textContent = item.ref || (item.text || '').split('\n')[0];
+
+    row.append(kind, name, note, where);
+    box.appendChild(row);
+  }
 }
 
 /** 标签以 chip 形式呈现：点 × 删掉，输入框回车或点「添加」加一个。 */
@@ -3789,6 +3972,7 @@ const STATUS_LABEL = {
   NEEDS_ENVIRONMENT: ['bad', '待你处理环境'],
   CANCELLED: ['mid', '中断'],
   NEEDS_CONTEXT: ['mid', '等补充信息：模型停下来问你缺什么，磁盘未动'],
+  PLAN_OUTDATED: ['bad', '施工单对不上目标清单，没开工'],
 };
 
 async function openHistory() {
@@ -4948,6 +5132,8 @@ const STATUS_TEXT = {
   NEEDS_ENVIRONMENT: ['bad', '这不是改代码能解决的：依赖或环境问题，已回滚到运行前'],
   CANCELLED: ['mid', '已中断：改动已回滚到运行前'],
   NEEDS_CONTEXT: ['mid', '模型要求补充信息，未改动任何文件'],
+  // 不是失败：磁盘上一个字节都没动，挂起的那次留档也还在，改回清单再来一次就行
+  PLAN_OUTDATED: ['bad', '上一次留下的施工单对不上现在的目标文件清单，本次没有开工'],
   // 不是失败：磁盘上那份改动是好的，只是还没被人处置，所以这一次什么都没做
   PENDING_DECISION: ['mid', '上一次的改动还没处置，本次没有改动任何文件'],
   ERROR: ['bad', '运行中断'],

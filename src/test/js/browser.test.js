@@ -731,7 +731,11 @@ async function main() {
     await evaluate(`
       (() => {
         const ta = document.getElementById('tf-source');
-        ta.value = ta.value.replace('表单里写的说明', '源码里改的说明');
+        ta.value = ta.value.replace('表单里写的说明', '源码里改的说明')
+            + 'context:\\n'
+            + '  - name: 订单表结构\\n'
+            + '    text: "CREATE TABLE orders (id BIGINT)"\\n'
+            + '    note: 照这个写\\n';
         return ta.value;
       })()`);
     await evaluate(`
@@ -742,11 +746,44 @@ async function main() {
     check(await evaluate(`document.getElementById('tf-desc').value`) === '源码里改的说明',
         '切回表单时，源码里改的内容被解析回来了，而不是拿旧内容重画');
 
+    // 模板自带的 context。它本来只存在于 YAML 里：表单上看不见，用户就在依赖清单里
+    // 凭空多出两条没加过的条目，既看不出是谁加的，也不知道能不能删。
+    check(await evaluate(`document.querySelectorAll('#tf-context .ctx-item').length`) === 1,
+        '模板自带的上下文在表单里列出来了，不再只藏在 YAML 里：'
+        + (await evaluate(`document.getElementById('tf-context').textContent`)));
+    const tplCtxText = await evaluate(`document.getElementById('tf-context').textContent`);
+    check(tplCtxText.includes('订单表结构') && tplCtxText.includes('照这个写'),
+        '列出来的是哪一条、什么说明，都写着：' + tplCtxText);
+    check(await evaluate(`(() => {
+      const row = document.querySelector('#tf-context .ctx-item');
+      if (!row) return false;
+      const r = row.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    })()`), '那一行真的占着地方（不是只在 DOM 里躺着）');
+
     await clickButton('tf-save');
     await sleep(800);
     const afterTabs = await (await fetch(BASE + 'api/config')).json();
     const saved = afterTabs.templates.find(t => t.name === tabName);
     check(saved && saved.description === '源码里改的说明', '保存下去的是源码里那份内容');
+    // 表单里没有 context 的编辑入口，所以「保存表单」这一步最容易把它吃掉
+    check(saved && saved.context && saved.context.length === 1
+        && saved.context[0].name === '订单表结构',
+        '表单视图保存时，模板自带的上下文原样带过去了，没被吃掉：' + JSON.stringify(saved && saved.context));
+
+    // 主面板：选了这个模板时，要说明「它还带了上下文」，并说清那几条会落到哪儿
+    await closeManager();
+    await chooseTemplateOption(tabName);
+    const mainCtxNote = await evaluate(`document.getElementById('tplctx').textContent`);
+    check(mainCtxNote.includes('自带 1 条上下文') && mainCtxNote.includes('订单表结构'),
+        '主面板上写明这个模板自带上下文：' + mainCtxNote);
+    check(mainCtxNote.includes('上下文依赖'), '而且说清它会加进下面那份清单');
+    // 光有文字不算数：这块提示必须真的占着地方（标着 hidden 却还显示、或者反过来都不是这里要的）
+    check(await visible('tplctx'), '这一行真的显示在页面上');
+    // 切回「自由输入」：这个模板带来的那几条依赖要跟着撤掉，别留给后面的链
+    await chooseTemplateOption('__free__');
+    check((await evaluate(`state.context.filter(i => i.from === 'template').length`)) === 0,
+        '换掉模板之后，它带来的那几条上下文也撤了');
 
     // ---------- 链 11：欢迎页、目录浏览、切换项目 ----------
     console.log('\n链 11　切换项目：欢迎页 → 挑目录 → 打开 → 切回来：');
@@ -772,10 +809,22 @@ async function main() {
     // 上面那句查的是属性，这里查它到底画没画出来——两者的区别正是这个项目栽过的坑
     check(!(await visible('workspace')), '欢迎页上工作区真的没画出来（不是只标了个 hidden）');
     check(await visible('welcome'), '欢迎页本身是显示出来的');
-    check(await evaluate(`document.body.scrollHeight <= innerHeight + 40`),
+    // 「欢迎页不该顶出滚动条」要量，但不能量在**用户目录**里那份「最近打开」上：
+    // 条数取决于这台机器上开过多少项目，多一条失效记录就把页面顶高，于是同一条断言
+    // 换台机器就红（实测：7 条里 6 条是已删掉的老项目时 scrollHeight=726、视口=482）。
+    // 所以先把欢迎页摆成**已知状态**——按空列表重画一次（新用户看到的就是这份），
+    // 量完再按真实那份画回去。真实那份有几条、有没有当前项目，由下面那条断言管，
+    // 两件事不互相顶。
+    // 空着量仍然守得住原来那件事：真出问题时页面上多出来的是**整个工作区**（一屏高），
+    // 不是一两行「最近打开」。
+    const realRecent = await evaluate(
+        `(async () => (await (await fetch('/api/state')).json()).recent)()`);
+    await evaluate(`renderWelcome([]); 'ok'`);
+    const welcomeBox = await evaluate(`({scroll: document.body.scrollHeight, view: innerHeight})`);
+    await evaluate(`renderWelcome(${JSON.stringify(realRecent)}); 'ok'`);
+    check(welcomeBox.scroll <= welcomeBox.view + 40,
         '欢迎页不需要滚动——下面不该再拖着半个空工作区：scrollHeight='
-        + (await evaluate(`document.body.scrollHeight`)) + ' 视口='
-        + (await evaluate(`innerHeight`)));
+        + welcomeBox.scroll + ' 视口=' + welcomeBox.view);
     check((await hiddenButVisible()).length === 0,
         '欢迎页上也没有「标着 hidden 却还占着地方」的元素：' + JSON.stringify(await hiddenButVisible()));
     check(await evaluate(
@@ -1193,6 +1242,50 @@ async function main() {
     check(geometry.groupIntruders === 0,
         '没有被组框压住一半的节点（压住一半看着就像组员）：' + JSON.stringify(geometry));
 
+    // 嵌套的 subgraph：模型爱用「大模块里套小模块」表达，以前内层一开外层就收不到组员，
+    // 于是外层成了空框（一个框都不画），而内层 end 之后的节点还挂到了内层名下。
+    const nestedFlow = [
+      'flowchart TD',
+      '    subgraph 订单模块',
+      '      A[收到下单请求] --> B[创建订单]',
+      '      subgraph 库存子模块',
+      '        B --> C[扣减库存]',
+      '      end',
+      '      C --> D[记账]',
+      '    end',
+      '    D --> E[发通知]',
+    ].join('\n');
+    await evaluate(`(() => {
+      state.plan = { summary: '嵌套分组', flowchart: ${JSON.stringify(nestedFlow)}, missing: [] };
+      renderPlan();
+      return 'ok';
+    })()`);
+    const nestedGeometry = await evaluate(`(() => {
+      const rectOf = el => { const r = el.getBoundingClientRect();
+        return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+      const svg = document.querySelector('#plan .flow svg');
+      const canvas = rectOf(svg);
+      const groups = [...svg.querySelectorAll('.flow-group')].map(rectOf);
+      const nodes = [...svg.querySelectorAll('.flow-node')].map(rectOf);
+      const titles = [...svg.querySelectorAll('text')].map(t => t.textContent);
+      const outside = nodes.filter(n =>
+          n.l < canvas.l - 1 || n.r > canvas.r + 1 || n.t < canvas.t - 1 || n.b > canvas.b + 1).length;
+      return { groups: groups.length, titles, outside, nodes: nodes.length,
+               inner: groups[1], outer: groups[0] };
+    })()`);
+    check(nestedGeometry.groups === 2, '嵌套的两个分组都画出来了：' + nestedGeometry.groups);
+    check(nestedGeometry.titles.includes('订单模块') && nestedGeometry.titles.includes('库存子模块'),
+        '两层的组名都在：' + JSON.stringify(nestedGeometry.titles));
+    check(nestedGeometry.nodes === 5, '五个节点一个不少：' + nestedGeometry.nodes);
+    check(nestedGeometry.outside === 0, '嵌套之后所有节点仍在画布内');
+    const { inner: innerBox, outer: outerBox } = nestedGeometry;
+    check(!!innerBox && !!outerBox
+        && innerBox.l >= outerBox.l - 1 && innerBox.r <= outerBox.r + 1
+        && innerBox.t >= outerBox.t - 1 && innerBox.b <= outerBox.b + 1,
+        '子分组的框套在父分组的框里：' + JSON.stringify({ inner: innerBox, outer: outerBox }));
+    check(innerBox && outerBox && innerBox.t - outerBox.t > 10,
+        '父子两层的组名不叠在一起：相差 ' + Math.round(innerBox.t - outerBox.t) + 'px');
+
     // 解析不出图时：老老实实显示原文，并且照样给出说明
     await evaluate(`(() => {
       state.plan = { summary: '这行不是图', flowchart: '这里不是 mermaid', missing: [] };
@@ -1599,6 +1692,85 @@ async function main() {
       document.getElementById('history').hidden = true;
       return 'ok';
     })()`);
+
+    // ---------- 链 17b：一份手改坏的上下文文件 ----------
+    // 这些文件是能手改的（导出功能的意义就是换台机器接着用），手滑一个字符就长这样。
+    // 以前任意一份读不出来，整次读取就是 400：界面上<b>一套都不显示</b>，
+    // 而且连「把那份坏的删掉」的入口都没有。分寸该和坏模板一样：跳过它，但说清是哪一份。
+    console.log('\n链 17b　上下文：一份手改坏的文件不该拖垮整个清单：');
+    const ctxDir = path.join(PROJECT_ROOT, '.specflow', 'context');
+    const goodCtx = path.join(ctxDir, 'zz-测试好的一份.yaml');
+    const badCtx = path.join(ctxDir, 'zz-测试手改坏的.yaml');
+    fs.mkdirSync(ctxDir, { recursive: true });
+    fs.writeFileSync(goodCtx, 'name: zz-测试好的一份\n'
+        + 'project: demo\nexportedAt: 2026-01-01 00:00\n'
+        + 'items:\n  - name: orders 表结构\n    text: "CREATE TABLE orders (id BIGINT)"\n');
+    fs.writeFileSync(badCtx, 'name: zz-测试手改坏的\nitems: [这不是: 合法 yaml\n');
+    TEMP_PATHS.push(goodCtx, badCtx);
+
+    await evaluate(`refreshContextLibrary().then(() => 'ok')`);
+    const listedCtx = await evaluate(`[...document.querySelectorAll('#ctx-import-pick option')]
+        .map(o => o.value)`);
+    check(listedCtx.includes('zz-测试好的一份'),
+        '读得出来的那份照常在列表里：' + JSON.stringify(listedCtx));
+    check(!listedCtx.includes('zz-测试手改坏的'), '读不出来的那份不参与选择');
+    const brokenCtxText = await evaluate(`document.getElementById('ctx-import-broken').textContent`);
+    check(brokenCtxText.includes('zz-测试手改坏的'),
+        '但它没有悄悄消失——界面点名说清是哪一份：' + brokenCtxText);
+    check(/读不出来|不合法|解析/.test(brokenCtxText), '而且给了原因：' + brokenCtxText);
+    check(await evaluate(`(() => {
+      const row = document.querySelector('#ctx-import-broken .broken-row');
+      if (!row) return false;
+      const r = row.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    })()`), '这条提示真的摆在了导入那块下面（不是只在 DOM 里）');
+    check(!/com\.specflow|Cannot construct instance|through reference chain/.test(brokenCtxText),
+        '而且说的是人话，不是 Jackson 的类名和引用链：' + brokenCtxText);
+
+    // 删掉坏的之后，提示跟着消失（它不是卡住不动的状态）
+    fs.unlinkSync(badCtx);
+    await evaluate(`refreshContextLibrary().then(() => 'ok')`);
+    check((await evaluate(`document.getElementById('ctx-import-broken').textContent`)) === '',
+        '坏的那份删掉之后，这条提示也就不在了');
+    check((await evaluate(`[...document.querySelectorAll('#ctx-import-pick option')]
+        .map(o => o.value)`)).includes('zz-测试好的一份'), '好的那份一直都在');
+    // 收拾干净：两份都要真删掉（留在磁盘上就是往用户的项目里扔垃圾），
+    // 同时从收尾清单里摘出来——它们已经不存在了，不必再让收尾去删一遍
+    fs.unlinkSync(goodCtx);
+    for (const file of [goodCtx, badCtx]) {
+        TEMP_PATHS.splice(TEMP_PATHS.indexOf(file), 1);
+    }
+
+    // ---------- 链 17c：项目根下的明文密钥文件 ----------
+    // 不引依赖就没有跨平台的密钥库可用，所以这件事只能停在「提示」上。
+    // 既然是提示，它就必须点名是哪几份、该放哪儿——否则等于没说。
+    console.log('\n链 17c　项目根下的明文密钥文件：认出来、说清「别提交」：');
+    // 自己造一份（跑完删掉），不拿用户真实的 key.env 说事：
+    // 那样断言会随着他自己删文件而变红，而红的那条和被测的代码没关系
+    const plaintextKey = path.join(PROJECT_ROOT, 'zz-测试密钥.env');
+    TEMP_PATHS.push(plaintextKey);
+    fs.writeFileSync(plaintextKey, 'key: sk-not-a-real-key\n');
+    await evaluate(`reloadConfig().then(() => 'ok')`);
+    check(await visible('secrets'), '明文密钥文件的提醒摆在明面上，不是只留在后端');
+    const secretsText = await evaluate(`document.getElementById('secrets').textContent`);
+    check(secretsText.includes('zz-测试密钥.env'), '点名是哪一份：' + secretsText);
+    check(secretsText.includes('.specflow/local.env') && secretsText.includes('.gitignore'),
+        '说清该放哪儿、以及它已经在 .gitignore 里：' + secretsText);
+    check(secretsText.includes('别提交'), '最后一句是「别提交」：这条提示的用处就在这里');
+
+    fs.unlinkSync(plaintextKey);
+    TEMP_PATHS.splice(TEMP_PATHS.indexOf(plaintextKey), 1);
+    await evaluate(`reloadConfig().then(() => 'ok')`);
+    check(!(await evaluate(`document.getElementById('secrets').textContent`))
+        .includes('zz-测试密钥.env'), '这份文件删掉之后，提示里也就不再点它的名');
+    // 「一份都没有时整块收起来」：这个项目的根目录下还躺着用户自己的 key.env，
+    // 所以这里直接喂一份空表给那个渲染函数，验的是「有没有东西可报」这一行的行为
+    check(await evaluate(`(() => {
+      state.plaintextKeyFiles = [];
+      renderSecrets();
+      return document.getElementById('secrets').hidden;
+    })()`), '没有这种文件时整块收起来，不留一块空警示');
+    await evaluate(`reloadConfig().then(() => 'ok')`);
 
     // ---------- 链 18：样式（颜色收敛、暗色、焦点环、不溢出） ----------
     // 这一链量的是"看得见的东西"：颜色是不是真收敛了、暗色下读不读得清、
@@ -2353,9 +2525,11 @@ async function main() {
     // 真试跑里漏的正是后一半：引擎判出来了、响应体里没有，界面永远读到空——
     // 「施工单三条硬拦」完全不生效，而两边的测试各自都是绿的。
     //
-    // 这一链把后一半接上：请求打到**真后端**，后端去调一个本机假模型（只有两步的施工单，
-    // 正是真试跑里那种单子），机器判出来的东西原样回到界面上。
+    // 这一链把后一半接上：请求打到**真后端**，后端去调一个本机假模型（单子里第 2 步要动
+    // 一个清单外的文件——机器判它「这一步物理上做不了」），判出来的东西原样回到界面上。
     // 少发一个字段、字段改了名、异常没兜住，这里都会红。
+    // 以前这份单子给的是「只有 2 步」（当时判它步数太少），而下限降到 2 之后那种单子已经合格——
+    // 留着它，这一链会静默地什么都不验。
     console.log('\n链 23　施工单硬拦：真请求打到真后端：');
 
     reviewProject = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-review-'));
@@ -2370,7 +2544,8 @@ async function main() {
       '<<<<<<< FLOW', 'flowchart TD', '    A[入口] --> B[出口]', '>>>>>>> FLOW', '',
       '<<<<<<< STEPS',
       '1 | 先给 Foo 加一个按编号查询的方法 | src/main/java/com/demo/Foo.java | 能编译 | 自洽',
-      '2 | 再把查询接到调用点上 | src/main/java/com/demo/Foo.java | 能编译 | 自洽',
+      '2 | 再把查询接到调用点上（要动没进清单的那个类） '
+          + '| src/main/java/com/demo/Bar.java | 能编译 | 自洽',
       '>>>>>>> STEPS', '',
     ].join('\n'));
     fs.mkdirSync(path.join(reviewProject, '.specflow'), { recursive: true });
@@ -2408,8 +2583,8 @@ async function main() {
         '机器判出来的「这份施工单执行不了」摆到了界面上——漏发 stepAudit 时，'
         + '这一块永远不会出现');
     check((await evaluate(`document.querySelector('#plan .steps-audit').textContent`))
-            .includes('施工单只有 2 步'),
-        '而且说清了是为什么：'
+            .includes('Bar.java'),
+        '而且说清了是哪一步、哪个文件：'
         + JSON.stringify(await evaluate(`document.querySelector('#plan .steps-audit').textContent`)));
     check(await evaluate(`state.stepAudit.findings.length`) === 1,
         '界面拿到的是后端那一份（不是它自己编出来的）');

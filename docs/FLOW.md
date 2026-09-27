@@ -16,7 +16,9 @@
 ③ 运行            受理后立刻返回，实际跑在后台单线程上          /api/run → RunService.start
 ④ 定施工单        检查给过就用；没检查就花一次调用现生成
                  （STEPS 块 → PlanParser.parseSteps → StepAudit 核一遍；
-                   拿不到可用的就退化成只有一步 = 老的单步行为）   DevelopmentAgent.stepsFor
+                   拿不到可用的就退化成只有一步 = 老的单步行为）
+                 续跑时先用留档里那一份，但复用前要对着**当前**清单再核一遍
+                 （清单变了就不开工，见下表）                       DevelopmentAgent.stepsFor
 ⑤ 拍快照          整个 run 一个快照，覆盖 spec.targets() 全部文件  WorkspaceSnapshot.capture
 ⑥ 对施工单上的每一步（DevelopmentAgent.execute 的 for）：
    记进入点        该步开始时目标文件的原文，只放内存、不落盘       DevelopmentAgent.StepCheckpoint
@@ -46,7 +48,7 @@
 | 落盘前先快照 | 硬拦 | **分步时**：整个 run 拍一个快照覆盖目标清单全部文件，任何一步走到头不成功就整轮回滚（前提是快照没在 `project.yaml` 里关掉，关了就只剩一句警告）；**每一步内部的重试**改用内存进入点回滚，与快照开关无关 | `DevelopmentAgent.execute`、`StepCheckpoint`、`WorkspaceSnapshot.capture` |
 | 编译校验 | 硬拦 | 会。退出码非 0 → 回滚到本步进入点 → 回喂 → 本步重试，预算 `max-retry`（默认 6，**每步各自算**）；没配编译命令是 `SKIPPED`，不算通过 | `CompileVerifier.run`、`VerifySpec` |
 | 总轮次上限 | 硬拦 | 会。整次运行调用模型的次数上限，默认 `3 × 步数`（`verify.max-rounds` 可手写）。用尽即整轮回滚失败——没有它，一份 7 步的施工单最坏能烧掉 7 × (6 + 冲突重试) 次 | `VerifySpec.roundBudget`、`DevelopmentAgent.execute` |
-| 施工单本身能不能执行 | 硬拦 | 会。步数不在 3～7、最后一步标了「中间态」、某一步要动清单外的文件——三条都拦；中间态超过总步数三分之一只提示 | `StepAudit.check`、`RunService.review` |
+| 施工单本身能不能执行 | 硬拦 | 会。步数超过 7、最后一步标了「中间态」、某一步要动清单外的文件——三条都拦；只有 1 步（这件事不用拆，按单步跑）和中间态超过总步数三分之一只提示 | `StepAudit.check`、`RunService.review` |
 | 中间态那一步编译没过 | 硬拦（反向） | 不拦：施工单上写明这一步做完可能编不过，就记一笔继续下一步。但**最后一步**是中间态且编没过时整轮算失败——施工单跑完本该是一个能编译的项目 | `DevelopmentAgent`（`step.intermediate()` 分支） |
 | 环境问题早停 | 硬拦 | 会。输出命中缺依赖 / JDK 级别 / 权限这类字样就判成 `ENVIRONMENT`，立刻停、回滚，不再喂给模型 | `CompileFailure.classify`、`VerificationResult.environmental()`、`AgentResult.needsEnvironment` |
 | 同一个错误连着两轮 | 硬拦 | 会。**同一步内**两轮的失败指纹一样就停，不再烧轮次 | `DevelopmentAgent.signatureOf` |
@@ -55,7 +57,8 @@
 | 改动处标 `@requirement` 编号 | 纯 prompt | 不拦也不查。引擎不在事后改写文件，也不会因为缺这行注释拒绝落盘 | `PatchProtocol.INSTRUCTIONS` 第 9 条、`TraceSpec` |
 | 检查阶段的缺失清单与三档严重度 | 纯 prompt | 引擎会解析（认不出的词算 `UNKNOWN`）、会按严重度排序，但不拿它做任何判断，界面上只显示成「模型自己觉得这 N 条要紧」 | `ReviewProtocol.INSTRUCTIONS`、`PlanReview.MissingItem.Severity`、`index.html` 的缺失块 |
 | 模型声明「信息不足」就停 | 纯 prompt（说了才算） | 说不说是它的事，引擎不自己判断信息够不够；但它一旦说了，引擎会认——只认响应不超过 3 行、且以 `NEED_CONTEXT:` 开头的，立刻停手、不动磁盘 | `DevelopmentAgent.detectNeedContext`、`PatchProtocol.NEED_CONTEXT_PREFIX` |
-| 检查回来后机器查出「方案执行不了」 | 人工确认 | 只此一处。方案（或施工单）要动的文件不在目标清单里、步数不在 3～7、最后一步标了中间态时，点「运行」被挡一次，点「我知道，仍然继续」才继续（一次性放行，换一份方案就失效）。**施工单那两条现在只进返回体，界面的按钮下一批才接** | `RunService.review` → `PlanAudit.check` + `StepAudit.check`；`index.html` 的 `auditBlock()` 与 `run()` |
+| 检查回来后机器查出「方案执行不了」 | 人工确认 | 只此一处。方案（或施工单）要动的文件不在目标清单里、步数超过 7、最后一步标了中间态时，点「运行」被挡一次，点「我知道，仍然继续」才继续（一次性放行，换一份方案就失效）。**施工单那两条现在只进返回体，界面的按钮下一批才接** | `RunService.review` → `PlanAudit.check` + `StepAudit.check`；`index.html` 的 `auditBlock()` 与 `run()` |
+| 续跑复用留档里那份施工单 | 硬拦（没有放行） | 会。留档里那份当初是照**当时**的清单核的，而续跑的前提就是用户改了清单。复用前拿 `StepAudit` 对着当前 `targets` 再核一遍（越界的步物理上做不了），核不过就一个字节都不动地停下（`AgentResult.PLAN_OUTDATED`，CLI 退出码 6），并说清哪一步要动哪个文件。这次拒绝**不留档**——留档会把「挂着等人补料」的那条挤下去，用户就再也接不上了。留档里没有施工单（老记录）时不核，照旧现生成一份 | `DevelopmentAgent.staleSchedule`、`RunRecorder.finished` |
 
 模型自己标的「阻断」**不拦人**。它标歪过（真模型试跑里 6 条阻断全都自己写了默认值），
 所以 `severity` 只用来显示、排序和拼进提示词——`PlanReview.blocking()` 除了渲染方案文本，没有任何调用方。
@@ -75,7 +78,7 @@
 模型自评的严重度只负责显示；`ReviewOutcome` 把这几块分开装，就是不让「模型说的事」有机会挡住用户。
 `StepAudit` 的结论装在 `ReviewOutcome.stepAudit` 里（`findings` 拦人、`hints` 只提示），界面的按钮下一批再接。
 
-**还软的地方**：`PlanAudit` 只查文件路径这一件事，`StepAudit` 只查步数/最后一步/文件这三件事，
+**还软的地方**：`PlanAudit` 只查文件路径这一件事，`StepAudit` 只查步数上限/最后一步/文件这三件事，
 方案本身想错了（改错方法、理解偏了）依旧只有人看得出来；施工单**不解决「做得对不对」**，
 终局判据仍是编译通过（`acceptance` 至今没有人校验）；没有 dry-run——界面上的「运行」是直接写盘的；
 「停」也只在轮与步的边界生效，正在飞的那次调用拦不住。

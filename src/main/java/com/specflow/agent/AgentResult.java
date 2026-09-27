@@ -44,7 +44,14 @@ public record AgentResult(
          *
          * <p>它不是失败：磁盘上那份改动是好的，只是在等人表态。
          */
-        PENDING_DECISION
+        PENDING_DECISION,
+        /**
+         * 续跑要复用的那份施工单已经对不上现在的目标文件清单，引擎拒绝开工。
+         *
+         * <p>它不是失败：磁盘上一个字节都没动，挂起的那次留档也还在，
+         * 用户把清单改回去再来一次就行（见 {@code DevelopmentAgent.staleSchedule}）。
+         */
+        PLAN_OUTDATED
     }
 
     public static AgentResult success(int attempts, List<PatchApplier.FileChange> changes,
@@ -89,6 +96,13 @@ public record AgentResult(
      */
     public static AgentResult pendingDecision(String detail) {
         return new AgentResult(Status.PENDING_DECISION, 0, List.of(), List.of(), detail);
+    }
+
+    /**
+     * 上一次留下的施工单对不上现在的清单，因此这一次一个字节都没碰。
+     */
+    public static AgentResult planOutdated(String detail) {
+        return new AgentResult(Status.PLAN_OUTDATED, 0, List.of(), List.of(), detail);
     }
 
     public boolean succeeded() {

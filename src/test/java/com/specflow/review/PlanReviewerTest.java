@@ -64,6 +64,28 @@ class PlanReviewerTest {
                 .anySatisfy(example -> assertThat(example).contains("目标文件里没有它"));
     }
 
+    /**
+     * 步数那几条规矩只此一份：两个入口（完整检查、只产施工单）看到的必须逐字一样。
+     *
+     * <p>下限从 3 降到 2 时两处文案各要改一遍，而它们是两段独立的文字：
+     * 漏改一处，同一份需求走检查和不走检查就照着两套规矩拆步，引擎却按同一套规则执行它们。
+     * 「只有 1 步不拦」这条同样要在两处都写着——模型看不见它，就会为了凑步数把一件事硬切开。
+     */
+    @Test
+    @DisplayName("步数规矩两个入口逐字一样，而且都写着「2 到 7」和「1 步不拦」")
+    void stepCountRuleIsSharedByBothEntryPoints() {
+        assertThat(ReviewProtocol.INSTRUCTIONS)
+                .as("完整检查协议带着这份规矩").contains(ReviewProtocol.STEPS_RULES);
+        assertThat(StepsProtocol.INSTRUCTIONS)
+                .as("只产施工单那份也带着同一份").contains(ReviewProtocol.STEPS_RULES);
+
+        for (String instructions : List.of(ReviewProtocol.INSTRUCTIONS, StepsProtocol.INSTRUCTIONS)) {
+            assertThat(instructions).contains("2 到 7");
+            assertThat(instructions).as("旧的下限不该还留在哪一处")
+                    .doesNotContain("3 到 7").doesNotContain("少于 3");
+        }
+    }
+
     @Test
     @DisplayName("两阶段共用的「目标文件」段落里也把白名单说成事实")
     void contextSectionStatesTheSameFact() throws IOException {

@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -74,6 +75,29 @@ public final class ContextLibrary {
     ) {
     }
 
+    /**
+     * 一次目录扫描的结果。
+     *
+     * <p>为什么把「读不回来的那几份」单独端出来，而不是让整次读取失败：
+     * 这些文件是可以手工编辑的（那正是它存在的意义——换台机器、换个人接着用），
+     * 手滑写坏一个字符就能让它读不出来。全量读取要是「全有或全无」，
+     * 一份坏文件就会让<b>整份清单</b>都打不开：界面上一套上下文都不显示，
+     * 用户连「把那份坏的删掉」的地方都没有。
+     *
+     * <p>但也不能悄悄跳过：那样用户只会看到自己导出过的那套不见了，然后对着空列表猜。
+     * 所以坏的那几份照样报出来，只是不再拦着别人用——和 {@code TemplateStore}
+     * 读模板时同一个分寸：{@link #load} 一份报错，{@link #loadAll} 跳过并记账。
+     *
+     * @param bundles 读得出来的，按名字排序
+     * @param broken  读不出来的，附上原因，按名字排序
+     */
+    public record Loaded(List<Bundle> bundles, List<BrokenBundle> broken) {
+    }
+
+    /** 一份读不回来的上下文。{@code name} 就是文件名去掉扩展名，够用户在资源管理器里找到它。 */
+    public record BrokenBundle(String name, String reason) {
+    }
+
     /** 按名字排序的上下文名，不带扩展名。目录不存在时返回空列表。 */
     public List<String> names() {
         if (!Files.isDirectory(directory)) {
@@ -92,6 +116,25 @@ public final class ContextLibrary {
     }
 
     /**
+     * 把整个目录读一遍：读得出来的收进 {@code bundles}，读不回来的记进 {@code broken}。
+     *
+     * <p>界面要走的是这一条，不是「先 {@link #names()} 再逐个 {@link #load}」——
+     * 那条路上任何一份文件读不出来，整次请求都会失败。
+     */
+    public Loaded loadAll() {
+        List<Bundle> bundles = new ArrayList<>();
+        List<BrokenBundle> broken = new ArrayList<>();
+        for (String name : names()) {
+            try {
+                bundles.add(load(name));
+            } catch (SpecflowException e) {
+                broken.add(new BrokenBundle(name, e.getMessage()));
+            }
+        }
+        return new Loaded(List.copyOf(bundles), List.copyOf(broken));
+    }
+
+    /**
      * @throws SpecflowException 名字非法、文件不存在、或文件读不出来
      */
     public Bundle load(String name) {
@@ -102,12 +145,36 @@ public final class ContextLibrary {
         try {
             Bundle bundle = YAML.readValue(file.toFile(), Bundle.class);
             if (bundle == null) {
-                throw new SpecflowException("这套上下文是空的 '" + name + "'");
+                throw new SpecflowException("这套上下文是空的 '" + name + "'"
+                        + "（写到一半断电、编辑器另存都会留下这种文件）");
             }
             return bundle;
         } catch (IOException e) {
-            throw new SpecflowException("读取上下文失败 " + name + "：" + e.getMessage(), e);
+            throw new SpecflowException("读取上下文失败 " + name + "：" + reason(e), e);
         }
+    }
+
+    /**
+     * 从 Jackson 的异常里挑出一句能直接摆到界面上的话。
+     *
+     * <p>Jackson 的原话是「Cannot construct instance of {@code com.specflow.spec.ContextItem},
+     * problem: … at [Source: (File); line: 3, column: 1] (through reference chain: …)」，
+     * 而这句话会原样出现在界面上（「哪一份读不出来」那条提示）。三种东西对用户没用：
+     * 内部类名、源码位置、Jackson 自己的引用链。真正的原因常常在 cause 里
+     * ——{@link ContextItem#of} 拦条目形态时抛的那两句就是人话，直接用它的。
+     * 取不到才退回去把 Jackson 那句裁一裁（和 {@code TemplateStore} 那边同一个分寸）。
+     */
+    private static String reason(IOException e) {
+        for (Throwable cause = e.getCause(); cause != null; cause = cause.getCause()) {
+            if (cause instanceof IllegalArgumentException && cause.getMessage() != null) {
+                return cause.getMessage();
+            }
+        }
+        String message = e.getCause() == null || e.getCause().getMessage() == null
+                ? e.getMessage()
+                : e.getCause().getMessage();
+        int cut = message.indexOf("\n at [Source");
+        return cut > 0 ? message.substring(0, cut) : message;
     }
 
     /**

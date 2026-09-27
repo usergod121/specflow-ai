@@ -171,7 +171,8 @@ public final class DevelopmentAgent {
      * @param modelSaid     上一次它输出的那段 {@code NEED_CONTEXT} 原文
      * @param force         {@code true} = 用户没补东西、直接让它干；{@code false} = 用户补过上下文了
      * @param recordedSteps 上一次那条留档里已经定下来的施工单；留档里没有（老记录）就给空列表，
-     *                      那时候才现生成一份，见 {@link #stepsFor}
+     *                      那时候才现生成一份，见 {@link #stepsFor}。它复用时还要对着当前
+     *                      的目标清单再核一遍，见 {@link #staleSchedule}
      */
     public AgentResult resume(Spec spec, PlanReview approved, String modelSaid, boolean force,
                               List<PlanStep> recordedSteps) {
@@ -186,7 +187,9 @@ public final class DevelopmentAgent {
      * @param modelSaid 上一次它输出的那段 {@code NEED_CONTEXT} 原文
      * @param force     {@code true} = 用户没补东西、直接让它干
      * @param steps     上一次那条留档里已经定下来的施工单。老记录里没有这一项，
-     *                  读出来是 {@code null}——那一次续跑只能照旧现生成一份
+     *                  读出来是 {@code null}——那一次续跑只能照旧现生成一份；
+     *                  有的话也不是照单全收：它当初是照当时的清单核的，
+     *                  复用前要对着当前清单再核一遍（见 {@link #staleSchedule}）
      */
     public record Resume(String modelSaid, boolean force, List<PlanStep> steps) {
 
@@ -205,6 +208,12 @@ public final class DevelopmentAgent {
                     .toList());
             return AgentResult.pendingDecision("上一次的改动还没处置（" + waits
                     + "）：请先接受或撤回它，再开始新的运行");
+        }
+        // 续跑复用的是上一次那份单子，而它是照**当时**的清单核过的。复用前必须对着当前清单
+        // 再核一遍，核不过就不开工——理由见 staleSchedule
+        String stale = staleSchedule(spec, resume);
+        if (stale != null) {
+            return AgentResult.planOutdated(stale);
         }
 
         List<ChatMessage> messages = new ArrayList<>();
@@ -421,6 +430,7 @@ public final class DevelopmentAgent {
      * 留档里没有（老记录没这一项）才现生成。
      *
      * <p>两条路的单子都是「已经定下来的」：留档里那一份当初也是过了同一套机器校验才被采用的。
+     * 唯一的例外是留档那一份还要过 {@link #staleSchedule}——它当初是对着<b>上一次</b>的清单核的。
      */
     private Steps stepsFor(Spec spec, PlanReview approved, Resume resume) {
         if (approved != null && !approved.steps().isEmpty()) {
@@ -430,6 +440,41 @@ public final class DevelopmentAgent {
             return new Steps(resume.steps(), StepsSource.RESUMED, 0);
         }
         return generateSteps(spec, approved);
+    }
+
+    /**
+     * 留档里那份施工单还站得住吗——照着它做会不会卡在某一步上。
+     *
+     * <p><b>为什么非要再核一遍。</b>留档里那一份当初是照<b>当时</b>的目标清单核过的，而续跑的
+     * 前提恰恰是用户补了料：他会改清单（把模型要的文件加进去，也可能把某个文件挪出去）。
+     * 清单变了，单子就可能引用到已经不在清单里的文件——而清单外的文件改不了、也建不了，
+     * 那一步物理上做不了。照旧直接用，等于让这种步子静默执行：白烧一次调用，
+     * 再把整轮回滚掉，而用户看到的只是一句「失败」。
+     *
+     * <p><b>为什么是拒绝，而不是「拦一次、点确认放行」。</b>放行在这里没有出路：
+     * 那份单子改不了（它只是留档），越界的那一步无论谁点头都执行不了。所以一个字节都不动地
+     * 停下，把「哪一步、要动哪个文件、接下来该干什么」说清楚，用户改完清单再来一次就行。
+     * 挂起的那次留档原样保留，这次拒绝不会让用户丢掉任何东西。
+     *
+     * <p>留档里没有施工单（老记录）时不核：那时候本来就要现生成一份，没有可复用的东西。
+     *
+     * @return 拒绝开工的理由；{@code null} 表示这份单子照旧能用
+     */
+    private static String staleSchedule(Spec spec, Resume resume) {
+        if (resume == null || resume.steps().isEmpty()) {
+            return null;
+        }
+        StepAudit.Result audit = StepAudit.check(resume.steps(), spec.targets());
+        if (!audit.blocking()) {
+            return null;
+        }
+        StringBuilder out = new StringBuilder("上一次留下的施工单已经对不上现在的目标文件清单，"
+                + "照它做会卡在下面这些地方：\n");
+        audit.findings().forEach(finding -> out.append("- ").append(finding.reason()).append('\n'));
+        out.append("这份单子是上一次挂起时定下来的，改不了：要么把上面提到的文件加回目标文件清单，"
+                + "要么改完需求重跑一次检查（那份单子会重新出一份）。"
+                + "本次没有开工，磁盘上一个字节都没动。");
+        return out.toString();
     }
 
     /**

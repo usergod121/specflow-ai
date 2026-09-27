@@ -10,9 +10,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 施工单的机器校验。
  *
- * <p>三条硬拦全是「照着做会卡住」而不是「可能不够好」：步数越界、最后一步标了中间态、
- * 某一步要动清单外的文件。中间态超标只提示——它是「按功能切」时真实存在的东西，
- * 做成硬拦只会逼着模型为了过关把「中间态」改写成「自洽」。
+ * <p>三条硬拦全是「照着做会卡住」而不是「可能不够好」：步数超过 7、最后一步标了中间态、
+ * 某一步要动清单外的文件。另外两条只提示——只有 1 步（这件事不用拆，引擎就按单步跑）
+ * 和中间态超过三分之一（它是「按功能切」时真实存在的东西，做成硬拦只会逼着模型
+ * 为了过关把「中间态」改写成「自洽」）。
  */
 @DisplayName("施工单的可行性检查")
 class StepAuditTest {
@@ -33,15 +34,24 @@ class StepAuditTest {
     // ---------- 步数 ----------
 
     @Test
-    @DisplayName("步数太少：一次改动而已，分步是白搭，要求合并")
-    void rejectsTooFewSteps() {
+    @DisplayName("两步就够：下限是 2，不该再误报")
+    void acceptsTwoSteps() {
         StepAudit.Result result = StepAudit.check(List.of(fine(1), fine(2)), TARGETS);
 
-        assertThat(result.blocking()).isTrue();
-        assertThat(result.findings()).singleElement().satisfies(finding -> {
-            assertThat(finding.step()).as("整份施工单的问题，不是某一步的").isZero();
-            assertThat(finding.reason()).contains("2 步").contains("少于 3 步");
-        });
+        assertThat(result.blocking()).isFalse();
+        assertThat(result.findings()).isEmpty();
+        assertThat(result.hints()).as("两步是要分步的，没有「不用拆」那回事").isEmpty();
+    }
+
+    @Test
+    @DisplayName("只有一步：不拦，只提一句「这次不需要分步」——它本来就退化成单步")
+    void hintsButDoesNotBlockASingleStep() {
+        StepAudit.Result result = StepAudit.check(List.of(fine(1)), TARGETS);
+
+        assertThat(result.blocking()).as("一步不是错，是这件事不用拆").isFalse();
+        assertThat(result.findings()).isEmpty();
+        assertThat(result.hints()).singleElement().satisfies(hint -> assertThat(hint)
+                .contains("1 步").contains("不需要分步").contains("单步"));
     }
 
     @Test
@@ -58,8 +68,9 @@ class StepAuditTest {
     }
 
     @Test
-    @DisplayName("3 到 7 步都合格——边界值不该误报")
+    @DisplayName("2 到 7 步都合格——边界值不该误报")
     void acceptsBoundaryCounts() {
+        assertThat(StepAudit.check(List.of(fine(1), fine(2)), TARGETS).blocking()).isFalse();
         assertThat(StepAudit.check(List.of(fine(1), fine(2), fine(3)), TARGETS).blocking()).isFalse();
         assertThat(StepAudit.check(List.of(fine(1), fine(2), fine(3), fine(4), fine(5), fine(6),
                 fine(7)), TARGETS).blocking()).isFalse();

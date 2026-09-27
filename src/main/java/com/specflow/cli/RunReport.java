@@ -50,15 +50,21 @@ final class RunReport {
                 Console.warn("%s", result.detail());
                 Console.detail("保留改动：specflow accept    撤回改动：specflow rollback");
             }
+            case PLAN_OUTDATED -> {
+                Console.fail("没有开工：%s", result.detail());
+            }
         }
     }
 
     /**
      * 退出码：0 成功 · 1 失败（已回滚）· 2 模型要求补充信息（磁盘未动）· 3 人工中断（已回滚）·
-     * 4 卡在环境/依赖上（已回滚，需要人去处理）· 5 上一次的改动还没处置（磁盘未动）。
+     * 4 卡在环境/依赖上（已回滚，需要人去处理）· 5 上一次的改动还没处置（磁盘未动）·
+     * 6 上一次留下的施工单对不上现在的清单（磁盘未动）。
      *
      * <p>中断单独给一个码，是为了让 CI 能区分「它自己做不到」和「是我叫停的」；
-     * 环境问题单独给一个码，是为了让 CI 能区分「代码写错了」和「这台机器上跑不起来」。
+     * 环境问题单独给一个码，是为了让 CI 能区分「代码写错了」和「这台机器上跑不起来」；
+     * 施工单过期单独给一个码，是为了让 CI 能区分「它做砸了」和「你得先把目标清单改回去」——
+     * 这两种情况下用户要做的事完全不同。
      */
     static int exitCode(AgentResult.Status status) {
         return switch (status) {
@@ -68,6 +74,7 @@ final class RunReport {
             case CANCELLED -> 3;
             case NEEDS_ENVIRONMENT -> 4;
             case PENDING_DECISION -> 5;
+            case PLAN_OUTDATED -> 6;
         };
     }
 }

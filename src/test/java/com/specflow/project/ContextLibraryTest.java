@@ -190,4 +190,65 @@ class ContextLibraryTest {
             assertThat(item.ref()).isEqualTo("README.md");
         });
     }
+
+    /**
+     * 一份手改坏的文件只该让<b>那一份</b>读不出来。
+     *
+     * <p>以前界面走的是「先 {@code names()} 再逐个 {@code load}」，任意一份抛异常，
+     * 整次读取就 400——用户看到的是「我导出的东西一套都打不开了」，
+     * 而且连「把那份坏的删掉」的入口都没有。分寸和 {@code TemplateStore} 一致：
+     * {@link ContextLibrary#load} 报错，{@link ContextLibrary#loadAll} 跳过并记账。
+     */
+    @Test
+    @DisplayName("一份手改坏的 YAML 只让那一份读不出来，别的一份不少")
+    void loadAllSkipsBrokenOnes() throws IOException {
+        library().save("好的", sample());
+        Path dir = root.resolve(ContextLibrary.DEFAULT_DIR);
+        Files.writeString(dir.resolve("坏的.yaml"), "name: 坏的\nitems: [这不是: 合法 yaml\n");
+
+        ContextLibrary.Loaded loaded = library().loadAll();
+
+        assertThat(loaded.bundles()).singleElement()
+                .satisfies(bundle -> assertThat(bundle.name()).isEqualTo("好的"));
+        assertThat(loaded.broken()).singleElement().satisfies(broken -> {
+            // 名字要能让人在资源管理器里找到那份文件
+            assertThat(broken.name()).isEqualTo("坏的");
+            assertThat(broken.reason()).contains("坏的");
+        });
+        // 单个读取仍然照旧报错：跳过是给「列清单」用的，不是把错误吃掉
+        assertThatThrownBy(() -> library().load("坏的"))
+                .isInstanceOf(SpecflowException.class)
+                .hasMessageContaining("读取上下文失败");
+    }
+
+    /**
+     * 这句提示会原样摆在界面上（「哪一份读不出来」），所以不能带着 Jackson 的类名、
+     * 源码位置和它自己的引用链——那三样对用户都没有用，只会把人吓住。
+     * 条目形态那两句是 {@code ContextItem} 自己抛的，那才是原因。
+     */
+    @Test
+    @DisplayName("读不出来的原因说的是人话，不是 Jackson 的类名和源码位置")
+    void unreadableReasonIsHuman() throws IOException {
+        Files.createDirectories(root.resolve(ContextLibrary.DEFAULT_DIR));
+        Files.writeString(root.resolve(ContextLibrary.DEFAULT_DIR).resolve("坏的.yaml"),
+                "name: 坏的\nitems:\n  - name: 没形态的一条\n");
+
+        assertThatThrownBy(() -> library().load("坏的"))
+                .isInstanceOf(SpecflowException.class)
+                .hasMessageContaining("没有 ref")
+                .hasMessageNotContaining("Cannot construct instance")
+                .hasMessageNotContaining("at [Source")
+                .hasMessageNotContaining("com.specflow");
+    }
+
+    @Test
+    @DisplayName("目录里一份都读得出来时，broken 是空表而不是 null")
+    void loadAllWithoutBroken() {
+        library().save("好的", sample());
+
+        ContextLibrary.Loaded loaded = library().loadAll();
+
+        assertThat(loaded.broken()).isEmpty();
+        assertThat(loaded.bundles()).hasSize(1);
+    }
 }

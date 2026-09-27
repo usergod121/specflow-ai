@@ -9,9 +9,7 @@ import com.sun.net.httpserver.HttpExchange;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -196,15 +194,19 @@ final class WorkspaceApi {
      * 界面要拿它做导入预览——「这一套里有哪几条、引用的文件还在不在」。
      * 名字列表在预览里什么都说明不了，而条目本来也就在同一个 yaml 文件里，
      * 再为「按需取一份」开一个接口只是多一次往返。
+     *
+     * <p>读不出来的那几份<b>跳过但不藏起来</b>（见 {@link ContextLibrary#loadAll}）：
+     * 这些文件是能手改的，一份写坏了只该让那一份列不出来，
+     * 不该让整个清单变成 400——那样连「把它删掉」都无从下手。
      */
     void contextLibrary(HttpExchange exchange) throws IOException {
         switch (exchange.getRequestMethod().toUpperCase()) {
             case "GET" -> {
-                List<ContextLibrary.Bundle> bundles = new ArrayList<>();
-                for (String name : context.names()) {
-                    bundles.add(context.load(name));
-                }
-                Http.sendJson(exchange, 200, Map.of("bundles", bundles));
+                ContextLibrary.Loaded loaded = context.loadAll();
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("bundles", loaded.bundles());
+                body.put("broken", loaded.broken());
+                Http.sendJson(exchange, 200, body);
             }
             case "POST" -> {
                 Payloads.ContextSave request = Http.readJson(exchange, Payloads.ContextSave.class);

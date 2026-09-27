@@ -27,7 +27,9 @@ import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -477,12 +479,14 @@ class WebServerTest {
      * 「施工单三条硬拦」于是完全不生效。修复前后差的只有这一个字段，
      * 所以断言也必须落在响应体上。
      *
-     * <p>这里给的是真试跑里那份<b>只有 2 步</b>的施工单：机器判它「执行不了」。
+     * <p>这里给的是「第 2 步要动清单外的文件」的单子：机器判它「执行不了」。
+     * 以前这里用的是一份<b>只有 2 步</b>的单子（当时的判定是「步数太少」），
+     * 而下限降到 2 之后那种单子已经合格了——拿它当失败样本，这条用例就再也不验任何东西。
      */
     @Test
     @DisplayName("检查接口把施工单那份机器审查一起发出去（少了它，界面那条硬拦就静默失效）")
     void reviewSendsTheStepAuditToThePage() throws Exception {
-        try (StubModelServer model = StubModelServer.answering(TWO_STEP_ANSWER)) {
+        try (StubModelServer model = StubModelServer.answering(OUT_OF_LIST_STEP_ANSWER)) {
             Path projectRoot = stubbedProject(model);
             try (WebServer reviewed = WebServer.start(projectRoot, 0,
                     new RecentProjects(root.resolve("review-recent.json")))) {
@@ -503,12 +507,13 @@ class WebServerTest {
                 assertThat(stepAudit.isMissingNode())
                         .as("响应体里必须有 stepAudit——没有它，界面上那三条硬拦一条都不会生效")
                         .isFalse();
-                assertThat(stepAudit.path("findings")).as("两步的施工单：机器判它执行不了")
+                assertThat(stepAudit.path("findings")).as("第 2 步要动清单外的文件：机器判它执行不了")
                         .isNotEmpty();
-                assertThat(stepAudit.path("findings").get(0).path("step").asInt()).isZero();
+                assertThat(stepAudit.path("findings").get(0).path("step").asInt())
+                        .as("要点出是哪一步").isEqualTo(2);
                 assertThat(stepAudit.path("findings").get(0).path("reason").asText())
-                        .as("说清是「步数不够」这一类整份单子的问题")
-                        .contains("2 步");
+                        .as("说清那一步为什么做不了")
+                        .contains("Bar.java").contains("不在目标文件清单里");
             }
         }
     }
@@ -585,6 +590,72 @@ class WebServerTest {
         }
     }
 
+    /**
+     * 续跑时留档里那份施工单对不上<b>现在</b>的清单：拒绝开工，而且挂着的那次还接得上。
+     *
+     * <p>两件事一起钉，缺一条这条检查就白做：
+     * <ul>
+     *   <li><b>拒绝要说出来</b>——那份单子里的三步都在引用 Foo.java，而用户把它换成了别的文件。
+     *       清单是硬白名单，照旧跑就是让越界的步静默执行：白烧调用再整轮回滚；</li>
+     *   <li><b>拒绝不能把挂起的那次挤掉</b>——{@code RunStore.suspended()} 只看最新一条记录，
+     *       所以这次拒绝不能留档。留了的话，界面上刚说「把文件加回清单再来一次」，
+     *       那次挂起的运行却已经找不到了。</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("续跑：留档里的施工单对不上现在的清单时拒绝开工，挂起的那次不被挤掉")
+    void continueRefusesWhenTheRecordedScheduleOutlivedTheTargets() throws Exception {
+        try (StubModelServer model = StubModelServer.answering(
+                THREE_STEP_ANSWER, "NEED_CONTEXT: 缺东西")) {
+            Path projectRoot = stubbedProject(model);
+            RunStore store = new RunStore(projectRoot.resolve(RunStore.DEFAULT_DIR));
+            try (WebServer running = WebServer.start(projectRoot, 0,
+                    new RecentProjects(root.resolve("continue-stale-recent.json")))) {
+                HttpClient client = HttpClient.newHttpClient();
+
+                post(client, running, "/api/run", """
+                        {"prompt": "把 a 改成 4", "targets": ["src/main/java/com/demo/Foo.java"],
+                         "verifyCompile": false}
+                        """);
+                waitUntilIdle(client, running);
+                assertThat(store.suspended()).isPresent();
+
+                // 用户补料时把清单换成了另一个文件：留档里那三步全都在引用 Foo.java
+                post(client, running, "/api/continue?force=1", """
+                        {"prompt": "把 a 改成 4", "targets": ["src/main/java/com/demo/Other.java"],
+                         "verifyCompile": false}
+                        """);
+                waitUntilIdle(client, running);
+
+                JsonNode result = resultEvent(client, running);
+                assertThat(result.path("payload").path("status").asText())
+                        .as("界面上要看到的是一句明确的拒绝，而不是一句「失败」")
+                        .isEqualTo("PLAN_OUTDATED");
+                assertThat(result.path("payload").path("attempts").asInt()).isZero();
+                assertThat(result.path("payload").path("detail").asText())
+                        .as("要说清是哪个文件、哪一步对不上")
+                        .contains("Foo.java").contains("不在目标文件清单里");
+                assertThat(model.calls()).as("模型一次都没调：白烧一次调用正是这条检查要挡的")
+                        .isEqualTo(2);
+                assertThat(store.suspended()).as("拒绝之后那次还挂着：改回清单就能接着跑")
+                        .isPresent();
+            }
+        }
+    }
+
+    /** 这次运行的最后一条 result 事件；界面就是靠它画结果的。 */
+    private JsonNode resultEvent(HttpClient client, WebServer target) throws Exception {
+        JsonNode events = body(client.send(HttpRequest.newBuilder(
+                        URI.create(target.url() + "/api/events?from=0"))
+                .GET().build(), HttpResponse.BodyHandlers.ofString())).path("events");
+        for (JsonNode event : events) {
+            if ("result".equals(event.path("type").asText())) {
+                return event;
+            }
+        }
+        throw new AssertionError("整条事件流里没有 result 事件：" + events);
+    }
+
     /** 一个配好假模型的项目：检查与续跑两条链都要真的走到模型调用。 */
     private Path stubbedProject(StubModelServer model) throws IOException {
         Path projectRoot = root.resolve("stubbed");
@@ -632,8 +703,8 @@ class WebServerTest {
                 + replace + "\n>>>>>>> REPLACE\n";
     }
 
-    /** 真试跑里那份只有两步的施工单：少于 3 步，机器会拦。 */
-    private static final String TWO_STEP_ANSWER = """
+    /** 一份「第 2 步要动清单外的文件」的施工单：机器会拦，因为那一步物理上做不了。 */
+    private static final String OUT_OF_LIST_STEP_ANSWER = """
             <<<<<<< SUMMARY
             分两步做。
             >>>>>>> SUMMARY
@@ -645,7 +716,7 @@ class WebServerTest {
 
             <<<<<<< STEPS
             1 | 先给 Foo 加一个方法 | src/main/java/com/demo/Foo.java | 能编译 | 自洽
-            2 | 再接上调用 | src/main/java/com/demo/Foo.java | 能编译 | 自洽
+            2 | 再接上调用（要动清单外的那个类） | src/main/java/com/demo/Bar.java | 能编译 | 自洽
             >>>>>>> STEPS
             """;
 
@@ -997,6 +1068,143 @@ class WebServerTest {
                 {"id":"%s","startedAt":"t","status":"%s","prompt":"p",
                  "targets":["src/main/java/com/demo/Demo.java"],"attempts":1,"detail":"%s"}
                 """.formatted(id, status, detail));
+    }
+
+    /**
+     * 一份手改坏的上下文文件只该让<b>那一份</b>读不出来。
+     *
+     * <p>这些文件是能手改的，手滑一个字符就长这样。以前任意一份抛异常，整次 GET 就是 400，
+     * 界面上是一套上下文都不显示——连「把那份坏的删掉」的入口都没有。
+     * 分寸照 {@code TemplateStore} 读模板那套：跳过、但把「哪一份、为什么」报回来。
+     */
+    @Test
+    @DisplayName("一份手改坏的上下文文件不让整次读取失败：跳过它，并说清是哪一份")
+    void aBrokenContextFileDoesNotTakeDownTheWholeList() throws Exception {
+        assertThat(post("/api/context", """
+                {"name":"好的","items":[{"name":"订单表结构","text":"CREATE TABLE orders (id BIGINT)"}]}
+                """).statusCode()).isEqualTo(200);
+        Path directory = root.resolve(".specflow/context");
+        Files.writeString(directory.resolve("坏的.yaml"), "name: 坏的\nitems: [这不是: 合法 yaml\n");
+
+        HttpResponse<String> response = get("/api/context");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        JsonNode body = body(response);
+        assertThat(body.path("bundles")).singleElement().satisfies(bundle ->
+                assertThat(bundle.path("name").asText()).isEqualTo("好的"));
+        // 坏的那份不能悄悄消失：不然用户只会看到自己导出过的那套不见了
+        assertThat(body.path("broken")).singleElement().satisfies(broken -> {
+            assertThat(broken.path("name").asText()).isEqualTo("坏的");
+            assertThat(broken.path("reason").asText()).contains("坏的");
+        });
+        // 这条提示是要摆在界面上的，所以不能带着 Jackson 的类名和源码位置
+        assertThat(response.body())
+                .doesNotContain("Cannot construct instance")
+                .doesNotContain("through reference chain")
+                .doesNotContain("com.specflow");
+        assertThat(body.path("broken").get(0).path("reason").asText())
+                .contains("上下文条目既没有 ref");
+
+        // 修好之后（或者删掉之后）它就该回到清单里：跳过只是这一次的事
+        Files.delete(directory.resolve("坏的.yaml"));
+        assertThat(body(get("/api/context")).path("broken")).isEmpty();
+    }
+
+    /**
+     * 项目根下明文躺着的密钥文件。这个服务能做的只有「认出来、说一句」：
+     * 不引依赖就没有跨平台的密钥库，而删改用户的文件是越权。
+     */
+    @Test
+    @DisplayName("项目根下的明文密钥文件会随配置报给界面，好让界面提醒一句「别提交」")
+    void plaintextKeyFilesAreReported() throws Exception {
+        assertThat(body(get("/api/config")).path("plaintextKeyFiles")).isEmpty();
+
+        Files.writeString(root.resolve("key.env"), "key: sk-abcdef\n");
+
+        JsonNode files = body(get("/api/config")).path("plaintextKeyFiles");
+        assertThat(files).singleElement()
+                .satisfies(node -> assertThat(node.asText()).isEqualTo("key.env"));
+    }
+
+    /**
+     * 关服务时当前项目也要收掉。
+     *
+     * <p>它带着一个运行线程池：那个池子是单线程的、核心线程不超时，
+     * 不提掉就一直挂着一条线程等下一次运行——而服务已经没了。
+     * 换项目和关服务是同一件事的两种结束方式，收口的动作也该是同一个。
+     *
+     * <p>判据用真线程：服务停了就没有接口可问了，而「项目收没收到」只体现在
+     * 它的运行线程有没有停下来。盯的是<b>这一次</b>新起来的那条线程，
+     * 不看总数——别的测试留下的线程来去都不该影响这条断言。
+     */
+    @Test
+    @DisplayName("关掉服务时当前项目一并收掉：它的运行线程不留在那儿")
+    void closingTheServerAlsoClosesTheOpenProject() throws Exception {
+        // setUp 那个服务先收掉：这条要自己起一个、自己关一个，才看得出「关」做了什么
+        server.close();
+        Files.createDirectories(root.resolve(".specflow"));
+        Files.writeString(root.resolve(".specflow/local.env"), "SPECFLOW_API_KEY=fake\n");
+        // 模型地址指向一个没人听的端口：这次运行必然失败，但线程池照样起来了——
+        // 而「池子起没起、收没收」正是这条要看的
+        Files.writeString(root.resolve(".specflow/project.yaml"),
+                "llm:\n  base-url: \"http://127.0.0.1:1\"\n  max-retries: 0\n");
+
+        Set<Thread> before = runThreads();
+        WebServer own = WebServer.start(root, 0,
+                new RecentProjects(root.resolve("recent-close.json")));
+        Thread started;
+        try {
+            HttpResponse<String> response = http.send(HttpRequest.newBuilder(
+                            URI.create(own.url() + "/api/run"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(
+                            "{\"prompt\":\"做点什么\",\"targets\":[\"README.md\"]}"))
+                    .build(), HttpResponse.BodyHandlers.ofString());
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            started = awaitNewRunThread(before);
+            assertThat(started).as("提交运行之后线程池真的起了一条线程").isNotNull();
+        } finally {
+            own.close();
+        }
+
+        assertThat(awaitStopped(started)).as("关服务之后那条运行线程不在了").isTrue();
+    }
+
+    /** 现在活着的运行线程（名字是 specflow-run）。 */
+    private static Set<Thread> runThreads() {
+        Set<Thread> threads = new HashSet<>();
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            if ("specflow-run".equals(thread.getName())) {
+                threads.add(thread);
+            }
+        }
+        return threads;
+    }
+
+    /** 等一条不属于 {@code before} 的运行线程出现。 */
+    private static Thread awaitNewRunThread(Set<Thread> before) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            for (Thread thread : runThreads()) {
+                if (!before.contains(thread)) {
+                    return thread;
+                }
+            }
+            Thread.sleep(20);
+        }
+        return null;
+    }
+
+    /** 等某条线程结束。关闭是「中断 + 当前任务收尾」，不是瞬间的事。 */
+    private static boolean awaitStopped(Thread thread) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (!thread.isAlive()) {
+                return true;
+            }
+            Thread.sleep(20);
+        }
+        return false;
     }
 
     // ---------- 辅助 ----------

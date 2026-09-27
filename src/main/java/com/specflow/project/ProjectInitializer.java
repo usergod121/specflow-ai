@@ -48,6 +48,9 @@ public final class ProjectInitializer {
               model: "deepseek-chat"
               # 密钥取这个名字：先找环境变量，再找 .specflow/local.env（不进版本库）
               api-key-env: "SPECFLOW_API_KEY"
+              # 别在项目根另放一份 key.env / .env：那种文件这里读不到，
+              # 而且很容易跟着一次 git add . 一起提交上去。
+              # init 会往 .gitignore 里补 *.env，但那是兜底，不是许可。
               temperature: 0.2
 
             snapshot:
@@ -77,7 +80,15 @@ public final class ProjectInitializer {
               compile: false   # 示例目标文件不在任何构建路径下，先关掉编译校验
             """;
 
-    /** @param written 这次真正新写了哪些文件（已存在的不算），相对项目根 */
+    /**
+     * 密钥文件要挡在版本库外面，见 {@link #ensureGitignore}。
+     *
+     * <p>只列这两个：一个是这个工具自己写密钥的地方，
+     * 另一个是 {@code .gitignore} 里那条同名约定（{@code key.env} 这类也跟着它走）。
+     */
+    private static final List<String> SECRET_IGNORES = List.of(".specflow/local.env", "*.env");
+
+    /** @param written 这次真正动过的文件：新建的，或者补过密钥规矩的 {@code .gitignore}，相对项目根 */
     public record Result(List<String> written) {
 
         public boolean wroteNothing() {
@@ -103,7 +114,50 @@ public final class ProjectInitializer {
             install(templatesDir.resolve(name), resource(name), projectRoot, written);
         }
         install(projectRoot.resolve("spec.yaml"), SPEC_TEMPLATE, projectRoot, written);
+        ensureGitignore(projectRoot, written);
         return new Result(List.copyOf(written));
+    }
+
+    /**
+     * 保证这个项目的 {@code .gitignore} 里挡着密钥。
+     *
+     * <p>为什么不靠文档里写一句：密钥就写在项目目录里（{@code .specflow/local.env}），
+     * 而 {@code .gitignore} 是<b>每个项目自己的</b>文件——刚用 init 铺骨架的项目通常
+     * 还没有它，一次 {@code git add .} 就把密钥提交上去了，而这个错误没有第二次机会。
+     * 项目根下那些顺手放的 {@code key.env} 也是一样，所以连 {@code *.env} 一起补。
+     *
+     * <p>只补缺的那几条，别的一个字都不动：那份文件可能是用户手写的，
+     * 也可能是别的工具生成的，覆盖它比不补更糟。所以这里读出来再追加，
+     * 而不是「写一份正确的进去」。
+     *
+     * <p>换行一律用 {@code \n}：{@code .gitignore} 是跟着版本库走、要跨平台的文本文件，
+     * BOM 和 CRLF 都会让某条规则在别人机器上失效。
+     */
+    private static void ensureGitignore(Path projectRoot, List<String> written) {
+        Path file = projectRoot.resolve(".gitignore");
+        if (Files.isDirectory(file)) {
+            throw new SpecflowException(".gitignore 是个目录，先删掉它再初始化");
+        }
+        String existing = Files.isRegularFile(file) ? ProjectFiles.read(file, ".gitignore") : "";
+        List<String> lines = existing.lines().map(String::strip).toList();
+        List<String> missing = SECRET_IGNORES.stream().filter(rule -> !lines.contains(rule)).toList();
+        if (missing.isEmpty()) {
+            return;
+        }
+        StringBuilder content = new StringBuilder(existing);
+        if (!existing.isEmpty()) {
+            if (!existing.endsWith("\n")) {
+                content.append('\n');
+            }
+            // 空一行：上面是用户自己写的那几段
+            content.append('\n');
+        }
+        content.append("# 密钥不进版本库：specflow 的密钥写在 .specflow/local.env，\n")
+                .append("# 项目根下的 *.env（key.env 之类）也一律不入库。\n")
+                .append(String.join("\n", missing))
+                .append('\n');
+        ProjectFiles.writeAtomic(file, content.toString(), ".gitignore");
+        written.add(".gitignore");
     }
 
     private static String configSource(String compileCommand) {

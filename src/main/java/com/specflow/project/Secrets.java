@@ -7,8 +7,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 /**
  * 密钥从哪来。
@@ -57,6 +59,38 @@ public final class Secrets {
             return Optional.of(fromEnv.strip());
         }
         return fromFile(projectRoot.resolve(LOCAL_ENV), name);
+    }
+
+    /**
+     * 项目根下明文躺着的密钥文件（{@code .env}、{@code key.env} 之类）。
+     *
+     * <p>只认名字，<b>不打开看内容</b>：这个工具取密钥的地方只有环境变量和
+     * {@link #LOCAL_ENV} 两处，读项目根随便一个 {@code *.env} 等于把「密钥可以随便放」
+     * 坐实；而为了认一认就把它读一遍，更是把别人的明文密钥又过了一手。
+     * 名字按 {@code .gitignore} 里那条 {@code *.env} 的同一套约定来，两边不会打架。
+     *
+     * <p>能做的只到「提示」为止：不引依赖就没有跨平台的密钥库
+     * （JDK 自带的那个要一个口令，而口令本身还得存在某处），
+     * 而改写或删除用户的文件是越权——那里面可能还有他别的工具要用的东西。
+     *
+     * @return 文件名，按名字排序；目录读不出来时返回空表——这件事不该拦着人跑起来，
+     *         调用方只管把它显示成一句提醒
+     */
+    public static List<String> plaintextFiles(Path projectRoot) {
+        Path root = projectRoot.toAbsolutePath().normalize();
+        if (!Files.isDirectory(root)) {
+            return List.of();
+        }
+        try (Stream<Path> files = Files.list(root)) {
+            return files
+                    .filter(Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.toLowerCase(Locale.ROOT).endsWith(".env"))
+                    .sorted()
+                    .toList();
+        } catch (IOException e) {
+            return List.of();
+        }
     }
 
     private static Optional<String> fromFile(Path file, String name) {

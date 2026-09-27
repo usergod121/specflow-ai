@@ -192,7 +192,14 @@ public final class RunRecorder implements AgentListener {
 
     @Override
     public void finished(AgentResult result) {
-        persist(result);
+        // 拒绝开工的那一次（施工单已经对不上现在的清单）不留档。
+        // 判据是 RunStore.suspended() 只看**最新那一条**记录：留档就会把「挂着等人补料」
+        // 的那条挤下去——用户刚被告知「把文件加回清单再来一次」，那时界面上已经找不到
+        // 可接着跑的那次了。而这次拒绝本来也没有可复盘的东西：没调模型、没碰磁盘、
+        // 连施工单都没见过（见 DevelopmentAgent.staleSchedule）
+        if (result.status() != AgentResult.Status.PLAN_OUTDATED) {
+            persist(result);
+        }
         delegate.finished(result);
     }
 

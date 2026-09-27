@@ -18,7 +18,9 @@ const WEB = path.join(__dirname, '..', '..', 'main', 'resources', 'web');
 
 /** 从源码里取出指定片段并求值，这样测试和运行时读的是同一份文件。 */
 function load(file, names, fromMarker, toMarker) {
-  const source = fs.readFileSync(path.join(WEB, file), 'utf8');
+  // 换行先统一成 LF 再找标记：这两个文件在 Windows 的编辑器里很容易变成 CRLF，
+  // 而标记里写死 \r\n 的话，一条测试会红成「看谁的编辑器」——那种红没有任何信息量。
+  const source = fs.readFileSync(path.join(WEB, file), 'utf8').replace(/\r\n/g, '\n');
   const from = fromMarker ? source.indexOf(fromMarker) : 0;
   const to = toMarker ? source.indexOf(toMarker) : source.length;
   if (from < 0 || to < 0 || to <= from) {
@@ -42,8 +44,8 @@ function check(condition, message) {
 }
 
 // ---------- 流程图 ----------
-const { parseFlow, layerize, labelWidth, place, groupBox } =
-    load('flowchart.js', ['parseFlow', 'layerize', 'labelWidth', 'place', 'groupBox']);
+const { parseFlow, layerize, labelWidth, place, groupBox, familyIds } =
+    load('flowchart.js', ['parseFlow', 'layerize', 'labelWidth', 'place', 'groupBox', 'familyIds']);
 
 console.log('流程图解析：');
 const sample = `flowchart TD
@@ -106,6 +108,43 @@ check(grouped.groups.length === 1 && grouped.groups[0].title === '订单模块',
 check(grouped.groups[0].members.join(',') === 'B,C', '组员是组里出现过的节点：'
     + grouped.groups[0].members.join(','));
 check(grouped.ignored.length === 0, '分组本身不算「没认出来」');
+
+console.log('流程图：嵌套的分组：');
+// 用户的现场：模型画了嵌套的 subgraph。以前 open 只有一个，内层一开外层就再也收不到组员，
+// 内层 end 之后的节点还挂到了内层名下——于是外层成了空框（一个框都不画），
+// 而内层的框圈着一堆不属于它的节点。图上少一块，剩下的那块还在撒谎。
+const nested = parseFlow(`flowchart TD
+    subgraph 订单模块
+      A[入口] --> B[下单]
+      subgraph 库存子模块
+        B --> C[扣库存]
+      end
+      C --> D[记账]
+    end
+    D --> E[返回]`);
+check(nested.groups.length === 2, '两层分组都在：' + nested.groups.map(g => g.title).join(','));
+check(nested.groups[0].members.join(',') === 'A,B,D',
+    '内层 end 之后的组员回到外层，而不是挂在内层名下：' + nested.groups[0].members.join(','));
+check(nested.groups[1].members.join(',') === 'C',
+    '内层只有它自己那一块：' + nested.groups[1].members.join(','));
+check(nested.groups[0].children.length === 1 && nested.groups[0].children[0] === nested.groups[1],
+    '内层挂在外层底下');
+check(nested.groups[1].depth === 1, '内层记着自己第几层——框要按它往上让位');
+check(nested.nodes.size === 5 && nested.edges.length === 4, '节点和边一条不少');
+check(nested.ignored.length === 0, '嵌套是认得的语法，不该记成「没认出来」');
+
+// 一个节点只归一个分组。否则第二个分组的框会把第一个分组的那块也圈进来，
+// 那个节点看起来就像两家的组员——正是「图会撒谎」那条底线。
+const twice = parseFlow(`flowchart TD
+    subgraph 甲
+      A --> B
+    end
+    subgraph 乙
+      B --> C
+    end`);
+check(twice.groups[0].members.join(',') === 'A,B' && twice.groups[1].members.join(',') === 'C',
+    '同一个节点只算最先收下它的那个分组：' + twice.groups[0].members.join(',') + ' / '
+    + twice.groups[1].members.join(','));
 
 console.log('流程图：边的花样：');
 const kinds = parseFlow(`flowchart TD
@@ -205,6 +244,36 @@ const intruders = pairs.filter(id => !placed.groups[0].members.includes(id))
 check(intruders.length === 0, '非组员一个都不和组框相交，连压到一半都不行：' + intruders.join(','));
 check(group.right <= layout.totalWidth && group.left >= 0 && group.top >= 0,
     '组框也在画布内');
+
+// 嵌套：子分组的框必须整个套在父分组的框里，而且两层的组名不许叠在一起。
+// 组的框比节点靠外一圈、顶上还要一条组名带，所以「第一层里就有组员」时整张图要往下让位——
+// 不让的话框顶连组名一起被画布裁掉，用户看到的是一个没有名字的框。
+console.log('流程图摆位：嵌套的框：');
+const nestLayout = place(nested.nodes, nested.edges, nested.groups);
+const outer = groupBox(nested.groups[0], nestLayout.positions);
+const inner = groupBox(nested.groups[1], nestLayout.positions);
+const boxIn = (b, area) => b.x >= area.left && b.x + b.w <= area.right
+    && b.y >= area.top && b.y + b.h <= area.bottom;
+check(inner.left >= outer.left && inner.right <= outer.right
+    && inner.top >= outer.top && inner.bottom <= outer.bottom,
+    '子分组的框整个套在父分组的框里：内 ' + JSON.stringify(inner) + ' / 外 ' + JSON.stringify(outer));
+check(inner.top - outer.top >= 14, '父子两层的组名各占一条带子，不叠在一起：'
+    + Math.round(inner.top - outer.top));
+check(outer.top >= 0, '最靠上的那个分组框也没被画布裁掉：top=' + Math.round(outer.top));
+check([...nested.nodes.keys()].every(id => {
+  const b = nestLayout.positions.get(id);
+  return b.x >= 0 && b.y >= 0
+      && b.x + b.w <= nestLayout.totalWidth && b.y + b.h <= nestLayout.totalHeight;
+}), '让位之后所有节点仍在画布内');
+
+const family = new Set(familyIds(nested.groups[0]));
+const strangers = [...nested.nodes.keys()].filter(id => !family.has(id));
+const hitsBox = (b, area) => b.x < area.right && area.left < b.x + b.w
+    && b.y < area.bottom && area.top < b.y + b.h;
+check(strangers.length > 0 && strangers.every(id => !hitsBox(nestLayout.positions.get(id), outer)),
+    '家族之外的节点一个都不和父分组的框相交：' + strangers.join(','));
+check(nested.groups[1].members.every(id => boxIn(nestLayout.positions.get(id), inner)),
+    '内层的组员都在内层的框里');
 
 // 没有分组时不能因为「分列」把老样子改掉
 const plain = parseFlow('flowchart TD\n    A[一] --> B[二]\n    A --> C[三]');
@@ -352,6 +421,38 @@ check(yaml.includes('  - ref: "src/main/java/demo/UserController.java"'), '上�
 check(yaml.includes('  - name: "订单表结构"'), '上下文的内联条目被写出来');
 check(yaml.includes('CREATE TABLE orders'), '内联内容不丢');
 check(typeof templateToYaml({}) === 'string', '空对象也能转，不抛异常');
+
+// ---------- 模板自带的上下文（界面必须说出来） ----------
+// 模板的 context 是「选它时自动加进依赖清单」的东西，而它只写在 YAML 里。
+// 不点破的话，依赖清单里会凭空多出两条用户没加过的条目——他既看不出是谁加的，
+// 也不知道能不能删（能：取消勾选就只是这一次不用）。
+const { templateContextNote } = load('index.html', ['templateContextNote'],
+    'function templateContextNote(template) {', '\n\n/**\n * 模板切换时只更新');
+
+console.log('模板自带的上下文：');
+check(templateContextNote({ name: 't', context: [] }) === '' && templateContextNote(null) === '',
+    '不带上下文时一个字都不说（不留一条空提示）');
+const ctxNote = templateContextNote({
+  context: [{ name: '订单表结构' }, { name: '接口约定' }],
+});
+check(ctxNote.includes('2 条') && ctxNote.includes('订单表结构') && ctxNote.includes('接口约定'),
+    '带上下文时把条数和名字都写出来：' + ctxNote);
+check(ctxNote.includes('上下文依赖'), '而且说清它会落到下面那份清单里');
+
+// ---------- 项目根下的明文密钥文件 ----------
+// 不引依赖就没有跨平台的密钥库，所以这件事只能停在「提示」上。既然是提示，
+// 那它必须点名是哪几个文件、并且给出该放哪儿——否则等于没说。
+const { secretsWarning } = load('index.html', ['secretsWarning'],
+    'function secretsWarning(files) {', '\n\nfunction renderSecrets() {');
+
+console.log('明文密钥文件的提醒：');
+check(secretsWarning([]) === '' && secretsWarning(null) === '' && secretsWarning(undefined) === '',
+    '没有这种文件时一个字都不说（不留一块空警示）');
+const keyNote = secretsWarning(['key.env', '.env']);
+check(keyNote.includes('key.env') && keyNote.includes('.env'), '点名是哪几个文件：' + keyNote);
+check(keyNote.includes('.specflow/local.env') && keyNote.includes('.gitignore'),
+    '给出该放哪儿：密钥写进 .specflow/local.env（那份已经在 .gitignore 里）');
+check(keyNote.includes('别提交'), '最后一句是「别提交」：这条提示的全部用处就在这里');
 
 // ---------- 待处置的改动 ----------
 // 这块面板最要紧的判断只有一个：canAccept 真和假时，两个按钮的主次与文案正好相反。
@@ -622,7 +723,7 @@ check(step.roundBudget('3.7') === 3, '小数取整，不把 3.7 当字符串发�
 check(step.roundBudget(undefined) === 0, '连输入框都没有时也不炸');
 
 console.log('施工单：哪一步有问题：');
-check(step.stepFindingLabel(0) === '整份施工单', 'step=0 说的是整份单子（步数越界这一类）');
+check(step.stepFindingLabel(0) === '整份施工单', 'step=0 说的是整份单子（步数超过上限这一类）');
 check(step.stepFindingLabel(3) === '第 3 步', 'step>0 说的是那一步');
 check(step.stepAuditFindings({ findings: [{ step: 1, reason: 'r' }], hints: ['h'] }).length === 1,
     '只取 findings');
@@ -644,7 +745,7 @@ check(onlySteps.includes('这份施工单有 1 处执行不了') && onlySteps.in
     '施工单的问题说清是哪一步：' + onlySteps);
 check(onlySteps.includes('仍然继续'), '出路也写了：点「我知道，仍然继续」就放行');
 const both = step.blockedRunMessage([{ path: 'a/A.java', reason: '清单外' }],
-    [{ step: 0, reason: '施工单只有 2 步' }, { step: 5, reason: '最后一步标了中间态' }]);
+    [{ step: 0, reason: '施工单有 8 步，超过上限 7 步' }, { step: 5, reason: '最后一步标了中间态' }]);
 check(both.includes('这份方案有 1 处执行不了') && both.includes('这份施工单有 2 处执行不了'),
     '两处问题一次说全，而不是先说一处、点完再冒出另一处');
 check(both.includes('整份施工单：') && both.includes('第 5 步：'),

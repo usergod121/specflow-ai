@@ -739,8 +739,14 @@ class DevelopmentAgentTest {
     @Test
     @DisplayName("现生成的施工单核不过时带着机器的意见再要一次；两次都不行就按单步跑，不卡人")
     void fallsBackToSingleStepWhenGenerationKeepsFailing() {
+        // 这份单子核不过的地方是「要动清单外的 Bar.java」——清单是硬白名单，那一步做不了。
+        // 步数特意给 2 步：步数已经不是核不过的理由了（下限降到 2），
+        // 拿它当失败原因的话，这条用例会在「1 步也放行」之后悄悄失去意义
         ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"))
-                .answeringStepsWith("<<<<<<< STEPS\n1 | 一步搞定 | Foo.java | 能编译 | 自洽\n>>>>>>> STEPS\n");
+                .answeringStepsWith("<<<<<<< STEPS\n"
+                        + "1 | 先动清单外的那个类 | Bar.java | 能编译 | 自洽\n"
+                        + "2 | 再把 a 改成 2 | Foo.java | 能编译 | 自洽\n"
+                        + ">>>>>>> STEPS\n");
         RecordingListener listener = new RecordingListener();
 
         AgentResult result = agent(llm, new ScriptedVerifier(passed()), listener)
@@ -754,7 +760,35 @@ class DevelopmentAgentTest {
                 .doesNotContain("step:1", "stepdone:1:SUCCESS");
         // 第二次要单时把「为什么这份用不了」说清了，而不是重掷骰子
         String retry = llm.calls().get(1).get(3).content();
-        assertThat(retry).contains("核不过").contains("少于 3 步");
+        assertThat(retry).contains("核不过").contains("不在目标文件清单里");
+        assertThat(retry).as("步数已经不该再被当成问题").doesNotContain("少于");
+    }
+
+    /**
+     * 只有 1 步不算核不过：这件事本来就不用拆，引擎按单步把它跑完。
+     *
+     * <p>这条是「下限 3 → 2」那个改动的落点：真模型试跑里一个简单需求被切成 2 步（合理），
+     * 却撞上「3～7」的下限被拦了一次；而 1 步更不该拦——拦它只会逼模型为了凑步数
+     * 把一件完整的事硬切开。
+     */
+    @Test
+    @DisplayName("只有一步：不重问、不拦人，就按单步跑完")
+    void acceptsASingleGeneratedStep() {
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"))
+                .answeringStepsWith("<<<<<<< STEPS\n1 | 一步搞定 | Foo.java | 能编译 | 自洽\n>>>>>>> STEPS\n");
+        RecordingListener listener = new RecordingListener();
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()), listener)
+                .run(TestSpecs.spec(List.of("Foo.java")));
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(listener.probeCalls).as("第一步就收下了，没有第二次要单").isEqualTo(1);
+        assertThat(listener.source).as("它是模型给的那一步，不是「拿不到施工单」那个虚拟步")
+                .isEqualTo(StepsSource.GENERATED);
+        assertThat(listener.plan).singleElement()
+                .satisfies(step -> assertThat(step.goal()).isEqualTo("一步搞定"));
+        assertThat(listener.events).as("按单步跑：不发步级事件").doesNotContain("step:1", "stepdone:1:SUCCESS");
+        assertThat(result.attempts()).as("只有一步要跑，一轮就够").isEqualTo(1);
     }
 
     @Test
@@ -1013,6 +1047,63 @@ class DevelopmentAgentTest {
         assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
         assertThat(listener.source).as("留档里没有就只能现生成").isEqualTo(StepsSource.GENERATED);
         assertThat(listener.probeCalls).isEqualTo(1);
+    }
+
+    /**
+     * 续跑复用留档里那份施工单之前，必须对着<b>当前</b>清单再核一遍。
+     *
+     * <p>那份单子是照<b>上一次</b>的清单核过的，而续跑的前提恰恰是用户补了料——
+     * 他会改清单。清单变了、单子里某一步却还引用着已经不在清单里的文件时，
+     * 那一步物理上做不了（清单外的文件改不了、也建不了）：照旧直接跑，等于让越界的步
+     * 静默执行，白烧一次调用再整轮回滚，用户只看到一句「失败」。
+     */
+    @Test
+    @DisplayName("续跑：留档里那份单子对不上现在清单时拒绝开工，并说清是哪一步")
+    void refusesResumeWhenTheRecordedScheduleOutlivedTheTargets() {
+        // 挂起时清单里有 Bar.java，用户后来把它挪出去了：单子第 2 步因此做不了
+        List<PlanStep> recorded = List.of(
+                step(1, "第一步", false, "Foo.java"),
+                step(2, "第二步（要动 Bar）", false, "Bar.java"));
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()))
+                .resume(TestSpecs.spec(List.of("Foo.java")), null, "NEED_CONTEXT: 缺东西",
+                        true, recorded);
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.PLAN_OUTDATED);
+        assertThat(result.attempts()).isZero();
+        assertThat(llm.calls()).as("一个字节都没动：模型一次都没调").isEmpty();
+        assertThat(result.detail())
+                .as("要说清哪一步、哪个文件、以及接下来该干什么")
+                .contains("第 2 步").contains("Bar.java").contains("不在目标文件清单里")
+                .contains("加回目标文件清单");
+        assertThat(read("Foo.java")).as("磁盘上什么都没变").isEqualTo(ORIGINAL);
+    }
+
+    /**
+     * 反向：补了料、把文件<b>加进</b>清单时，旧单子照样能用——不许误拒。
+     *
+     * <p>一个「清单变过就作废」的实现照样能让上面那条绿，而它会把正常的续跑全部挡住：
+     * 用户补料最常见的样子就是往清单里加文件。
+     */
+    @Test
+    @DisplayName("续跑：清单里加了文件不算过期，单子照旧接着用")
+    void reusesTheRecordedScheduleWhenTargetsOnlyGrew() {
+        List<PlanStep> recorded = List.of(
+                step(1, "第一步", false, "Foo.java"),
+                step(2, "第二步", false, "Foo.java"));
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"));
+        RecordingListener listener = new RecordingListener();
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()), listener)
+                .resume(TestSpecs.spec(List.of("Foo.java", "Bar.java")), null,
+                        "NEED_CONTEXT: 我要 Bar.java", false, recorded);
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(listener.source).isEqualTo(StepsSource.RESUMED);
+        assertThat(listener.probeCalls).as("清单变过也不重问").isZero();
     }
 
     private List<String> snapshotNames() throws IOException {

@@ -5,6 +5,7 @@ import com.specflow.exception.SpecflowException;
 import com.specflow.project.ProjectInitializer;
 import com.specflow.project.ProjectScanner;
 import com.specflow.project.RecentProjects;
+import com.specflow.project.Secrets;
 import com.specflow.review.ReviewOutcome;
 import com.specflow.template.PromptTemplate;
 import com.specflow.template.Tags;
@@ -157,6 +158,16 @@ public final class WebServer implements AutoCloseable {
             httpPool.awaitTermination(2, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+        // 当前项目也要收：它带着一个运行线程池，不收就一直挂着一条线程等下一次运行，
+        // 而这个服务已经不会再来了。换项目和关服务是同一件事的两种结束方式，
+        // 收口的动作也该是同一个（{@link #replace}）。
+        //
+        // 这里不问「有没有任务在跑」（换项目时那道闸不适用）：关服务是进程要退出了，
+        // 拒绝收尾只会把它留给进程退出——收掉至少还能让运行线程收到中断、
+        // 把留档写完，而不是在半路被硬杀。
+        synchronized (this) {
+            replace(open, null);
         }
     }
 
@@ -490,6 +501,9 @@ public final class WebServer implements AutoCloseable {
         // 读不回来的那几份照样告诉界面：藏起来的话，用户只会看到模板少了一个，
         // 然后对着「找不到模板」猜。界面把它们列出来，并说明是哪个文件。
         config.put("brokenTemplates", loaded.broken());
+        // 项目根下明文躺着的密钥文件（key.env 之类）。这里只报名字、只提示一句：
+        // 不删不改用户的文件，也不去读它——见 Secrets.plaintextFiles
+        config.put("plaintextKeyFiles", Secrets.plaintextFiles(project.root()));
         config.put("compileCommand", project.config().build().compile());
         // 标签只是输入提示，不是白名单——用户打任何词都行
         config.put("commonTags", Tags.COMMON);
