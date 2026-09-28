@@ -73,12 +73,4 @@ public record RunEvent(
     public static RunEvent result(long id, Object payload) {
         return new RunEvent(id, TYPE_RESULT, "info", 0, 0, null, "任务结束", payload);
     }
-
-    public boolean isResult() {
-        return TYPE_RESULT.equals(type);
-    }
-
-    public boolean isPlan() {
-        return TYPE_PLAN.equals(type);
-    }
 }

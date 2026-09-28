@@ -913,5 +913,33 @@ check(since(null, [{ id: 'b' }]) === null,
 check(since('a', []) === null && since('a', undefined) === null,
     '一条记录都没有时什么都不做');
 
+// ---------- 状态表 ----------
+// 界面有**两张**按状态查行的表：结果面板画这一次（STATUS_TEXT），历史列表画留档里的每一次
+// （STATUS_LABEL）。两张都是「拿枚举名去查一行」，少一行不会报错——它会画成红底 + 英文枚举名，
+// 看起来像系统坏了，而不像一句能读懂的话（CLI 撞门禁留下的 PENDING_DECISION 就是这么露出来的）。
+// 所以这里照着 Java 的枚举核一遍，而且不手抄枚举名：抄一份就等于又开了第二个会漂的地方。
+console.log('状态表：AgentResult.Status 每一项都要有说法：');
+const agentResultSource = fs.readFileSync(path.join(__dirname, '..', '..', 'main', 'java',
+    'com', 'specflow', 'agent', 'AgentResult.java'), 'utf8');
+const enumAt = agentResultSource.indexOf('public enum Status {');
+const statuses = agentResultSource
+    .slice(enumAt, agentResultSource.indexOf('public static AgentResult success', enumAt))
+    .split('\n').map(line => line.trim())
+    .filter(line => /^[A-Z][A-Z_]*[,]?$/.test(line))
+    .map(line => line.replace(',', ''));
+check(statuses.length === 8, '从 AgentResult.Status 里读出的终态共 8 个：' + statuses.join(','));
+const historyTable = load('index.html', ['STATUS_LABEL'], 'const STATUS_LABEL', 'async function openHistory');
+const resultTable = load('index.html', ['STATUS_TEXT'], 'const STATUS_TEXT', 'function renderResult');
+const notInHistory = statuses.filter(name => !historyTable.STATUS_LABEL[name]);
+check(notInHistory.length === 0, '历史列表那张表一项不缺，少了就是红底 + 英文枚举名：'
+    + (notInHistory.join('、') || '一项不缺'));
+const notInResult = statuses.filter(name => !resultTable.STATUS_TEXT[name]);
+check(notInResult.length === 0, '结果面板那张表一项不缺：'
+    + (notInResult.join('、') || '一项不缺'));
+// 这一档单独再钉一眼：它是「上一次的改动还没处置」那条记录，正是漏过的那一项
+check(!!historyTable.STATUS_LABEL.PENDING_DECISION,
+    'CLI 撞门禁留下的那一条在历史里读得懂：'
+        + JSON.stringify(historyTable.STATUS_LABEL.PENDING_DECISION));
+
 console.log(failed ? '\n失败 ' + failed + ' 项' : '\n全部通过');
 process.exitCode = failed ? 1 : 0;

@@ -178,12 +178,14 @@ class PlanReviewerTest {
     }
 
     @Test
-    @DisplayName("没有缺失项时 complete 为真")
+    @DisplayName("没有缺失项时缺失清单是空的")
     void completeWhenNothingMissing() {
-        assertThat(PlanReview.of("", "flowchart TD\n    A-->B", List.of()).complete()).isTrue();
+        assertThat(PlanReview.of("", "flowchart TD\n    A-->B", List.of()).missing()).isEmpty();
         assertThat(PlanReview.of("", "flowchart TD\n    A-->B",
                 List.of(new PlanReview.MissingItem("x", PlanReview.MissingItem.Severity.OPTIONAL,
-                        "", "", ""))).complete()).isFalse();
+                        "", "", ""))).missing()).singleElement()
+                .satisfies(item -> assertThat(item.severity())
+                        .isEqualTo(PlanReview.MissingItem.Severity.OPTIONAL));
     }
 
     private PlanReviewer reviewer(RecordingLlm llm) {

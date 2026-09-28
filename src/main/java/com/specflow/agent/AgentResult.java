@@ -104,8 +104,4 @@ public record AgentResult(
     public static AgentResult planOutdated(String detail) {
         return new AgentResult(Status.PLAN_OUTDATED, 0, List.of(), List.of(), detail);
     }
-
-    public boolean succeeded() {
-        return status == Status.SUCCESS;
-    }
 }

@@ -62,6 +62,7 @@ import java.util.Objects;
  *                        ├─ 失败且这一步是「中间态」→ 记一笔，继续下一步
  *                        └─ 失败 → 回滚到**本步进入点**，把错误回喂重试（贵）
  *       本步重试耗尽 / 总轮次用尽 → **整个运行回滚到起点**，失败结束
+ *          （失败收场前替这一步补一次 FAILED，见下面那段 finally）
  *   全部走完 → 快照改名 .pending，等人接受或回滚
  * </pre>
  *
@@ -73,6 +74,10 @@ import java.util.Objects;
  * 其余用带出口的 {@link PatchProtocol#INSTRUCTIONS}。「不会再拿到新材料」有两种：
  * 检查过、方案已由人确认，以及用户按了「直接放行」（{@link Resume#force()}）。
  * 两条路共用同一套循环与回滚。
+ *
+ * <p>这一档（代码里的 {@code noNeedContext}）不只是措辞：模型按别的提示词喊出来的
+ * 「信息不足」在这一档下<b>不被认作中止信号</b>，而是当普通回答处理——认了它就是挂起等人
+ * 再点一次「直接继续」，而用户刚刚明确说过没有更多材料了。见 {@code detectNeedContext} 的调用处。
  *
  * <p><b>回滚先于重试</b>是这里最关键的一个决定。它保证每一轮的起点都是
  * 「需求 + 该步开始前的代码」，因此模型每一轮都可以按那份原文写 SEARCH 锚点，
@@ -280,123 +285,147 @@ public final class DevelopmentAgent {
             // 本步内上一轮失败的「指纹」：用来判断再喂回去还有没有意义
             String lastFailureSignature = "";
 
-            while (true) {
-                // 中断只在轮与轮之间生效：正在飞行的模型调用没有干净的取消方式
-                if (listener.cancelled()) {
-                    log.info("收到中断请求，停在下一轮之前（已完成 {} 轮）", rounds);
-                    closeRun(snapshot, split, rounds, "人工中断");
-                    return AgentResult.cancelled(rounds, lastChanges, lastResults);
-                }
-                // 总轮次是最后一道闸（0 = 不设闸，见 VerifySpec.roundBudget）
-                if (budget > 0 && rounds >= budget) {
-                    // 这一轮还没落盘：单步时磁盘仍等于运行起点，分步时前面几步还在
-                    return fail(snapshot, split, rounds, lastChanges, lastResults,
-                            "总轮次已用尽（上限 " + budget + " 轮）。"
-                                    + (split ? "施工单共 " + steps.list().size() + " 步，" : "")
-                                    + "要么调大 verify.max-rounds，要么把这一步拆小一点");
-                }
-
-                rounds++;
-                listener.roundStarted(rounds);
-                String response = llm.complete(messages);
-                messages.add(ChatMessage.assistant(response));
-
-                String need = detectNeedContext(response);
-                if (need != null) {
-                    log.info("模型声明信息不足，本轮不做任何改动：{}", need);
-                    // 挂起等人的前提是「磁盘上没我们的东西」：分步时前面几步已经落盘，
-                    // 半成品加一个挂起，续跑的那次谁也说不清该从哪一步接
-                    closeRun(snapshot, split, rounds, "模型声明信息不足");
-                    return AgentResult.needsContext(rounds, split
-                            ? need + System.lineSeparator()
-                                    + "（第 " + step.index() + " 步说要补料，已把前面几步的改动一并撤回："
-                                    + "挂起期间磁盘必须是干净的）"
-                            : need);
-                }
-
-                PatchPlan plan;
-                try {
-                    plan = plan(spec, response);
-                } catch (PatchConflictException e) {
-                    listener.planRejected(rounds, e);
-                    if (conflictRetries >= MAX_CONFLICT_RETRIES) {
-                        log.warn("补丁冲突重试次数已用尽：{}", e.getMessage());
-                        // 这一轮一个字节都没写：单步时磁盘仍等于运行起点，分步时前面几步还在
+            // 这一步报过终态没有。成功和中间态都会报，其他收场（重试耗尽、同错两轮、
+            // 轮次用尽、人工中断、模型喊缺料、环境问题、落盘炸了）都是从循环里直接
+            // return / throw 出去的——少补这一笔，界面上的步骤条就永远停在「进行中」，
+            // 留档里也找不到失败的那一步。放在 finally 里，是为了让「失败收场」这条路
+            // 只有一个出口、不会漏掉其中某一条
+            boolean settled = false;
+            try {
+                while (true) {
+                    // 中断只在轮与轮之间生效：正在飞行的模型调用没有干净的取消方式
+                    if (listener.cancelled()) {
+                        log.info("收到中断请求，停在下一轮之前（已完成 {} 轮）", rounds);
+                        closeRun(snapshot, split, rounds, "人工中断");
+                        return AgentResult.cancelled(rounds, lastChanges, lastResults);
+                    }
+                    // 总轮次是最后一道闸（0 = 不设闸，见 VerifySpec.roundBudget）
+                    if (budget > 0 && rounds >= budget) {
+                        // 这一轮还没落盘：单步时磁盘仍等于运行起点，分步时前面几步还在
                         return fail(snapshot, split, rounds, lastChanges, lastResults,
-                                "补丁始终无法应用：" + e.getMessage());
+                                "总轮次已用尽（上限 " + budget + " 轮）。"
+                                        + (split ? "施工单共 " + steps.list().size() + " 步，" : "")
+                                        + "要么调大 verify.max-rounds，要么把这一步拆小一点");
                     }
-                    conflictRetries++;
-                    log.warn("补丁冲突，第 {} 次重试：{}", conflictRetries, e.getMessage());
-                    messages.add(ChatMessage.user(RepairFeedback.forConflict(e)));
-                    continue;
-                }
 
-                Applied applied;
-                try {
-                    applied = applyAndVerify(spec, plan, rounds);
-                } catch (RuntimeException e) {
-                    // 落盘写到一半失败：多文件写入不是原子的，前几个文件可能已经变了。
-                    // 这种时候工作区是个半成品，只能整个撤回，没有「修一下继续」这回事
-                    closeRun(snapshot, true, rounds, "落盘失败");
-                    throw e;
-                }
-                lastChanges = applied.changes();
-                lastResults = applied.results();
+                    rounds++;
+                    listener.roundStarted(rounds);
+                    String response = llm.complete(messages);
+                    messages.add(ChatMessage.assistant(response));
 
-                VerificationResult failure = firstFailure(applied.results());
-                if (failure == null) {
-                    // 「能过就当比预期好记一笔」在 ProgressMessages.stepFinished 里说
-                    lastState = StepState.SUCCESS;
-                    if (split) {
-                        listener.stepFinished(step, lastState);
+                    String need = detectNeedContext(response);
+                    if (need != null && noNeedContext) {
+                        // 这一档不留「缺料就认输」这个出口：模型还是会按它见过的别的提示词
+                        // 喊一句缺料，认了它就是挂起等人再点一次「直接继续」——而用户刚刚
+                        // 说过没有更多东西了。所以把它当普通回答处理：补丁解析会回喂
+                        // 「没有任何补丁块」，它要么改口给出补丁，要么在重试上限上用失败收场
+                        log.info("模型又要求补充信息，但这一次不会再有新材料（已确认的方案或直接放行）："
+                                + "按普通回答处理，不再挂起");
+                        need = null;
                     }
-                    continue nextStep;
-                }
-
-                // 环境/依赖问题：再给它几轮也修不好——它只会把用到那个包的地方删掉，
-                // 于是编译过了、需求没实现。这种「假绿灯」比直接失败更糟，所以立刻停。
-                if (failure.environmental()) {
-                    log.warn("校验失败且不是改代码能解决的：{}", failure.output());
-                    // 这一轮的改动还在盘上（还没走到回滚那一步），所以必须撤
-                    closeRun(snapshot, true, rounds, "校验失败且不是改代码能解决的");
-                    return AgentResult.needsEnvironment(rounds, lastChanges, lastResults,
-                            CompileFailure.explain(failure.output()) + System.lineSeparator()
-                                    + "磁盘已回滚到本次运行前。");
-                }
-
-                // 中间态：这一步做完整个项目本来就编不过，这是施工单上写明了的约定。
-                // 不重试、不阻塞——重试也没用，它缺的是下一步的代码，不是这一次的修补
-                if (step.intermediate()) {
-                    log.info("第 {} 步声明为中间态，编译未通过，按约定继续下一步", step.index());
-                    lastState = StepState.INTERMEDIATE;
-                    if (split) {
-                        listener.stepFinished(step, lastState);
+                    if (need != null) {
+                        log.info("模型声明信息不足，本轮不做任何改动：{}", need);
+                        // 挂起等人的前提是「磁盘上没我们的东西」：分步时前面几步已经落盘，
+                        // 半成品加一个挂起，续跑的那次谁也说不清该从哪一步接
+                        closeRun(snapshot, split, rounds, "模型声明信息不足");
+                        return AgentResult.needsContext(rounds, split
+                                ? need + System.lineSeparator()
+                                        + "（第 " + step.index() + " 步说要补料，已把前面几步的改动一并撤回："
+                                        + "挂起期间磁盘必须是干净的）"
+                                : need);
                     }
-                    continue nextStep;
-                }
 
-                // 同一个错误连着出现两轮：再喂回去也是白喂，停得干脆一点
-                String signature = signatureOf(failure);
-                if (signature.equals(lastFailureSignature)) {
-                    log.warn("连续两轮同一个错误，本步停止重试：{}", signature);
-                    // 同样：本轮的改动还在盘上
-                    return fail(snapshot, true, rounds, lastChanges, lastResults,
-                            "第 " + step.index() + " 步连续两轮都卡在同一个错误上，再重试也是白试："
-                                    + System.lineSeparator() + "  " + signature);
+                    PatchPlan plan;
+                    try {
+                        plan = plan(spec, response);
+                    } catch (PatchConflictException e) {
+                        listener.planRejected(rounds, e);
+                        if (conflictRetries >= MAX_CONFLICT_RETRIES) {
+                            log.warn("补丁冲突重试次数已用尽：{}", e.getMessage());
+                            // 这一轮一个字节都没写：单步时磁盘仍等于运行起点，分步时前面几步还在
+                            return fail(snapshot, split, rounds, lastChanges, lastResults,
+                                    "补丁始终无法应用：" + e.getMessage());
+                        }
+                        conflictRetries++;
+                        log.warn("补丁冲突，第 {} 次重试：{}", conflictRetries, e.getMessage());
+                        messages.add(ChatMessage.user(RepairFeedback.forConflict(e)));
+                        continue;
+                    }
+
+                    Applied applied;
+                    try {
+                        applied = applyAndVerify(spec, plan, rounds);
+                    } catch (RuntimeException e) {
+                        // 落盘写到一半失败：多文件写入不是原子的，前几个文件可能已经变了。
+                        // 这种时候工作区是个半成品，只能整个撤回，没有「修一下继续」这回事
+                        closeRun(snapshot, true, rounds, "落盘失败");
+                        throw e;
+                    }
+                    lastChanges = applied.changes();
+                    lastResults = applied.results();
+
+                    VerificationResult failure = firstFailure(applied.results());
+                    if (failure == null) {
+                        // 「能过就当比预期好记一笔」在 ProgressMessages.stepFinished 里说
+                        lastState = StepState.SUCCESS;
+                        settled = true;
+                        if (split) {
+                            listener.stepFinished(step, lastState);
+                        }
+                        continue nextStep;
+                    }
+
+                    // 环境/依赖问题：再给它几轮也修不好——它只会把用到那个包的地方删掉，
+                    // 于是编译过了、需求没实现。这种「假绿灯」比直接失败更糟，所以立刻停。
+                    if (failure.environmental()) {
+                        log.warn("校验失败且不是改代码能解决的：{}", failure.output());
+                        // 这一轮的改动还在盘上（还没走到回滚那一步），所以必须撤
+                        closeRun(snapshot, true, rounds, "校验失败且不是改代码能解决的");
+                        return AgentResult.needsEnvironment(rounds, lastChanges, lastResults,
+                                CompileFailure.explain(failure.output()) + System.lineSeparator()
+                                        + "磁盘已回滚到本次运行前。");
+                    }
+
+                    // 中间态：这一步做完整个项目本来就编不过，这是施工单上写明了的约定。
+                    // 不重试、不阻塞——重试也没用，它缺的是下一步的代码，不是这一次的修补
+                    if (step.intermediate()) {
+                        log.info("第 {} 步声明为中间态，编译未通过，按约定继续下一步", step.index());
+                        lastState = StepState.INTERMEDIATE;
+                        settled = true;
+                        if (split) {
+                            listener.stepFinished(step, lastState);
+                        }
+                        continue nextStep;
+                    }
+
+                    // 同一个错误连着出现两轮：再喂回去也是白喂，停得干脆一点
+                    String signature = signatureOf(failure);
+                    if (signature.equals(lastFailureSignature)) {
+                        log.warn("连续两轮同一个错误，本步停止重试：{}", signature);
+                        // 同样：本轮的改动还在盘上
+                        return fail(snapshot, true, rounds, lastChanges, lastResults,
+                                "第 " + step.index() + " 步连续两轮都卡在同一个错误上，再重试也是白试："
+                                        + System.lineSeparator() + "  " + signature);
+                    }
+                    lastFailureSignature = signature;
+                    if (verificationRetries >= spec.verify().maxRetry()) {
+                        log.warn("第 {} 步的校验重试次数已用尽：{}", step.index(), failure.verifier());
+                        return fail(snapshot, true, rounds, lastChanges, lastResults,
+                                "第 " + step.index() + " 步的校验未通过且重试次数已用尽："
+                                        + RepairFeedback.summarize(applied.results()));
+                    }
+                    verificationRetries++;
+                    log.info("本步校验未通过，第 {} 次重试：{}", verificationRetries, failure.verifier());
+                    // 回滚到本步的进入点再重试：改动留在盘上的话，
+                    // 下一轮的锚点必然对不上（它看到的是 run 开始时那份上下文）
+                    restoreStep(entry, step, rounds, split, "校验未通过");
+                    messages.add(ChatMessage.user(RepairFeedback.forVerification(failure)));
                 }
-                lastFailureSignature = signature;
-                if (verificationRetries >= spec.verify().maxRetry()) {
-                    log.warn("第 {} 步的校验重试次数已用尽：{}", step.index(), failure.verifier());
-                    return fail(snapshot, true, rounds, lastChanges, lastResults,
-                            "第 " + step.index() + " 步的校验未通过且重试次数已用尽："
-                                    + RepairFeedback.summarize(applied.results()));
+            } finally {
+                if (split && !settled) {
+                    log.info("第 {} 步没有走完就收场了，报一次失败", step.index());
+                    listener.stepFinished(step, StepState.FAILED);
                 }
-                verificationRetries++;
-                log.info("本步校验未通过，第 {} 次重试：{}", verificationRetries, failure.verifier());
-                // 回滚到本步的进入点再重试：改动留在盘上的话，
-                // 下一轮的锚点必然对不上（它看到的是 run 开始时那份上下文）
-                restoreStep(entry, step, rounds, split, "校验未通过");
-                messages.add(ChatMessage.user(RepairFeedback.forVerification(failure)));
             }
         }
 

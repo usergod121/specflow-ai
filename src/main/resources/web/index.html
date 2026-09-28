@@ -3978,6 +3978,9 @@ function applyRunRequest(data) {
 // ---------- 运行历史 ----------
 // 失败的那几次尤其值得翻：代码已经回滚了，磁盘上看不出模型做了什么，
 // 那份「它改了什么、为什么停」只存在于这里。
+// 这张表必须盖住 AgentResult.Status 的**每一项**：少一项的表现是红底 + 英文枚举名
+// （CLI 撞门禁留下的 PENDING_DECISION 就是这么露出来的），而那种样子看起来像
+// 「系统坏了」，不像一句能读懂的话。web.test.js 里有一条照着 Java 枚举核这张表的断言
 const STATUS_LABEL = {
   SUCCESS: ['ok', '成功'],
   SUCCESS_UNVERIFIED: ['mid', '未校验'],
@@ -3985,6 +3988,11 @@ const STATUS_LABEL = {
   NEEDS_ENVIRONMENT: ['bad', '待你处理环境'],
   CANCELLED: ['mid', '中断'],
   NEEDS_CONTEXT: ['mid', '等补充信息：模型停下来问你缺什么，磁盘未动'],
+  // 不是失败：磁盘上那份改动是好的，只是还没被人处置，所以这一次什么都没做
+  PENDING_DECISION: ['mid', '上一次的改动还没处置，本次没有动过文件'],
+  // 这一档进不了历史：它刻意不落档（见 RunRecorder.finished——留档会把「挂着等人补料」
+  // 的那条挤下去，用户就再也接不上了），只有结果面板上见得到它。
+  // 仍然留一行，是为了这张表与 AgentResult.Status 一项不差（见上面那段）
   PLAN_OUTDATED: ['bad', '施工单对不上目标清单，没开工'],
 };
 
@@ -5148,6 +5156,9 @@ async function resolveSuspended(act) {
 }
 
 // ---------- 结果 ----------
+// 和运行历史那张表同样的规矩：AgentResult.Status 每一项都要有说法，
+// 少一项就是红底 + 英文枚举名。差别只在这张表看的是**这一次**的结果，
+// 所以「不落档」的 PLAN_OUTDATED 在这里是见得到的
 const STATUS_TEXT = {
   // 「成功」说的是哪一步通过：编译校验通过 ≠ 需求做完了（验收标准没人管，那是另一回事）。
   // 把话说准，用户才不会把「编译过了」读成「活干完了」。

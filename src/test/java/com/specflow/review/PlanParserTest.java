@@ -34,7 +34,6 @@ class PlanParserTest {
         assertThat(review.summary()).contains("复用已有的 Mapper 写法");
         assertThat(review.flowchart()).startsWith("flowchart TD").contains("B{参数是否合法}");
         assertThat(review.missing()).isEmpty();
-        assertThat(review.complete()).isTrue();
     }
 
     @Test
@@ -61,7 +60,6 @@ class PlanParserTest {
         assertThat(first.fallback()).contains("三列");
         assertThat(review.missing().get(1).severity())
                 .isEqualTo(PlanReview.MissingItem.Severity.QUALITY);
-        assertThat(review.complete()).isFalse();
         assertThat(review.blocking()).isTrue();
     }
 
@@ -119,7 +117,6 @@ class PlanParserTest {
                 """);
 
         assertThat(review.missing()).isEmpty();
-        assertThat(review.complete()).isTrue();
         assertThat(review.blocking()).isFalse();
     }
 

@@ -172,11 +172,6 @@ public record PlanReview(
                 .toList();
     }
 
-    /** 模型认为信息已经足够，可以直接开发。 */
-    public boolean complete() {
-        return missing.isEmpty();
-    }
-
     /** 有没有「不补上就只能靠它猜」的项。界面据此决定要不要拦人。 */
     public boolean blocking() {
         return missing.stream().anyMatch(MissingItem::blocking);

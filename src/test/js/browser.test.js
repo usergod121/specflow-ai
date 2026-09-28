@@ -2701,6 +2701,49 @@ async function main() {
     check((await noticeText()).includes('这份施工单有 1 处执行不了'),
         '拦下来的话说清是施工单的问题：' + JSON.stringify(await noticeText()));
 
+    // ---------- 链 24：真跑一次会失败的分步运行 ----------
+    // 前面几条验的都是「界面拿到这一块会不会拦人」，事件流是桩里手写的——而桩里那份
+    // 步态（SUCCESS / INTERMEDIATE / FAILED）是<b>手工伪造</b>的，正好把「引擎压根不发
+    // FAILED」这件事盖住了：分步失败时步骤条会一直停在「进行中」，而两边的测试都还是绿的。
+    //
+    // 这一链把那半个环接上：**一个桩都不装**，点「我知道，仍然继续」就是一次真运行。
+    // 模型是本机假服务，它回的是一份没有 SEARCH 块的检查结果——引擎判「补丁无法应用」，
+    // 重试耗尽后整轮回滚、失败收场。于是这里能验到：失败那一刻步骤条画成「失败」，
+    // 而且那句话是从引擎的事件里来的（时间线上有它），留档里也记着失败的是哪一步。
+    console.log('\n链 24　真跑一次失败的分步运行：失败落在哪一步：');
+
+    // 桩撤掉：这一链要的是真后端
+    await evaluate(`(() => { window.fetch = window.__realFetch; state.forced = false; return 'ok'; })()`);
+    await evaluate(`document.querySelector('#plan .steps-audit .force-run').click(); 'ok'`);
+    await waitFor(`state.running === false && document.querySelector('#result .status') !== null`,
+        '这一次真运行跑到收场', 30000);
+
+    const chips24 = await evaluate(`[...document.querySelectorAll('#plan .step .step-state')]
+        .map(chip => chip.textContent).join(',')`);
+    check(chips24 === '失败,未做',
+        '失败的那一步画成「失败」，没轮到的那一步还是「未做」（引擎不发 FAILED 时'
+            + '第 1 步会停在「进行中」）：' + chips24);
+    check(await evaluate(`document.querySelector('#plan .step[data-step="1"]').dataset.state`)
+            === 'failed', '整行也跟着走，不只是那个小标签');
+    check(await evaluate(`[...document.querySelectorAll('#log .line')]
+        .some(line => line.textContent.includes('先给 Foo 加一个按编号查询的方法：失败'))`),
+        '那句话来自引擎的事件（时间线上有它），不是界面自己按结果猜的：'
+            + JSON.stringify(await evaluate(`[...document.querySelectorAll('#log .line')]
+                .map(line => line.textContent).filter(text => text.includes('失败'))`)));
+
+    // 留档那一侧：事后翻记录的人只有它
+    const runs24 = await (await fetch(BASE + 'api/runs')).json();
+    check(runs24.runs.length === 1 && runs24.runs[0].status === 'FAILED',
+        '这一次在留档里就是失败的：' + JSON.stringify(runs24.runs.map(run => run.status)));
+    const detail24 = await (await fetch(BASE + 'api/run-detail?id='
+        + encodeURIComponent(runs24.runs[0].id))).json();
+    check(JSON.stringify(detail24.steps.map(step => step.index + ':' + step.state)) === '["1:FAILED"]',
+        '留档里记着失败的是第 1 步（原先这一步在留档里压根不存在）：'
+            + JSON.stringify(detail24.steps.map(step => step.index + ':' + step.state)));
+    check(await evaluate(`document.getElementById('result').textContent.includes('失败')`),
+        '结果面板也说这是失败：'
+            + JSON.stringify(await evaluate(`document.getElementById('result').textContent`)));
+
     // 换回原项目：这一链改的是服务的「当前项目」，留着它，后面（以及下一次）就都在
     // 那个临时目录里跑了
     await fetch(BASE + 'api/open', {

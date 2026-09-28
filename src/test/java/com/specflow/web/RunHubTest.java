@@ -125,8 +125,6 @@ class RunHubTest {
 
         RunEvent event = hub.view(0).events().get(0);
         assertThat(event.type()).isEqualTo(RunEvent.TYPE_PLAN);
-        assertThat(event.isPlan()).isTrue();
-        assertThat(event.isResult()).isFalse();
         assertThat(event.payload()).isInstanceOf(Map.class);
         assertThat(((Map<?, ?>) event.payload()).get("source")).isEqualTo("GENERATED");
     }
@@ -139,7 +137,6 @@ class RunHubTest {
 
         RunEvent event = hub.view(0).events().get(0);
         assertThat(event.type()).isEqualTo(RunEvent.TYPE_RESULT);
-        assertThat(event.isResult()).isTrue();
-        assertThat(event.isPlan()).isFalse();
+        assertThat(event.payload()).isInstanceOf(Map.class);
     }
 }

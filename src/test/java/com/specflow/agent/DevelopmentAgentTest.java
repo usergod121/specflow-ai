@@ -223,7 +223,7 @@ class DevelopmentAgentTest {
         AgentResult result = agent(llm, new ScriptedVerifier(passed()), listener)
                 .run(TestSpecs.spec(List.of("Foo.java")));
 
-        assertThat(result.succeeded()).isTrue();
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
         assertThat(listener.events).containsExactly(
                 // 施工单从哪来会先说一声，之后才是逐轮的事
                 "plan:SINGLE:1",
@@ -273,6 +273,9 @@ class DevelopmentAgentTest {
         assertThat(result.attempts()).isEqualTo(1);
         assertThat(read("Foo.java")).isEqualTo(ORIGINAL);
         assertThat(llm.patches()).hasSize(1);
+        // 单步执行压根没有「第几步」这回事：它的步态由录制器按运行结果补
+        // （见 RunRecorder.singleStepState），引擎一个步级事件都不该发
+        assertThat(listener.events).as("单步不发步级事件，中断也不例外").isEmpty();
     }
 
     @Test
@@ -506,8 +509,9 @@ class DevelopmentAgentTest {
         ScriptedLlm llm = new ScriptedLlm(
                 patch("int a = 1;", "int a = 2;"),
                 patch("int a = 2;", "int a = 3;"));
+        RecordingListener listener = new RecordingListener();
 
-        AgentResult result = agent(llm, new ScriptedVerifier(passed(), failed())).run(
+        AgentResult result = agent(llm, new ScriptedVerifier(passed(), failed()), listener).run(
                 TestSpecs.spec(List.of("Foo.java"),
                         new VerifySpec(true, null, 0, VerifySpec.AUTO_ROUNDS)),
                 planWithSteps(step(1, "第一步", false, "Foo.java"),
@@ -518,6 +522,146 @@ class DevelopmentAgentTest {
         assertThat(read("Foo.java")).as("第一步已经做成的也要撤掉——半成品比全撤更难收拾")
                 .isEqualTo(ORIGINAL);
         assertThat(snapshotNames()).isEmpty();
+        // 失败的那一步必须有自己的终态。不发的话界面上的步骤条永远停在「进行中」，
+        // 留档里也找不到它是第几步倒下的——而「停在哪一步」正是用户最需要看见的事
+        assertThat(listener.events).endsWith("stepdone:2:FAILED", "finished:FAILED");
+    }
+
+    /**
+     * 分步时失败收场，<b>正在跑的那一步</b>要报失败。
+     *
+     * <p>引擎原先只在成功和中间态时报终态，其余收场都直接返回了：步骤条于是永远停在
+     * 「进行中」，留档里也没有失败的那一步。这条把五种收场各钉一遍——它们走的是不同的
+     * return 语句，只钉一种的话，另外四种照样能漏。
+     */
+    @Test
+    @DisplayName("分步时人工中断：正在跑的那一步报失败，不是停在「进行中」")
+    void marksTheStepFailedWhenCancelledMidStep() {
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"));
+        CancelAfterRoundListener listener = new CancelAfterRoundListener();
+
+        AgentResult result = agent(llm, new ScriptedVerifier(failed()), listener).run(
+                TestSpecs.spec(List.of("Foo.java"), new VerifySpec(true, null, 6, VerifySpec.AUTO_ROUNDS)),
+                planWithSteps(step(1, "第一步", false, "Foo.java"),
+                        step(2, "第二步", false, "Foo.java")));
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.CANCELLED);
+        assertThat(result.attempts()).isEqualTo(1);
+        assertThat(read("Foo.java")).as("已经做完的第一步也要撤掉").isEqualTo(ORIGINAL);
+        assertThat(listener.events).as("第 2 步一次都没开始，它不该出现在事件里")
+                .containsExactly("step:1", "stepdone:1:FAILED");
+    }
+
+    @Test
+    @DisplayName("分步时模型喊缺料：正在跑的那一步报失败，前面几步的改动一并撤回")
+    void marksTheStepFailedWhenTheModelAsksForContext() {
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                "NEED_CONTEXT: 需要 src/main/java/com/demo/Bar.java 的现有写法")
+                .answeringStepsWith(stepsAnswer(2, "第一步", "第二步"));
+        RecordingListener listener = new RecordingListener();
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()), listener)
+                .run(TestSpecs.spec(List.of("Foo.java")));
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.NEEDS_CONTEXT);
+        assertThat(result.detail()).contains("已把前面几步的改动一并撤回");
+        assertThat(read("Foo.java")).isEqualTo(ORIGINAL);
+        assertThat(listener.events).containsExactly(
+                "plan:GENERATED:2",
+                "step:1", "round:1", "applied:1", "verified:1", "stepdone:1:SUCCESS",
+                "step:2", "round:2", "restored:2", "stepdone:2:FAILED",
+                "finished:NEEDS_CONTEXT");
+    }
+
+    /**
+     * 失败的那一步在留档里也要在。
+     *
+     * <p>界面上的步骤条靠事件，事后翻记录的人只有留档。少了这一条，
+     * 「这次停在第几步、它是怎么倒下的」在历史详情里就完全看不出来。
+     */
+    @Test
+    @DisplayName("分步失败也留档：失败的那一步带着它的状态和轮次记下来")
+    void recordsTheFailedStepInTheRunHistory() throws IOException {
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"));
+        Spec spec = TestSpecs.spec(List.of("Foo.java"), new VerifySpec(true, null, 0, VerifySpec.AUTO_ROUNDS));
+        PlanReview approved = planWithSteps(step(1, "第一步", false, "Foo.java"),
+                step(2, "第二步", false, "Foo.java"));
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+
+        new DevelopmentAgent(root, ProjectConfig.DEFAULT, TemplateRegistry.empty(), llm,
+                List.of(new ScriptedVerifier(passed(), failed())),
+                RunRecorder.start(store, spec, approved, AgentListener.NOOP)).run(spec, approved);
+
+        RunRecord record = store.load(store.list().get(0).id());
+        assertThat(record.steps()).as("成功一步、失败一步，两步都在").hasSize(2);
+        assertThat(record.steps().get(0).state()).isEqualTo(StepState.SUCCESS.name());
+        assertThat(record.steps().get(1)).satisfies(failed -> {
+            assertThat(failed.index()).isEqualTo(2);
+            assertThat(failed.state()).as("留档里要看得见它是哪一步倒下的")
+                    .isEqualTo(StepState.FAILED.name());
+            assertThat(failed.rounds()).isEqualTo(1);
+        });
+    }
+
+    /**
+     * 已确认方案那一档不认模型喊的「缺料」。
+     *
+     * <p>它按普通回答处理：补丁解析回喂一句「没有任何补丁块」，它要么改口给出补丁，
+     * 要么在重试上限上用失败收场。原先认了它就会挂起等人再点一次「直接继续」——
+     * 而用户刚刚明确说过没有更多材料了。两条路都不再原地打转。
+     */
+    @Test
+    @DisplayName("方案已确认时不认「缺料」这个出口：回喂之后接着做，不挂起")
+    void ignoresTheNeedContextExitWhenThePlanIsConfirmed() {
+        ScriptedLlm llm = new ScriptedLlm(
+                "NEED_CONTEXT: 我还需要 src/main/java/com/demo/Bar.java",
+                patch("int a = 1;", "int a = 2;"),
+                patch("int a = 2;", "int a = 3;"));
+        RecordingListener listener = new RecordingListener();
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()), listener).run(
+                TestSpecs.spec(List.of("Foo.java")),
+                planWithSteps(step(1, "第一步", false, "Foo.java"),
+                        step(2, "第二步", false, "Foo.java")));
+
+        assertThat(result.status()).as("不挂起：用户刚说过没有更多材料了")
+                .isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(result.attempts()).as("那一轮算一轮，不是白跑").isEqualTo(3);
+        assertThat(listener.events).as("没有挂起这回事")
+                .doesNotContain("finished:NEEDS_CONTEXT", "stepdone:1:FAILED");
+        List<ChatMessage> afterIgnoring = llm.patches().get(1);
+        assertThat(afterIgnoring.get(afterIgnoring.size() - 1).content())
+                .as("它那句话被当成普通回答：回喂的是补丁协议那一条")
+                .contains("补丁无法应用").contains("没有任何改动");
+        assertThat(read("Foo.java")).contains("int a = 3;");
+    }
+
+    /**
+     * 与上一条同一档、另一条入口：用户按了「直接放行」的续跑同样不认那个出口。
+     *
+     * <p>两条入口（已确认的方案 / force 续跑）共用一个 {@code noNeedContext}，
+     * 分开钉是因为提示词那两档也各有各的测法——只测一条，另一条断了不会有任何东西变红。
+     */
+    @Test
+    @DisplayName("「直接放行」的续跑也不认那个出口：照样往下做")
+    void ignoresTheNeedContextExitWhenResumedWithForce() {
+        ScriptedLlm llm = new ScriptedLlm(
+                "NEED_CONTEXT: 我还是缺 src/main/java/com/demo/Bar.java",
+                patch("int a = 1;", "int a = 2;"));
+        RecordingListener listener = new RecordingListener();
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()), listener)
+                .resume(TestSpecs.spec(List.of("Foo.java")), null,
+                        "NEED_CONTEXT: 缺东西", true, List.of());
+
+        assertThat(result.status()).as("不因为模型再喊一次就挂起")
+                .isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(listener.events).doesNotContain("finished:NEEDS_CONTEXT");
     }
 
     @Test
@@ -593,8 +737,9 @@ class DevelopmentAgentTest {
         ScriptedVerifier verifier = new ScriptedVerifier(
                 VerificationResult.failed("脚本校验", "javac", "编译错误：找不到符号 a"),
                 VerificationResult.failed("脚本校验", "javac", "编译错误：找不到符号 b"));
+        RecordingListener listener = new RecordingListener();
 
-        AgentResult result = agent(llm, verifier).run(
+        AgentResult result = agent(llm, verifier, listener).run(
                 TestSpecs.spec(List.of("Foo.java"), new VerifySpec(true, null, 6, 2)),
                 planWithSteps(step(1, "第一步", false, "Foo.java"),
                         step(2, "第二步", false, "Foo.java")));
@@ -603,6 +748,9 @@ class DevelopmentAgentTest {
         assertThat(result.attempts()).isEqualTo(2);
         assertThat(result.detail()).contains("总轮次已用尽").contains("上限 2 轮");
         assertThat(read("Foo.java")).isEqualTo(ORIGINAL);
+        // 两轮都花在第 1 步里，闸门是在它的下一轮之前落下的——那一步因此得报失败
+        assertThat(listener.events).contains("stepback:1")
+                .endsWith("stepdone:1:FAILED", "finished:FAILED");
     }
 
     @Test
@@ -1254,14 +1402,25 @@ class DevelopmentAgentTest {
         }
     }
 
-    /** 第 1 轮校验结束后叫停，用来验证中断只在轮与轮之间生效。 */
+    /** 第 1 轮校验结束后叫停，用来验证中断只在轮与轮之间生效。顺带记下它看到的步级事件。 */
     private static final class CancelAfterRoundListener implements AgentListener {
 
+        private final List<String> events = new ArrayList<>();
         private boolean cancelled;
 
         @Override
         public boolean cancelled() {
             return cancelled;
+        }
+
+        @Override
+        public void stepStarted(PlanStep step) {
+            events.add("step:" + step.index());
+        }
+
+        @Override
+        public void stepFinished(PlanStep step, StepState state) {
+            events.add("stepdone:" + step.index() + ":" + state);
         }
 
         @Override

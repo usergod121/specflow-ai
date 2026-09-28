@@ -55,8 +55,13 @@ public final class RunRecorder implements AgentListener {
      *
      * <p>它和 {@link #steps} 不是一回事：那个是跑完之后按步攒的账（只记跑到了的步子），
      * 这个是开工时引擎报上来的那份图。留档里必须有它，续跑才不必为同一份单子再花一次调用。
+     *
+     * <p>没定过施工单时它是 {@code null}——那一次运行里引擎压根没报过单子（开工就被拒，
+     * 或者连单步那一次都没走到），留档里于是<b>没有这一项</b>，与「老记录」同形；
+     * 而不是写一个空数组，那会变成同一件事的两种说法。读的那一侧按「有没有」判
+     * （见 {@code DevelopmentAgent.Resume}），两条路都吃得下。
      */
-    private List<PlanStep> planSteps = List.of();
+    private List<PlanStep> planSteps;
 
     /**
      * 施工单上那一步——单步执行时的全部内容。
@@ -196,7 +201,9 @@ public final class RunRecorder implements AgentListener {
         // 判据是 RunStore.suspended() 只看**最新那一条**记录：留档就会把「挂着等人补料」
         // 的那条挤下去——用户刚被告知「把文件加回清单再来一次」，那时界面上已经找不到
         // 可接着跑的那次了。而这次拒绝本来也没有可复盘的东西：没调模型、没碰磁盘、
-        // 连施工单都没见过（见 DevelopmentAgent.staleSchedule）
+        // 连施工单都没见过（见 DevelopmentAgent.staleSchedule）。
+        // 代价是这一个状态在**运行历史里永远见不到**——它只出现在这次运行的结果面板上。
+        // 要改这个取舍，得先想清楚 suspended() 怎么办
         if (result.status() != AgentResult.Status.PLAN_OUTDATED) {
             persist(result);
         }

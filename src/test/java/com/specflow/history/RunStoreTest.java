@@ -601,6 +601,56 @@ class RunStoreTest {
         assertThat(record.steps()).isEmpty();
     }
 
+    /**
+     * 「施工单过期」那次拒绝不留档，而且<b>不能</b>把挂着等人补料的那条挤下去。
+     *
+     * <p>判「有没有东西挂着」看的是最新那一条记录（{@code RunStore.suspended}），
+     * 而拒绝开工时用户刚被告知「把文件加回清单再来一次」——那一次挂起的运行要是被顶掉，
+     * 他连「接着跑」都点不了了。所以这一个状态在运行历史里永远见不到；
+     * 界面那张历史表仍为它留了一行，是为了表与 {@code AgentResult.Status} 一项不差。
+     */
+    @Test
+    @DisplayName("施工单过期的那次拒绝不留档：挂着等人补料的那条还在原位")
+    void doesNotRecordTheRefusedPlanOutdatedRun() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        // 手工造一条「挂着等人补料」的记录：这样它的 id 与下面那个录制器的时间戳必然不同，
+        // 「被顶掉」和「压根没写」才分得开
+        store.save(record("20260101-000000-001", "NEEDS_CONTEXT",
+                "NEED_CONTEXT: 我要 OrderMapper.java"));
+        RunRecorder refused = RunRecorder.start(store, TestSpecs.spec(List.of("a.txt")),
+                null, AgentListener.NOOP);
+
+        refused.finished(AgentResult.planOutdated("上一次留下的施工单对不上现在的目标文件清单"));
+
+        assertThat(store.list()).as("拒绝那一次不落档：没调模型、没碰磁盘，也没什么可复盘")
+                .hasSize(1);
+        assertThat(store.suspended()).as("挂着的那次还在，用户还能接着跑").isPresent();
+    }
+
+    /**
+     * 没定过施工单的运行：留档里<b>没有</b> {@code planSteps} 这一项，与「老记录」同形。
+     *
+     * <p>写一个空数组的话，「没有施工单」就有了两种说法（缺这一项 / 空数组），
+     * 读的那一侧（续跑）得多认一种；而它旁边那一栏 {@code stepsSource} 本来就是 null。
+     */
+    @Test
+    @DisplayName("没定过施工单时留档里没有这一项：与老记录同形，而不是空数组")
+    void writesNoPlanStepsWhenTheScheduleNeverArrived() throws IOException {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("a.txt")),
+                null, AgentListener.NOOP);
+        // 开工就被拦下：一次模型调用都没发生，施工单也就没定过
+        recorder.finished(AgentResult.pendingDecision("上一次的改动还没处置"));
+
+        RunRecord record = store.load(store.list().get(0).id());
+
+        assertThat(record.planSteps()).isNull();
+        assertThat(record.stepsSource()).as("两栏同形：没有就是没有").isNull();
+        assertThat(Files.readString(store.directory().resolve(record.id() + ".json")))
+                .as("落盘的那份里压根没有这一栏（写个 [] 就是同一件事的第二种说法）")
+                .doesNotContain("planSteps");
+    }
+
     private static PlanStep step(int index, String goal, boolean intermediate) {
         return new PlanStep(index, goal, List.of("Foo.java"), "能编译", intermediate);
     }

@@ -276,10 +276,6 @@ public final class WorkspaceSnapshot {
         }
     }
 
-    public String id() {
-        return id;
-    }
-
     public Path directory() {
         return directory;
     }
