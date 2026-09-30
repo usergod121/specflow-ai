@@ -442,6 +442,15 @@ public final class DevelopmentAgent {
 
         // 编译过了不等于做对了：检查阶段给过用例清单，就把它们真的跑一遍（十五.2）。
         // 这一步还没 markPending，所以「环境问题要立刻停、回滚」在这里是一条干净的路
+        //
+        // 进测试之前再问一次停止：这一段最长五分钟，进去就停不下来（见 TestScriptVerifier
+        // 的时限与 AgentListener.testsStarted）。刚按过停止却还要等五分钟，
+        // 正是这一次检查要避免的事——中断的粒度就到这里为止，再细就得真杀进程树了
+        if (approved != null && !approved.cases().isEmpty() && listener.cancelled()) {
+            log.info("收到中断请求，测试阶段没开始就停下");
+            closeRun(snapshot, true, rounds, "人工中断");
+            return AgentResult.cancelled(rounds, lastChanges, lastResults);
+        }
         TestOutcome tests = testPhase(spec, approved);
         if (tests != null && tests.environmental()) {
             log.warn("测试跑不起来（环境问题）：{}", tests.detail());
@@ -480,6 +489,9 @@ public final class DevelopmentAgent {
         if (approved == null || approved.cases().isEmpty()) {
             return null;
         }
+        // 先说起点再动手：这一段里界面拿不到任何进度（只有一次模型调用加一次脚本执行），
+        // 「开始了、大概要多久、中途停不下来」这三件事只能由引擎在这一刻告诉界面
+        listener.testsStarted(approved.cases().size());
         TestOutcome outcome = new TestAgent(projectRoot, project, templates, llm)
                 .run(spec, approved.cases());
         listener.testsFinished(outcome);

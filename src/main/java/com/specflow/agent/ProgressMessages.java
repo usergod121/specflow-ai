@@ -4,6 +4,7 @@ import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanStep;
 import com.specflow.tests.TestOutcome;
+import com.specflow.tests.TestScriptVerifier;
 import com.specflow.verify.VerificationResult;
 
 import java.util.List;
@@ -85,6 +86,19 @@ public final class ProgressMessages {
     /** 校验失败时的级别：失败用 error，通过和跳过都是 info。 */
     public static String levelOf(VerificationResult result) {
         return result.failed() ? "error" : "info";
+    }
+
+    /**
+     * 测试阶段开始那一行。
+     *
+     * <p>为什么非要有这一句：这一段从「生成测试产物」到「跑完脚本」中间没有可打断的点，
+     * 最长能占掉 {@link TestScriptVerifier#DEFAULT_TIMEOUT_SECONDS} 那么久。
+     * 用户在这一段里看到界面一动不动，第一反应是「它卡死了」——所以起点就必须说出来，
+     * 而且要带上时限（可预期的东西才不会被误当成故障）。
+     */
+    public static String testsStarted(int cases) {
+        return "测试进行中（最长 " + TestScriptVerifier.DEFAULT_TIMEOUT_SECONDS / 60 + " 分钟）："
+                + "正在生成测试产物并跑 " + cases + " 条用例；这一段停不下来，请等它跑完";
     }
 
     /**

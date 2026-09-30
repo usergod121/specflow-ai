@@ -23,6 +23,7 @@ import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.SpecValidator;
 import com.specflow.template.TemplateRegistry;
+import com.specflow.tests.TestAgent;
 import com.specflow.tests.TestOutcome;
 import com.specflow.util.SafePathResolver;
 import com.specflow.verify.CompileVerifier;
@@ -81,6 +82,15 @@ public final class RunService implements AgentListener {
      * 本来散在好几条轮级事件里，界面自己猜不准该归到哪一步。
      */
     private int currentStep;
+
+    /**
+     * 这次运行的测试结论（没有测试阶段时是 {@code null}）。
+     *
+     * <p>为什么要在这里记一笔：终态事件（{@code result}）在收场那一刻才发，
+     * 而测试结论是它<b>之前</b>就拿到手的。不留这一笔，界面就只能再跑一趟
+     * {@code /api/run-detail} 才画得出失败清单——多一个来回，而且那一刻用户正盯着屏幕等结果。
+     */
+    private TestOutcome lastTests;
 
     private final ExecutorService runner = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "specflow-run");
@@ -147,6 +157,8 @@ public final class RunService implements AgentListener {
         // 清掉上一次留下的停止请求。放在并发判断<b>之后</b>：
         // 这次提交被拒的时候，上一次运行可能正跑到一半，它的停止请求不该被顺手抹掉
         cancelRequested = false;
+        // 上一次的测试结论同理：留着它，一次没跑测试的运行会顶着上一轮的失败清单收场
+        lastTests = null;
         Spec spec = toValidSpec(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
 
@@ -183,6 +195,7 @@ public final class RunService implements AgentListener {
         RunRecord suspended = store.suspended()
                 .orElseThrow(() -> new IllegalStateException("现在没有挂起的运行，直接点运行就行"));
         cancelRequested = false;
+        lastTests = null;
         Spec spec = toValidSpec(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
         DevelopmentAgent.Resume origin =
@@ -393,16 +406,30 @@ public final class RunService implements AgentListener {
     }
 
     /**
+     * 测试阶段开始了：时间线上先给一行「正在进行」。
+     *
+     * <p>这一行必须由引擎在这一刻发，不能让界面按下「运行」就自己写死：
+     * 只有引擎知道<b>测试真的开始了</b>（也可能根本走不到这一步——编译没过、被中断）。
+     * 界面自己写死的话，一次编译失败的运行也会显示「测试进行中」。
+     */
+    @Override
+    public void testsStarted(int cases) {
+        hub.publish("info", 0, 0, null, ProgressMessages.testsStarted(cases));
+    }
+
+    /**
      * 测试阶段收场了：时间线上给一行。
      *
-     * <p>整份失败清单<b>不在这里推</b>——它比一行字重得多，整块进留档
-     * （界面翻 {@code /api/run-detail} 就拿到）。这一行只回答「测试跑到哪了、成了没有」。
+     * <p>整份失败清单<b>不在这里推</b>——它比一行字重得多，跟着终态事件与运行留档走
+     * （见 {@link #testPayload}）。这一行只回答「测试跑到哪了、成了没有」。
      *
      * <p>步号给 0（不属于任何一步）：测试阶段跑在整份施工单<b>之后</b>，
      * 挂在最后一步上会让人以为它是那一步的一部分。
      */
     @Override
     public void testsFinished(TestOutcome outcome) {
+        // 留一笔给终态事件用：用户在结果面板上等的就是这个，不该再多一个来回
+        lastTests = outcome;
         hub.publish(ProgressMessages.levelOf(outcome), 0, 0, null,
                 ProgressMessages.testsFinished(outcome));
     }
@@ -428,8 +455,79 @@ public final class RunService implements AgentListener {
             item.put("diff", change.diff());
             changes.add(item);
         }
-        hub.publishResult(payload(result.status().name(), result.attempts(),
-                result.detail(), changes));
+        Map<String, Object> body = payload(result.status().name(), result.attempts(),
+                result.detail(), changes);
+        // 这一次跑过测试就把结果一并带上（没跑就没有这个键：给一个空对象会被读成「跑了、全过」）
+        if (lastTests != null) {
+            body.put("tests", testPayload(lastTests));
+        }
+        hub.publishResult(body);
+    }
+
+    // ---------- 测试阶段的界面接口 ----------
+
+    /**
+     * 重新生成测试产物：<b>只生成，不跑</b>（十五.6 里「测试代码错了」那条路）。
+     *
+     * <p>为什么它不在 {@code /api/run} 里顺手做掉：这两件事的语义正好相反。
+     * 运行是「按已确认的方案改产品代码，然后验收」；用户点「测试代码错了」的时候，
+     * 他要的恰恰是<b>别再动产品代码、也别再跑一遍</b>，先看一眼新生成的测试代码写成什么样。
+     * 塞进运行里，用户点一下就又烧掉一轮开发调用，而他要 review 的那份代码可能还是错的。
+     *
+     * <p>所以它不是一次运行：不排队、不占运行槽、不进轮次账、不写运行留档
+     * （要留档的是产品改动，这里一个字节产品代码都没动）。它只花一次模型调用，
+     * 把产物写到新的 {@code tools/<时间戳>/} 里，然后原样把代码交回界面。
+     *
+     * @param request 界面那份运行请求：用例清单在 {@code approvedPlan.cases} 里
+     *                （用的是用户确认并冻结过的那一份，不是重新问模型要的）
+     * @throws IllegalStateException     已有任务在跑、或者没有用例清单
+     * @throws com.specflow.exception.SpecflowException 生成被拒（协议、越界、高危命令）
+     */
+    public Map<String, Object> regenerateTests(RunRequest request) {
+        if (hub.running()) {
+            throw new IllegalStateException("已有任务正在运行，请等它结束");
+        }
+        List<PlanReview.TestCase> cases = request.approvedPlan() == null
+                ? List.of()
+                : request.approvedPlan().cases();
+        if (cases.isEmpty()) {
+            throw new IllegalStateException("没有用例清单，重新生成无从下手：先「先检查」拿到用例再说");
+        }
+        Spec spec = toValidSpec(request);
+        LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
+        TestAgent.Generated generated = new TestAgent(projectRoot, project, templates(), llm)
+                .generate(spec, cases);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("directory", generated.directory());
+        payload.put("files", generated.files());
+        // 正文一并回去：界面要把它摊开给人 review——这就是这条路存在的全部意义
+        payload.put("sources", generated.sources());
+        return payload;
+    }
+
+    /**
+     * 测试结果里界面要用的那一份。
+     *
+     * <p>它跟着<b>终态事件</b>一起下发，而不是让界面再跑一趟 {@code /api/run-detail}：
+     * 运行刚结束的那几秒正是用户盯着屏幕看结果的时候，多一个来回就是几百毫秒的空白；
+     * 而且「这一次的失败清单」本来就在手边（{@link #testsFinished} 刚给过）。
+     * 留档那一份仍然是权威（翻历史、刷新页面都读它），这一份只是先到一步。
+     *
+     * <p><b>只带事实，不带结论。</b>谁错了（代码还是用例）机器判不了，界面也不许替它判：
+     * 传出去的 {@code failures[].opinion} 是脚本自己的说法，叫法就写着「它认为」。
+     */
+    private Map<String, Object> testPayload(TestOutcome outcome) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("directory", outcome.directory());
+        payload.put("files", outcome.files());
+        payload.put("exit", outcome.exit());
+        payload.put("passed", outcome.passed());
+        payload.put("cases", outcome.cases());
+        payload.put("failures", outcome.failures());
+        payload.put("output", outcome.output());
+        // 测试代码正文：界面上「这条用例由哪段代码验」靠它，路径只是一个索引
+        payload.put("sources", TestAgent.sources(projectRoot, outcome.directory(), outcome.files()));
+        return payload;
     }
 
     // ---------- 内部 ----------

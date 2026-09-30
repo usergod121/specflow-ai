@@ -203,6 +203,19 @@ public final class RunRecorder implements AgentListener {
     }
 
     /**
+     * 测试阶段开始了。
+     *
+     * <p>只转发、不落档：这一行说的是「正在进行」，而留档记的是已经发生的事——
+     * 把它记进去，事后翻记录的人会看到一条没有下文的「测试进行中」。
+     * 但它必须转发：这个类挡在 Agent 与界面之间，漏掉一个回调，
+     * 界面就永远收不到那一句——而「实测五分钟没动静」正是它要解释的那件事。
+     */
+    @Override
+    public void testsStarted(int cases) {
+        delegate.testsStarted(cases);
+    }
+
+    /**
      * 测试阶段跑完了。
      *
      * <p>记两笔：时间线上那<b>一行</b>（什么时候、成了没有、失败几条），

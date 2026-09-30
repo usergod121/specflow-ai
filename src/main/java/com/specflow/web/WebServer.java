@@ -207,6 +207,8 @@ public final class WebServer implements AutoCloseable {
                 case "/api/files" -> Http.sendJson(exchange, 200, filesOf(now));
                 case "/api/review" -> review(now, exchange);
                 case "/api/run" -> startRun(now, exchange);
+                // 「测试代码错了」那条路：只重新生成测试产物，不跑、不改产品代码（十五.6）
+                case "/api/tests/regenerate" -> regenerateTests(now, exchange);
                 case "/api/events" -> Http.sendJson(exchange, 200, events(now, exchange));
                 case "/api/runs" ->
                         Http.sendJson(exchange, 200, Map.of(
@@ -544,6 +546,25 @@ public final class WebServer implements AutoCloseable {
         ReviewOutcome outcome = project.runs().review(request);
         Http.sendJson(exchange, 200, Map.of("plan", outcome.plan(), "audit", outcome.audit(),
                 "stepAudit", outcome.stepAudit()));
+    }
+
+    /**
+     * 重新生成测试产物：十五.6 里「测试代码错了」那一条。
+     *
+     * <p>同步返回：它只有一次模型调用，几秒到几十秒，和检查阶段是一回事
+     * （那边也没有进度通道）。而它<b>不是</b>一次运行，所以不进运行槽、不推事件、
+     * 不在历史里留一条——用户点它是为了拿到新代码看一眼，不是为了一次运行留档。
+     *
+     * <p>用例清单从 {@code approvedPlan.cases} 里来（界面发的是用户确认并冻结过的那一份）：
+     * 重新生成的是<b>测试代码</b>，不是用例——用例是人看过的东西，机器不许在这里改它。
+     */
+    private void regenerateTests(OpenProject project, HttpExchange exchange) throws IOException {
+        RunRequest request = Http.readJson(exchange, RunRequest.class);
+        if (request == null) {
+            return;
+        }
+        project.requireOpen();
+        Http.sendJson(exchange, 200, project.runs().regenerateTests(request));
     }
 
     private void startRun(OpenProject project, HttpExchange exchange) throws IOException {

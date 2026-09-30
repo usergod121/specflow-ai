@@ -61,6 +61,11 @@ let reviewProject = null;
  */
 let testsProject = null;
 /**
+ * 链 26 临时造出来的「带假模型的项目」（失败清单与四条路那一链）。
+ * 和链 25 一样的收尾规矩：目录跟着 TEMP_PATHS 删，「最近打开」里那条记录单独去接口上删。
+ */
+let interfaceProject = null;
+/**
  * 链 23 起的本机假模型服务。跑完必须关掉——它是一个真在监听的端口，
  * 留着它下一次跑测试会多一个没人认领的进程。
  */
@@ -2874,6 +2879,12 @@ async function main() {
         'plan.cases 里六栏一个不少（编号/要测什么/怎么测/分级/期望/验收标准）：'
             + JSON.stringify(caseFields25));
 
+    // 十五.2 那道闸：这次生成了用例，所以「确认（冻结）」点过之后才放行「运行」
+    check(await evaluate(`document.getElementById('run').disabled`),
+        '用例还没确认时「运行」是按住的');
+    await evaluate(`document.querySelector('#cases [data-act="confirm"]').click(); 'ok'`);
+    await waitFor(`document.getElementById('run').disabled === false`, '确认之后「运行」放开');
+
     await clickButton('run');
     await waitFor(`state.running === false && document.querySelector('#result .status') !== null`,
         '这一次真运行跑到收场', 60000);
@@ -2921,6 +2932,327 @@ async function main() {
     await evaluate(`(() => { document.getElementById('history').hidden = true; return 'ok'; })()`);
 
     // 换回原项目：这一链改的是服务的「当前项目」，留着它后面就在临时目录里跑了
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: PROJECT_ROOT }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(PROJECT_ROOT))})`, '换回原项目');
+    stubModel.close();
+    stubModel = null;
+
+    // ---------- 链 26：失败清单与用户的四条路 ----------
+    // 链 25 只走到「测试没过、失败清单进了留档」。这一批界面把它摆出来给人看：
+    //   ① 用例分档 + 每档通过率 + 每个用例一个 chip（点开看测试代码与它的路径）；
+    //   ② 有用例的运行要先「确认（冻结）」才放行（十五.2）；
+    //   ③ 失败清单四要素 + 一段可折叠的「AI 的猜测」；
+    //   ④ 四个动作各打各的接口——其中「测试代码错了」那条路**不自动重跑**。
+    // 前半截一个桩都不装（真跑一次，假模型是本机服务），拿到的失败清单是真的；
+    // 只有「四个动作打哪儿」那一段才装桩：那几件事的后果是改磁盘和烧模型调用，
+    // 而这一段要验的是「界面把请求打到哪儿了」。
+    console.log('\n链 26　失败清单与四条路：分档通过率、确认冻结、四个动作各打各的接口：');
+
+    interfaceProject = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-interface-'));
+    TEMP_PATHS.push(interfaceProject);
+    fs.mkdirSync(path.join(interfaceProject, '.specflow'), { recursive: true });
+    fs.mkdirSync(path.join(interfaceProject, 'src', 'main', 'java', 'com', 'demo'), { recursive: true });
+    fs.writeFileSync(path.join(interfaceProject, 'pom.xml'), '<project/>\n');
+    const fooPath26 = path.join(interfaceProject, 'src', 'main', 'java', 'com', 'demo', 'Foo.java');
+    fs.writeFileSync(fooPath26, 'class Foo {\n    int a = 1;\n}\n');
+    stubModel = await startScriptedModel([
+      // ① 检查：两条用例、分两档（可选那档故意空着——空档也要看得见）
+      ['<<<<<<< SUMMARY', '给 Foo 加一个方法。', '>>>>>>> SUMMARY', '',
+       '<<<<<<< FLOW', 'flowchart TD', '    A[入口] --> B[出口]', '>>>>>>> FLOW', '',
+       '<<<<<<< CASES',
+       '1 | a 能变成 2 | 读 Foo.java 里的 a | 必须过 | a == 2 | 无',
+       '2 | 加完之后项目还能编译 | 跑一次编译 | 建议过 | 编译通过 | 无',
+       '>>>>>>> CASES', '',
+       '<<<<<<< STEPS',
+       '1 | 给 Foo 加一个方法 | src/main/java/com/demo/Foo.java | 能编译 | 自洽',
+       '>>>>>>> STEPS', ''].join('\n'),
+      // ② 开发那一轮：把 a 改成 2
+      ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
+       '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
+      // ③ 生成测试产物：一条过、一条不过，退出码 1。
+      // 正文只用 ASCII——.cmd 按本机代码页读，中文会把 `^|` 的转义吃掉（引擎提示词里也写了这条）
+      ['<<<<<<< SEARCH {{ENTRY}}', '=======',
+       '@echo off',
+       'echo PASS ^| 1',
+       'echo FAIL ^| 2 ^| compiled ^| not compiled ^| the code is wrong',
+       'exit /b 1',
+       '>>>>>>> REPLACE', ''].join('\n'),
+    ]);
+    fs.writeFileSync(path.join(interfaceProject, '.specflow', 'project.yaml'),
+        'llm:\n  base-url: http://127.0.0.1:' + stubModel.port + '\n  model: stub\n'
+        + '  api-key-env: SPECFLOW_TEST_KEY\n');
+    fs.writeFileSync(path.join(interfaceProject, '.specflow', 'local.env'), 'SPECFLOW_TEST_KEY=sk-test\n');
+
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: interfaceProject }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(interfaceProject))})`, '页面切到这一链的项目');
+
+    await setField('demand', '给 Foo 加一个方法，让 a 变成 2');
+    await evaluate(`(() => {
+      state.selected = new Set(['src/main/java/com/demo/Foo.java']);
+      updatePicked();
+      return 'ok';
+    })()`);
+    await clickButton('review');
+    await waitFor(`state.plan && state.plan.cases && state.plan.cases.length === 2`,
+        '用例清单回来了', 20000);
+
+    // ① 分档、通过率、chip
+    check(await evaluate(`document.querySelectorAll('#cases .case-chip').length`) === 2,
+        '每条用例画成一个 chip');
+    const chipText26 = await evaluate(`document.querySelector('#cases .case-chip').textContent`);
+    check(chipText26.includes('a 能变成 2') && chipText26.includes('读 Foo.java 里的 a'),
+        'chip 上就是口语化的「要测什么 + 怎么测」：' + JSON.stringify(chipText26));
+    const rates26 = await evaluate(`document.querySelector('#cases .rate-row').textContent`);
+    check(rates26.includes('必须过 0/1') && rates26.includes('建议过 0/1')
+            && rates26.includes('可选 0/0') && rates26.includes('未标 0/0'),
+        '四档通过率都在（某一档为空也照常显示 0/0，不是整块消失）：' + JSON.stringify(rates26));
+    check(await evaluate(`document.querySelectorAll('#cases .case-tier-empty').length`) === 2,
+        '空着的那两档各自写着「这一档没有用例」');
+    check(await evaluate(`document.querySelector('#cases .case-detail') === null`),
+        'chip 默认是收起的（细节不占地方）');
+    await evaluate(`document.querySelector('#cases .case-chip[data-case="1"]').click(); 'ok'`);
+    const opened26 = await evaluate(`document.querySelector('#cases .case-detail')
+        ? document.querySelector('#cases .case-detail').textContent : ''`);
+    check(opened26.includes('要测什么') && opened26.includes('怎么测') && opened26.includes('期望'),
+        '点开之后四栏都在：' + JSON.stringify(opened26.slice(0, 100)));
+    check(opened26.includes('tools/'),
+        '并且说清测试代码落在哪儿（tools/<时间戳>/…）：' + JSON.stringify(opened26.slice(-80)));
+
+    // ② 确认 → 冻结
+    check(await evaluate(`document.getElementById('run').disabled`),
+        '用例还没确认时「运行」是按住的（十五.2：首次生成要点过「确认」才继续）');
+    check(String(await evaluate(`document.getElementById('run').title`)).includes('确认'),
+        '按住的理由写在按钮上，用户不用猜');
+    check(String(await evaluate(`document.getElementById('actionnote').textContent`))
+        .includes('还没确认'), '「运行」旁边那句也在提示先确认');
+    // 那道闸还要装在**唯一的路口**上，不能只按住按钮：失败清单上的「下一轮」和续跑
+    // 都从 postRun 走，直接调它也必须停下来（少这一道，别的入口就能绕过去）
+    await installRunStub();
+    const gated26 = await evaluate(`(async () => {
+      const started = await postRun('/api/run');
+      return { started, calls: window.__runCalls };
+    })()`);
+    check(gated26.started === false && gated26.calls === 0,
+        '还没确认就调 postRun 也开不出运行（闸装在入口上，不是只按住那枚按钮）：'
+            + JSON.stringify(gated26));
+    await evaluate(`(() => { window.fetch = window.__realFetch; return 'ok'; })()`);
+    await evaluate(`document.querySelector('#cases [data-act="confirm"]').click(); 'ok'`);
+    await waitFor(`document.getElementById('run').disabled === false`, '确认之后「运行」放开');
+    check(String(await evaluate(`document.querySelector('#cases .cases-foot').textContent`))
+        .includes('已确认并冻结'), '冻过之后那块写着「已确认并冻结」');
+
+    // 真跑一次：这一链的前半截一个桩都不装
+    await clickButton('run');
+    await waitFor(`state.running === false && document.querySelector('#result .status') !== null`,
+        '这一次真运行跑到收场', 60000);
+
+    // ③ 失败清单四要素
+    check((await evaluate(`document.getElementById('result').textContent`)).includes('测试没全过'),
+        '结果那一行说的是「测试没全过」');
+    check(await evaluate(`document.querySelectorAll('#result .fail').length`) === 1,
+        '失败清单里就一条（过了的那条不进清单）');
+    const failText26 = await evaluate(`document.querySelector('#result .fail').textContent`);
+    check(failText26.includes('用例 2'), '① 哪条用例：' + JSON.stringify(failText26.slice(0, 60)));
+    check(failText26.includes('断言失败'), '② 失败原因（机器判的那一档）');
+    check(failText26.includes('期望：') && failText26.includes('compiled'), '③ 期望');
+    check(failText26.includes('实际：') && failText26.includes('not compiled'), '③ 实际');
+    check(await evaluate(`document.querySelector('#result .fail-guess') !== null
+        && document.querySelector('#result .fail-guess').textContent.includes('AI 的猜测')`),
+        '④ AI 的猜测单独一块，标题上就写明它是猜测');
+    check(await evaluate(`document.querySelector('#result .fail-guess').open !== true`),
+        '那段猜测默认收起（它不占原始信息的位置）');
+    check(await evaluate(`document.querySelector('#result .tests-output') !== null
+        && document.querySelector('#result .tests-output').textContent.includes('原始输出')`),
+        '脚本的原始输出也能看（猜错了就去翻原话）');
+
+    // 通过率跟着这一次的结果走
+    const ratesAfter26 = await evaluate(`document.querySelector('#cases .rate-row').textContent`);
+    check(ratesAfter26.includes('必须过 1/1') && ratesAfter26.includes('建议过 0/1'),
+        '跑完之后通过率按这一次的结果算（必须过过了、建议过没过）：' + JSON.stringify(ratesAfter26));
+    check(await evaluate(`document.querySelector('#cases .case-item[data-case="2"] .mark').textContent`)
+        === '没过', '没过的那个 chip 上写着「没过」');
+    check(await evaluate(`document.querySelector('#cases .case-item[data-case="1"] .mark').textContent`)
+        === '过了', '过了的那个 chip 上写着「过了」');
+    await evaluate(`document.querySelector('#cases .case-chip[data-case="2"]').click(); 'ok'`);
+    await sleep(200);
+    const code26 = await evaluate(`(() => {
+      const el = document.querySelector('#cases .case-code');
+      return el ? el.textContent : '';
+    })()`);
+    check(code26.includes('run.cmd') && code26.includes('FAIL'),
+        '点开 chip 能看见测试代码与它的 tools/<时间戳>/… 路径：'
+            + JSON.stringify(code26.slice(0, 120)));
+
+    // 跑测试那一段：可预期的提示 + 那一段停不下来
+    const running26 = await evaluate(`[...document.querySelectorAll('#log .line')]
+        .map(line => line.textContent).filter(text => text.includes('测试进行中'))[0] || ''`);
+    check(running26.includes('测试进行中'),
+        '时间线上有引擎发的「测试进行中」那一行：' + JSON.stringify(running26));
+    const stage26 = await evaluate(`(() => {
+      updateStage({ type: 'log', round: 0, text: ${JSON.stringify(running26)} });
+      return document.getElementById('runstage').textContent;
+    })()`);
+    check(stage26 === '测试进行中（最长 5 分钟）',
+        '界面把那一行显示成可预期的提示（时限用的是引擎那句话里的数）：' + JSON.stringify(stage26));
+    const stop26 = await evaluate(`(() => {
+      state.running = true; state.phase = 'tests'; updateStopButton();
+      const held = { disabled: document.getElementById('stop').disabled,
+                     title: document.getElementById('stop').title };
+      state.phase = ''; state.running = false; updateStopButton();
+      return held;
+    })()`);
+    check(stop26.disabled === true && stop26.title.includes('停不下来'),
+        '测试进行中「停止」被按住，而且说清这一段停不下来：' + JSON.stringify(stop26));
+
+    // 留档那一侧：事后翻记录的人只有它
+    const runs26 = await (await fetch(BASE + 'api/runs')).json();
+    check(runs26.runs.length === 1 && runs26.runs[0].status === 'TESTS_FAILED',
+        '这一次在留档里是「测试没过」：' + JSON.stringify(runs26.runs.map(run => run.status)));
+    const detail26 = await (await fetch(BASE + 'api/run-detail?id='
+        + encodeURIComponent(runs26.runs[0].id))).json();
+    check(detail26.testCases && detail26.testCases.length === 2 && detail26.tests
+            && detail26.tests.failures.length === 1,
+        '用例清单与失败清单都在留档里（通过率的分母和分子都能查）');
+
+    // ④ 四个动作：从这里开始装桩——那几件事的后果是改磁盘和烧模型调用
+    await evaluate(`(() => {
+      window.__calls = [];
+      window.__realFetch2 = window.fetch;
+      window.fetch = (url, opts) => {
+        const target = String(url);
+        const method = (opts && opts.method) || 'GET';
+        if (target.endsWith('/api/tests/regenerate')) {
+          window.__calls.push(target + ' ' + method);
+          return Promise.resolve(new Response(JSON.stringify({
+            directory: 'tools/20990101-000000',
+            files: ['tools/20990101-000000/run.cmd'],
+            sources: { 'tools/20990101-000000/run.cmd': 'echo PASS ^| 1\\r\\n' },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (target.endsWith('/api/run')) {
+          window.__calls.push(target + ' ' + method);
+          window.__lastRunBody = (opts && opts.body) || '';
+          return Promise.resolve(new Response(JSON.stringify({ runId: 'probe' }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (target.endsWith('/api/accept') || target.endsWith('/api/rollback')) {
+          window.__calls.push(target + ' ' + method);
+          return Promise.resolve(new Response(JSON.stringify({ ok: true }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return window.__realFetch2(url, opts);
+      };
+      return 'ok';
+    })()`);
+
+    const calls26 = () => evaluate(`window.__calls.join(' | ')`);
+    const runCalls26 = () => evaluate(
+        `window.__calls.filter(call => call.startsWith('/api/run ')).length`);
+
+    check(await evaluate(`document.querySelector('#result [data-act="next-round"]').disabled`),
+        '一条都没勾时「下一轮」是按住的');
+    await evaluate(`document.querySelector('#result [data-act="next-round"]').click(); 'ok'`);
+    await sleep(200);
+    check(await evaluate(`window.__calls.length`) === 0, '按住的那枚按钮点下去什么都不会发生');
+
+    // ③ 不重要 / 误报
+    await evaluate(`(() => {
+      const box = document.querySelector('#result [data-pick="2"]');
+      box.checked = true; box.onchange(); return 'ok';
+    })()`);
+    check(String(await evaluate(`document.querySelector('#result [data-act="next-round"]').textContent`))
+        .includes('回喂选中的 1 条'), '勾上一条之后「下一轮」的文案跟着变');
+    await evaluate(`document.querySelector('#result [data-act="known"]').click(); 'ok'`);
+    await sleep(300);
+    check(await evaluate(`window.__calls.length`) === 0,
+        '③「不重要/误报」不发任何请求（没有机器动作配得上这个判断）');
+    check(String(await evaluate(`document.querySelector('#result .fail').textContent`))
+        .includes('已知失败'), '那一条被标成已知失败，不再是红色的断言失败');
+
+    // ② 测试代码错了 → 重新生成 → 停下等人放行
+    await evaluate(`document.querySelector('#result [data-act="regenerate"]').click(); 'ok'`);
+    await waitFor(`document.querySelector('#result .regen') !== null`, '重新生成的那一块出来了', 20000);
+    check((await calls26()).includes('/api/tests/regenerate POST'),
+        '②「测试代码错了」打的是 /api/tests/regenerate：' + JSON.stringify(await calls26()));
+    check(await runCalls26() === 0,
+        '而且没有顺手开一次运行（十五.6：停下等你 review，不许自动重跑）');
+    check(String(await evaluate(`document.querySelector('#result .regen').textContent`))
+        .includes('echo PASS'), '重新生成的测试代码摊开摆着，给人 review');
+    check(await evaluate(`document.querySelector('#result [data-act="next-round"]').disabled`),
+        '放行之前「下一轮」是按住的');
+    await evaluate(`document.querySelector('#result [data-act="release"]').click(); 'ok'`);
+    await sleep(300);
+    check(await runCalls26() === 0, '「放行」也不开运行（它只是「这批测试代码我认了」）');
+    check(String(await evaluate(`document.querySelector('#result .regen').textContent`))
+        .includes('已放行'), '放行之后那一块写着「已放行」');
+
+    // ① 开发 AI 错了 → 勾选 → 下一轮（一次性回喂）
+    await evaluate(`(() => {
+      const box = document.querySelector('#result [data-pick="2"]');
+      box.checked = true; box.onchange(); return 'ok';
+    })()`);
+    check(await runCalls26() === 0, '光是勾选不会开运行（要人点「下一轮」）');
+    await evaluate(`document.querySelector('#result [data-act="next-round"]').click(); 'ok'`);
+    await sleep(600);
+    check(await runCalls26() === 1, '①「下一轮」只开一次运行：' + JSON.stringify(await calls26()));
+    const refeedBody26 = String(await evaluate(`window.__lastRunBody`));
+    check(refeedBody26.includes('上一轮测试失败（回喂给开发）')
+            && refeedBody26.includes('用例 2') && refeedBody26.includes('compiled'),
+        '回喂的内容跟着这次请求走了（用例的语义 + 期望 vs 实际）');
+    check(!refeedBody26.includes('echo FAIL'),
+        '回喂里不给测试代码（给了它就会照着断言改代码）');
+    check(String(await evaluate(`document.getElementById('ctxlist').textContent`))
+        .includes('回喂给开发'),
+        '那条回喂在「上下文依赖」里看得见（不是藏进请求体的隐藏字段）');
+
+    // ④ 接受（磁盘上那份改动留着）；通用出口的按钮与位置也一起看一眼
+    check(await evaluate(`document.querySelector('#result [data-act="accept"]') !== null`),
+        '磁盘上有待处置的改动，所以「接受」在（和待处置面板同一个前提）');
+    check(await evaluate(`document.querySelector('#result [data-act="interrupt"]').textContent`)
+        === '中断 / 恢复到初始', '通用出口只有这一个：「中断 / 恢复到初始」');
+    check(await evaluate(`![...document.querySelectorAll('button')]
+        .some(button => button.textContent.includes('我的设计错了'))`),
+        '界面上不出现「我的设计错了」这种按钮（十五.6）');
+    await evaluate(`document.querySelector('#result [data-act="accept"]').click(); 'ok'`);
+    await sleep(600);
+    check((await calls26()).includes('/api/accept POST'),
+        '④「接受」打 /api/accept：' + JSON.stringify(await calls26()));
+    check(fs.readFileSync(fooPath26, 'utf8').includes('int a = 2;'),
+        '接受 = 改动留在磁盘上（没有被撤回）');
+
+    // 翻历史那一侧：隔几天回来看记录的人，靠的就是这一屏
+    await clickButton('historylink');
+    await waitFor(`!document.getElementById('history').hidden`, '历史弹层打开');
+    await sleep(400);
+    await evaluate(`document.querySelector('#runlist .run-row').click(); 'ok'`);
+    await waitFor(`document.querySelector('#rundetail .pending.tests') !== null`,
+        '历史里那一屏画出来了', 10000);
+    const detailText26 = await evaluate(`document.getElementById('rundetail').textContent`);
+    check(detailText26.includes('测试结果') && detailText26.includes('断言失败')
+            && detailText26.includes('not compiled'),
+        '历史详情里也有失败清单（事后翻记录的人只有它）：'
+            + JSON.stringify(detailText26.slice(0, 120)));
+    check(await evaluate(`document.querySelectorAll('#rundetail .case-chip').length`) === 2,
+        '历史详情里用例清单也在（通过率的分母）');
+    check(detailText26.includes('必须过 1/1') && detailText26.includes('建议过 0/1'),
+        '历史详情里的通过率也是按那一次的结果算的');
+    check(await evaluate(`document.querySelector('#rundetail [data-act="next-round"]') === null`),
+        '历史里不给那四个动作（它们动的是磁盘上此刻那份改动，而历史只该看）');
+    await evaluate(`(() => { document.getElementById('history').hidden = true; return 'ok'; })()`);
+
+    // 换回原项目：这一链改的是服务的「当前项目」
     await fetch(BASE + 'api/open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2980,6 +3312,12 @@ async function main() {
       // 链 25 的临时项目也一样：目录由 TEMP_PATHS 删，这一条删的是「最近打开」里那条记录
       try {
         await fetch(BASE + 'api/recent?path=' + encodeURIComponent(testsProject), { method: 'DELETE' });
+      } catch (e) { /* 清理尽力而为 */ }
+    }
+    if (interfaceProject) {
+      // 链 26 的临时项目：同样的收尾（目录跟着 TEMP_PATHS，这里删「最近打开」里那条）
+      try {
+        await fetch(BASE + 'api/recent?path=' + encodeURIComponent(interfaceProject), { method: 'DELETE' });
       } catch (e) { /* 清理尽力而为 */ }
     }
     try { ws && ws.close(); } catch (e) { /* ignore */ }

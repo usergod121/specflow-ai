@@ -941,5 +941,322 @@ check(!!historyTable.STATUS_LABEL.PENDING_DECISION,
     'CLI 撞门禁留下的那一条在历史里读得懂：'
         + JSON.stringify(historyTable.STATUS_LABEL.PENDING_DECISION));
 
+// ---------- 用例清单：分档、通过率、chip ----------
+// 这一批的主战场。判据全是「喂一份清单和一份结果，看那句话对不对」，
+// 所以把它们写成纯函数在这里钉住——浏览器里能看到的只是它们的一个结果，
+// 而它们错了的表现很安静：通过率分母虚高、空档整块不显示，看着都像「正常」。
+console.log('用例分档：');
+const caseApi = load('index.html', [
+  'CASE_LEVELS', 'CASE_OUTCOME_MARKS', 'CASE_OUTCOME_TEXT', 'FAILURE_KINDS',
+  'caseLevel', 'caseLevelMeta', 'caseTiers', 'caseByIndex', 'caseOutcome', 'tierRate',
+  'casePassRate', 'caseChipText', 'numbersIn', 'failureOf', 'failureKind', 'testsReport',
+  'testsSummaryText', 'failPairHtml', 'guessHtml', 'failRowHtml', 'testActionPath', 'startsRun',
+  'refeedText', 'putRefeedContext', 'caseCodeHtml', 'caseDetailHtml', 'caseItemHtml',
+  'casesPanelHtml', 'casesFootHtml', 'hasCases', 'caseSignature', 'targetSignature',
+  'planSignature', 'staleFreeze', 'needsConfirm', 'confirmCases', 'regenBlockHtml',
+  'testsActionsHtml', 'testsPanelHtml', 'rateOfAll', 'caseListForTests',
+], '// ---------- 用例与测试结果 ----------', 'async function refreshPending');
+
+const {
+  caseLevel, caseLevelMeta, caseTiers, caseByIndex, caseOutcome, tierRate, casePassRate,
+  caseChipText, numbersIn, failureOf, failureKind, testsReport, testsSummaryText, failRowHtml,
+  testActionPath, startsRun, refeedText, caseDetailHtml, casesPanelHtml, casesFootHtml,
+  hasCases, caseSignature, targetSignature, planSignature, staleFreeze, needsConfirm,
+  confirmCases, regenBlockHtml, testsActionsHtml, testsPanelHtml, rateOfAll,
+} = caseApi;
+
+check(caseLevel({ level: 'MUST' }) === 'MUST' && caseLevel({ level: '可选' }) === 'UNKNOWN',
+    '分级只认引擎那四个枚举名；认不出来的按「未标」，不替它升级成「必须过」');
+check(caseLevelMeta('SHOULD')[2] === '建议过', '档位带着中文标签');
+
+const caseSample = [
+  { index: 1, what: '按订单号查得到', how: '拿 id=1 查一次', level: 'MUST', expected: 'id=1', acceptance: 'R-1' },
+  { index: 2, what: '查不到时返回 404', how: '拿 id=999 查一次', level: 'SHOULD', expected: '404', acceptance: 'R-1' },
+  { index: 3, what: '参数为空时报 400', how: '传空 id', level: 'OPTIONAL', expected: '400', acceptance: '无' },
+  { index: 4, what: '模型没写分级的那条', how: '随手验一下', level: '', expected: 'x', acceptance: '无' },
+];
+const tiers = caseTiers(caseSample);
+check(tiers.length === 4, '四个档位一个不少，顺序固定：' + tiers.map(t => t.level).join(','));
+check(tiers.map(t => t.items.length).join(',') === '1,1,1,1', '每条用例都落到了它自己那一档');
+const emptyTier = caseTiers([caseSample[1]]);
+check(emptyTier.length === 4 && emptyTier[0].items.length === 0,
+    '某一档为空也照样显示那一档（不是把它整块省掉）');
+
+console.log('通过率：');
+check(casePassRate(caseSample, null) === '必须过 0/1 · 建议过 0/1 · 可选 0/1 · 未标 0/1',
+    '还没跑时通过率也显示（分子 0——「没验」不能算「过了」）：' + casePassRate(caseSample, null));
+const halfDone = { cases: [{ index: 1, passed: true }, { index: 2, passed: false }], failures: [] };
+check(casePassRate(caseSample, halfDone) === '必须过 1/1 · 建议过 0/1 · 可选 0/1 · 未标 0/1',
+    '过了的算过了、没过的算没过：' + casePassRate(caseSample, halfDone));
+check(casePassRate([{ index: 1, level: 'SHOULD' }, { index: 2, level: 'SHOULD' }],
+    { cases: [{ index: 1, passed: true }, { index: 2, passed: true }], failures: [] })
+    === '必须过 0/0 · 建议过 2/2 · 可选 0/0 · 未标 0/0',
+    '一级为空也照常通过：必须过那一档写 0/0，而两条建议过的都算过了');
+
+// §15.3 那个例子：必须过 3/3 · 建议过 4/5 · 可选 2/6
+const bulk = [];
+for (let i = 1; i <= 3; i++) bulk.push({ index: i, level: 'MUST', what: '必须' + i });
+for (let i = 4; i <= 8; i++) bulk.push({ index: i, level: 'SHOULD', what: '建议' + i });
+for (let i = 9; i <= 14; i++) bulk.push({ index: i, level: 'OPTIONAL', what: '可选' + i });
+const bulkReport = {
+  cases: [
+    ...[1, 2, 3].map(i => ({ index: i, passed: true })),
+    ...[4, 5, 6, 7].map(i => ({ index: i, passed: true })),
+    { index: 8, passed: false },
+    ...[9, 10].map(i => ({ index: i, passed: true })),
+    ...[11, 12, 13, 14].map(i => ({ index: i, passed: false })),
+  ],
+  failures: [],
+};
+check(casePassRate(bulk, bulkReport) === '必须过 3/3 · 建议过 4/5 · 可选 2/6 · 未标 0/0',
+    '分级通过率就是这句话原本的样子：' + casePassRate(bulk, bulkReport));
+check(rateOfAll(bulk, bulkReport) === '9/14', '总通过率是过了几条 / 一共几条：'
+    + rateOfAll(bulk, bulkReport));
+
+console.log('某条用例这一次的下场：');
+check(caseOutcome(null, 1) === 'unknown', '还没跑过测试：未跑');
+check(caseOutcome({ cases: [{ index: 1, passed: true }] }, 1) === 'passed', '报过 PASS：过了');
+check(caseOutcome({ cases: [{ index: 1, passed: false }] }, 1) === 'failed', '报过 FAIL：没过');
+check(caseOutcome({ cases: [{ index: 2, passed: true }] }, 1) === 'missing',
+    '清单上有、脚本一条都没报：单算一档「没报」（它不是断言失败，是压根没验）');
+
+console.log('chip 上那句话：');
+check(caseChipText(caseSample[0]) === '按订单号查得到　·　拿 id=1 查一次',
+    '口语化「要测什么 + 怎么测」两样都在：' + caseChipText(caseSample[0]));
+check(caseChipText({ what: '只写了要测什么' }) === '只写了要测什么', '没写怎么测就只说一半，不编');
+check(caseChipText({}) === '（这条没写要测什么）', '两样都没写时明说，不留空 chip');
+check(numbersIn('用例 12') .join() === '12' && numbersIn('').length === 0,
+    '「哪条用例」那一栏是脚本原话，按里面的数字对号');
+check(caseByIndex(caseSample, '2').what === '查不到时返回 404', '按编号取那条用例（编号可能是字符串）');
+check(caseByIndex(caseSample, 99) === null, '清单里没有就返回 null，不编一条出来');
+
+// ---------- 失败清单 ----------
+console.log('失败清单四要素：');
+const failure = {
+  kind: 'ASSERTION',
+  testCase: '2',
+  expected: '404',
+  actual: '500',
+  opinion: 'I think the product code is wrong',
+};
+const report = {
+  directory: 'tools/20260930-120000',
+  files: ['tools/20260930-120000/run.cmd', 'tools/20260930-120000/Check.java'],
+  sources: {
+    'tools/20260930-120000/run.cmd': '@echo off\necho FAIL ^| 2 ^| 404 ^| 500\n',
+    'tools/20260930-120000/Check.java': 'class Check { boolean ok() { return assert404(); } }',
+  },
+  exit: 1,
+  passed: false,
+  cases: [{ index: 1, passed: true }, { index: 2, passed: false }],
+  failures: [failure],
+  output: 'PASS | 1\nFAIL | 2 | 404 | 500 | it thinks code is wrong\n',
+};
+check(failureKind('ASSERTION')[1] === '断言失败' && failureKind('TEST_CODE')[1] === '测试代码问题'
+    && failureKind('ENVIRONMENT')[1] === '环境问题' && failureKind('TIMEOUT')[1] === '测试超时',
+    '四类失败各有各的说法（合并成一句「测试没过」，用户就会去翻产品代码）');
+check(failureKind('WEIRD')[1] === 'WEIRD', '认不出来的类型原样显示，不假装认出来了');
+
+const failText = failRowHtml(failure, caseSample, new Set(), new Set());
+check(failText.includes('用例 2'), '① 哪条用例（编号）在里面：' + failText.slice(0, 120));
+check(failText.includes('查不到时返回 404'), 'chip 的语义描述跟着走，人不用回去翻清单');
+check(failText.includes('断言失败'), '② 失败原因是机器判的那一档');
+check(failText.includes('期望：') && failText.includes('404'), '③ 期望在里面');
+check(failText.includes('实际：') && failText.includes('500'), '③ 实际在里面');
+check(failText.includes('class="fail-guess"') && failText.includes('这是 AI 的猜测'),
+    '④ AI 的猜测单独一块，并且标明它是猜测');
+check(!failRowHtml({ ...failure, opinion: '' }, caseSample, new Set(), new Set())
+    .includes('fail-guess'), '它没说谁错时那一段整个不出现（不留一个空壳占位置）');
+check(failRowHtml({ ...failure, testCase: '', expected: '', actual: '' }, caseSample, new Set(), new Set())
+    .includes('（没写）'), '脚本没写期望/实际时明说「没写」，不留空行让人以为是漏显示');
+check(failText.includes('data-pick="2"'), '每条失败带一个勾选框，勾了才能回喂给开发');
+check(failRowHtml(failure, caseSample, new Set([2]), new Set()).includes('data-pick="2" checked'),
+    '勾上的那条画出来就是勾着的');
+
+console.log('失败清单那一块的转义与出处：');
+const nastyFail = failRowHtml({
+  kind: 'ASSERTION', testCase: '1', expected: '<img src=x onerror=1>', actual: '</div>',
+  opinion: '<b>代码错了</b>',
+}, caseSample, new Set(), new Set());
+check(nastyFail.includes('&lt;img src=x onerror=1&gt;') && !nastyFail.includes('<img src=x'),
+    '期望/实际是脚本打印的原话，一律转义');
+check(nastyFail.includes('&lt;b&gt;代码错了&lt;/b&gt;'), 'AI 那句猜测也转义');
+
+const bigReport = testsReport(report);
+check(testsReport(null) === null && testsReport('x') === null, '没有测试结果时返回 null（整块不画）');
+check(bigReport.passed === false && bigReport.exit === 1, '归一化：没过、退出码 1');
+check(testsReport({ exit: 0, failures: [] }).passed === true, '退出码 0 且没有失败 = 过了');
+check(testsReport({ exit: 1, failures: [], verification: { output: 'oops' } }).output === 'oops',
+    '留档里那份没有 output 字段，退回 verification.output 取原始输出');
+
+const panel = testsPanelHtml(report, caseSample, { picked: new Set([2]), known: new Set(), pending: true });
+check(panel.includes('测试结果'), '这一块有自己的标题：测试结果');
+check(panel.includes('断言失败') && panel.includes('404') && panel.includes('500'),
+    '失败清单在结果面板里（四要素都在）');
+check(panel.includes('必须过 1/1') && panel.includes('建议过 0/1'),
+    '这块里也报一遍通过率（只给失败清单的话，一次只跑了三条用例的运行会被读成满分）');
+check(panel.includes('这四条') === false && panel.includes('谁错了由你判'),
+    '这块说清它的立场：机器摆事实，谁错了由人判');
+check(testsPanelHtml(report, caseSample, { open: false }).includes('data-open="false"'),
+    '收起状态画得出来');
+check(testsPanelHtml(report, caseSample, { open: false }).includes('<div class="pending-body" hidden>'),
+    '收起时正文整块藏起来');
+check(testsPanelHtml(report, caseSample, { actions: false }).includes('data-act="next-round"') === false,
+    'actions: false（历史详情那种场合）时一个动作按钮都不画——它们动的是此刻的磁盘');
+
+console.log('失败清单：已知失败那一条：');
+const knownPanel = testsPanelHtml(report, caseSample, { known: new Set([2]), picked: new Set() });
+check(knownPanel.includes('已知失败'), '标过的那条改写成「已知失败」');
+check(knownPanel.indexOf('已知失败') > 0 && knownPanel.includes('data-known="true"'),
+    '整行也跟着走，不只是那个小标签');
+
+// ---------- 四个动作 ----------
+console.log('四个动作各打哪儿：');
+check(testActionPath('next-round') === '/api/run', '① 开发 AI 错了 → 下一轮 → /api/run');
+check(testActionPath('regenerate') === '/api/tests/regenerate',
+    '② 测试代码错了 → 重新生成 → /api/tests/regenerate（只换测试代码）');
+check(testActionPath('known') === '', '③ 不重要/误报：不发请求（没有任何机器动作配得上这个判断）');
+check(testActionPath('accept') === '/api/accept', '④ 接受 → /api/accept');
+check(testActionPath('interrupt') === '/api/rollback', '通用出口「中断 / 恢复到初始」→ /api/rollback');
+check(startsRun('next-round') === true, '只有「下一轮」会开一次运行');
+check(startsRun('regenerate') === false, '修测试那条路不自动重跑（十五.6）');
+check(startsRun('known') === false && startsRun('accept') === false && startsRun('interrupt') === false,
+    '另外三条路都不会顺手开运行');
+const paths = ['next-round', 'regenerate', 'accept', 'interrupt'].map(testActionPath);
+check(new Set(paths).size === paths.length,
+    '四条路两两不同（接到同一个接口上就是「点张三打了李四」）：' + paths.join(','));
+
+const actionsHtml = testsActionsHtml(bigReport, caseSample, new Set([2]), new Set(), { pending: true });
+check(actionsHtml.includes('data-act="next-round"') && actionsHtml.includes('data-act="regenerate"')
+    && actionsHtml.includes('data-act="known"') && actionsHtml.includes('data-act="accept"')
+    && actionsHtml.includes('data-act="interrupt"'),
+    '五个按钮都在（四个动作 + 一个通用出口）');
+check(actionsHtml.includes('下一轮（回喂选中的 1 条）'), '「下一轮」把回喂的条数写在按钮上');
+check(actionsHtml.includes('我的设计错了') === false,
+    '界面上不许出现「我的设计错了」这种按钮（十五.6）');
+check(testsActionsHtml(bigReport, caseSample, new Set(), new Set(), { pending: true })
+    .includes('data-act="next-round" disabled'),
+    '一条都没勾时「下一轮」是按住的（回喂得先说出要修哪几条）');
+check(testsActionsHtml(bigReport, caseSample, new Set([2]), new Set(),
+    { pending: true, regenerated: { released: false } }).includes('data-act="next-round" disabled'),
+    '重新生成的那批还没放行之前，「下一轮」也是按住的（十五.6 的那条顺序）');
+check(testsActionsHtml(bigReport, caseSample, new Set([2]), new Set(), { pending: false })
+    .includes('data-act="accept"') === false,
+    '磁盘上没有待处置的改动时不画「接受 / 中断」（点了只会拿到 409）');
+
+console.log('重新生成那一块（等人放行）：');
+const regen = {
+  directory: 'tools/20260930-121500',
+  files: ['tools/20260930-121500/run.cmd'],
+  sources: { 'tools/20260930-121500/run.cmd': 'echo PASS ^| 1\n' },
+  released: false,
+};
+const regenText = regenBlockHtml(regen);
+check(regenText.includes('tools/20260930-121500/run.cmd') && regenText.includes('echo PASS'),
+    '重新生成的测试代码连正文一起摊开给人 review');
+check(regenText.includes('还没有跑') || regenText.includes('没有被执行'),
+    '并且说清它没跑过（不自动重跑）');
+check(regenText.includes('data-act="release"'), '等人点「放行」');
+check(regenBlockHtml({ ...regen, released: true }).includes('已放行'), '放行之后这一块不再是按钮');
+
+console.log('回喂给开发的那段话（十五.7 的固定模板）：');
+const refeed = refeedText([2], caseSample, report, ['src/main/java/com/demo/Foo.java']);
+check(refeed.includes('用例 2') && refeed.includes('查不到时返回 404'), '带用例的语义描述');
+check(refeed.includes('断言失败'), '带失败类型');
+check(refeed.includes('期望 404') && refeed.includes('实际 500'), '带期望 vs 实际');
+check(refeed.includes('src/main/java/com/demo/Foo.java'), '带涉及的目标文件');
+check(!refeed.includes('echo FAIL') && !refeed.includes('assert404'),
+    '不给测试代码、不给断言源码（给了它就会照着断言改代码）');
+check(refeedText([2], caseSample, report, []).includes('（没勾任何目标文件）'),
+    '一条目标文件都没勾时明说，不留空');
+
+// ---------- 确认 → 冻结 ----------
+console.log('确认与冻结：');
+const frozenCases = caseSample.slice(0, 3);
+check(planSignature(frozenCases, ['b/Foo.java', 'a/Bar.java'])
+    === planSignature(frozenCases, ['a/Bar.java', 'b/Foo.java']),
+    '目标文件的勾选顺序不算「变了」（排序后再比）');
+check(planSignature(frozenCases, ['a/Bar.java'])
+    !== planSignature(frozenCases, ['a/Bar.java', 'b/Foo.java']),
+    '目标文件集多一个就是变了：要重新确认');
+check(planSignature(frozenCases, ['a/Bar.java'])
+    !== planSignature(frozenCases.slice(1), ['a/Bar.java']),
+    '用例集变了也要重新确认');
+check(planSignature([{ index: 1, what: 'a   b' }], []) === planSignature([{ index: 1, what: 'a b' }], []),
+    '只有空白差别不算变了（否则模型少打一个空格就要人再确认一次）');
+
+state.plan = { cases: frozenCases };
+state.selected = new Set(['a/Bar.java']);
+state.frozen = null;
+check(hasCases() === true && needsConfirm() === true, '有用例、还没确认过：要人点一下');
+// confirmCases 除了记下指纹，还会重画面板、解锁「运行」按钮、弹一句提示——那三件都碰 DOM，
+// 这里只想知道它留下的状态，所以给三个空替身（它们仨各自的行为由浏览器链盯着）
+globalThis.renderPlan = () => {};
+globalThis.notice = () => {};
+globalThis.updateRunButton = () => {};
+confirmCases();
+check(!needsConfirm(), '点过「确认」之后不再打扰人');
+check(state.frozen.signature === planSignature(frozenCases, state.selected), '冻住的是那个指纹');
+state.selected = new Set(['a/Bar.java', 'b/Foo.java']);
+check(staleFreeze() === true && needsConfirm() === true, '目标文件集变了：要重新确认');
+state.selected = new Set(['a/Bar.java']);
+check(needsConfirm() === false, '改回去之后又不用确认了（判据是内容，不是「有没有动过」）');
+state.plan = null;
+check(needsConfirm() === false, '这次没有用例的运行不设这道闸（老用法一个字节都没变）');
+state.frozen = null;
+
+console.log('用例清单那一块画成什么样：');
+const casesHtml = casesPanelHtml(caseSample,
+    { cases: [{ index: 1, passed: true }, { index: 2, passed: false }], failures: [failure],
+      directory: 'tools/20260930-120000',
+      sources: { 'tools/20260930-120000/run.cmd': '@echo off\necho FAIL\n' } },
+    { detail: 2, confirm: true, frozen: false, stale: false });
+check((casesHtml.match(/class="case-chip"/g) || []).length === 4, '每条用例一个 chip');
+check(casesHtml.includes('必须过 1/1') && casesHtml.includes('未标 0/1'),
+    '每档通过率都在（四档一个不落）');
+check(casesHtml.includes('data-act="confirm"') && casesHtml.includes('确认这批用例（冻结）'),
+    '还没确认时那一枚按钮在');
+check(casesHtml.includes('data-detail="2"') && (casesHtml.match(/case-detail/g) || []).length === 1,
+    'detail 只展开指定的那一条');
+check(casesHtml.includes('tools/20260930-120000/run.cmd') && casesHtml.includes('echo FAIL'),
+    '展开的那一条里能看见测试代码和它的路径');
+check(casesHtml.indexOf('case-code') > casesHtml.indexOf('data-detail="2"'),
+    '测试代码在那条用例的细节里，不是另起一块');
+check(casesPanelHtml(caseSample, null, { detail: null, confirm: true }).includes('还没有')
+    || casesPanelHtml(caseSample, null, { detail: null, confirm: true }).includes('还没跑过测试'),
+    '还没跑过测试时说清这一点（不假装每条都过）');
+check(casesPanelHtml(caseSample, null, { detail: null, confirm: false }).includes('data-act="confirm"')
+    === false, '历史面板里没有「确认」这回事');
+check(casesFootHtml(caseSample, { confirm: true, frozen: true, stale: false })
+    .includes('已确认并冻结'), '冻过之后那行改成「已确认并冻结」');
+check(casesFootHtml(caseSample, { confirm: true, frozen: true, stale: true }).includes('data-act="confirm"'),
+    '冻过但内容变了：再给一次「确认」');
+check(casesPanelHtml([], report, {}) === '', '一条用例都没有时整块不画');
+
+console.log('用例细节里的测试代码：');
+const caseDetailText = caseDetailHtml(caseSample[1], testsReport(report));
+check(caseDetailText.includes('要测什么') && caseDetailText.includes('怎么测') && caseDetailText.includes('对应验收'),
+    '四栏都在（要测什么 / 怎么测 / 期望 / 对应哪条验收）');
+check(caseDetailText.includes('没过'), '上次的下场也写着');
+check(caseDetailText.includes('断言失败'), '失败原因跟着走');
+check(caseDetailHtml(caseSample[1], null).includes('还没有'),
+    '还没生成测试代码时明说它什么时候才有');
+
+// ---------- 跑测试期间那句话 ----------
+// 「测试进行中（最长 N 分钟）」必须由引擎说出来：那一段跑多久只有引擎知道，
+// 界面自己写一个数，两边迟早对不上。
+console.log('跑测试期间的状态那句话：');
+const { stageText } = load('index.html', ['stageText'],
+    'function stageText', 'function updateStopButton');
+check(stageText({ type: 'log', round: 0, text: '测试进行中（最长 5 分钟）：正在生成测试产物并跑 3 条用例' })
+    === '测试进行中（最长 5 分钟）', '测试那一段照引擎那句话说话（数也是它的）');
+check(stageText({ type: 'log', round: 0, text: '测试进行中（最长 9 分钟）：x' }) === '测试进行中（最长 9 分钟）',
+    '引擎改了时限，界面跟着改（不是写死的 5 分钟）');
+check(stageText({ type: 'log', round: 2, text: '第 2 轮：调用模型…' }) === '第 2 轮', '轮级还是老样子');
+check(stageText({ type: 'log', round: 1, text: '编译校验：通过' }) === '编译校验中…', '编译那一段照旧');
+check(stageText({ type: 'result' }) === '' && stageText(null) === '',
+    '收场和没有事件时那句话清掉（不留一句过期的「正在…」）');
+check(stageText({ type: 'log', round: 0, text: '第 1 步：加接口' }) === '正在开工…', '没有轮次时说「正在开工」');
+
 console.log(failed ? '\n失败 ' + failed + ' 项' : '\n全部通过');
 process.exitCode = failed ? 1 : 0;

@@ -44,8 +44,13 @@ public final class TestScriptVerifier implements Verifier {
     /** 留给人看的输出长度上限。超了就掐头去尾保中间——两头都留着有用（见 shorten）。 */
     private static final int MAX_OUTPUT_CHARS = 20_000;
 
-    /** 时限：超过它就算这次跑不完，收掉整棵进程树。 */
-    private static final long DEFAULT_TIMEOUT_SECONDS = 5 * 60;
+    /**
+     * 时限：超过它就算这次跑不完，收掉整棵进程树。
+     *
+     * <p>公开出来是为了让界面上那句「测试进行中（最长 N 分钟）」和这里的数
+     * <b>是同一个数</b>：各写一遍的话，改了一处，另一处就开始骗人。
+     */
+    public static final long DEFAULT_TIMEOUT_SECONDS = 5 * 60;
 
     /** 收进程树那条命令等多久：它是系统自带的，正常在毫秒级。 */
     private static final long KILL_TIMEOUT_SECONDS = 10;
