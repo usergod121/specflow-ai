@@ -31,6 +31,15 @@ public record AgentResult(
         SUCCESS,
         /** 改动已落盘，但校验被跳过——不能算通过，需要人确认。 */
         SUCCESS_UNVERIFIED,
+        /**
+         * 改动已落盘、编译也通过了，但测试阶段没全过：失败清单在留档里，谁错了由人判断。
+         *
+         * <p>它<b>不是「失败」</b>：磁盘上那份改动可能是对的（也可能只是用例写错了），
+         * 所以既不回滚、也不自动回喂——回喂要等人看完清单，挑出「确实是代码错了」的那几条。
+         * 单独一档而不是并进 {@link #SUCCESS}，是因为「编译过」冒充「测过」正是这套机制
+         * 最该避免的那件事（十五.9）。
+         */
+        TESTS_FAILED,
         /** 达到重试上限仍未通过，磁盘已回滚到初始状态。 */
         FAILED,
         /** 失败原因不是代码，而是依赖/环境——重试无用，磁盘已回滚，等人处理。 */
@@ -68,6 +77,18 @@ public record AgentResult(
     public static AgentResult failed(int attempts, List<PatchApplier.FileChange> changes,
                                      List<VerificationResult> verifications, String detail) {
         return new AgentResult(Status.FAILED, attempts, changes, verifications, detail);
+    }
+
+    /**
+     * 改动留着、测试没全过——等人看完失败清单再决定谁错。
+     *
+     * <p>和 {@link #failed} 分开，是因为这两件事对用户的要求完全不同：
+     * 「失败」时磁盘已经回滚，没什么可看的；而这一档磁盘上那份改动好端端地等着人处置
+     * （接受或撤回），和 {@link #unverified} 走的是同一条收场路。
+     */
+    public static AgentResult testsFailed(int attempts, List<PatchApplier.FileChange> changes,
+                                          List<VerificationResult> verifications, String detail) {
+        return new AgentResult(Status.TESTS_FAILED, attempts, changes, verifications, detail);
     }
 
     /**

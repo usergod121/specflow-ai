@@ -188,6 +188,26 @@ class PlanReviewerTest {
                         .isEqualTo(PlanReview.MissingItem.Severity.OPTIONAL));
     }
 
+    /**
+     * 用例块是这一版新加的契约：检查阶段产出它，测试阶段照它生成测试代码。
+     * 和施工单那两条一样，这份规矩只在提示词里写一遍——漏了它，模型压根不会输出 CASES 块，
+     * 而引擎那边只会安静地「这次不测」，两边都看不出少了什么。
+     */
+    @Test
+    @DisplayName("检查协议里带着用例块：标记、六栏规矩、三档分级都要写着")
+    void instructionsCarryTheCaseBlock() {
+        assertThat(ReviewProtocol.INSTRUCTIONS)
+                .contains(ReviewProtocol.CASES_MARKER)
+                .contains(ReviewProtocol.CASES_RULES)
+                .contains("必须过")
+                .contains("建议过")
+                .contains("可选")
+                .as("期望必须是具体值，否则生成出来的断言永远是绿的")
+                .contains("不许写「正常」「能跑通」")
+                .as("用例不进目标文件清单这件事要说清")
+                .contains("不进目标文件清单");
+    }
+
     private PlanReviewer reviewer(RecordingLlm llm) {
         return new PlanReviewer(new ContextAssembler(new SafePathResolver(root)),
                 TemplateRegistry.empty(), llm);

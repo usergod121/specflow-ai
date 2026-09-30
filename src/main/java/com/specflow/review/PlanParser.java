@@ -33,12 +33,13 @@ public final class PlanParser {
         String flowchart = block(lines, ReviewProtocol.FLOW_MARKER).strip();
         List<PlanReview.MissingItem> missing = parseMissing(block(lines, ReviewProtocol.MISSING_MARKER));
         List<PlanStep> steps = parseSteps(response);
+        List<PlanReview.TestCase> cases = parseCases(response);
 
         if (flowchart.isEmpty()) {
             throw new SpecflowException("模型的检查结果里没有 '" + ReviewProtocol.FLOW_MARKER
                     + "' 块，无法给出实现方案；请重试一次");
         }
-        return PlanReview.of(summary, stripFence(flowchart), missing, steps);
+        return PlanReview.of(summary, stripFence(flowchart), missing, steps, cases);
     }
 
     /**
@@ -149,6 +150,58 @@ public final class PlanParser {
                 || stripped.equalsIgnoreCase("none")
                 || stripped.equals("无。")
                 || stripped.equals("没有了");
+    }
+
+    // ---------- 用例清单 ----------
+
+    /**
+     * 每行一条：{@code 编号 | 要测什么 | 怎么测 | 分级 | 期望什么 | 对应哪条验收标准}。
+     *
+     * <p>和施工单同一套宽容度，也同样<b>不静默丢</b>：字段没写全的行整行当作「要测什么」。
+     * 理由在测试阶段那一侧更硬——清单是<b>生成测试代码的唯一依据</b>，
+     * 在这里悄悄吞掉一行，跑出来的测试就会少验一件事，而报告上只会写「全部通过」。
+     *
+     * <p>没有 CASES 块时返回空列表而不是报错：那就表示这次没有用例，
+     * 测试阶段不会启动。为它抛异常只会让「老响应 / 没按协议写」这条路变成一次硬失败。
+     */
+    public List<PlanReview.TestCase> parseCases(String response) {
+        if (response == null || response.isBlank()) {
+            return List.of();
+        }
+        return casesOf(block(List.of(response.replace("\r\n", "\n").split("\n", -1)),
+                ReviewProtocol.CASES_MARKER));
+    }
+
+    private List<PlanReview.TestCase> casesOf(String block) {
+        List<PlanReview.TestCase> cases = new ArrayList<>();
+        for (String line : block.split("\n")) {
+            String trimmed = stripBullet(line);
+            if (trimmed.isEmpty() || isTableRule(trimmed)) {
+                continue;
+            }
+            String[] parts = trimPipes(trimmed).split("\\" + FIELD_SEPARATOR);
+            cases.add(testCase(parts, cases.size() + 1));
+        }
+        return List.copyOf(cases);
+    }
+
+    /**
+     * 把一行拆成一条用例。
+     *
+     * <p>只有一栏时按「整句话就是要测什么」处理（和施工单同一个坑：硬按编号栏去认，
+     * 会把整句话当成编号丢进 index）。编号写错、漏写、重复都不影响清单顺序——
+     * 界面按行序排，编号只在「失败清单对回哪一条」时当键用，缺了就按行号补一个。
+     */
+    private PlanReview.TestCase testCase(String[] parts, int fallbackIndex) {
+        if (parts.length == 1) {
+            return new PlanReview.TestCase(fallbackIndex, parts[0].strip(), "",
+                    PlanReview.TestCase.Level.UNKNOWN, "", "");
+        }
+        int index = number(field(parts, 0));
+        return new PlanReview.TestCase(index > 0 ? index : fallbackIndex,
+                field(parts, 1), field(parts, 2),
+                PlanReview.TestCase.Level.parse(field(parts, 3)),
+                field(parts, 4), field(parts, 5));
     }
 
     // ---------- 施工单 ----------

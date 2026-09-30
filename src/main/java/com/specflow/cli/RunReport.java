@@ -28,6 +28,12 @@ final class RunReport {
                 Console.warn("%s", result.detail());
                 result.changes().forEach(change -> Console.detail("%s", change.describe()));
             }
+            case TESTS_FAILED -> {
+                Console.warn("测试没全过（%d 轮）：", result.attempts());
+                Console.detail("%s", result.detail());
+                Console.detail("改动还在磁盘上（没有回滚）：看完失败清单再决定接受还是撤回");
+                Console.detail("保留改动：specflow accept    撤回改动：specflow rollback");
+            }
             case NEEDS_CONTEXT -> {
                 Console.warn("模型声明信息不足，未改动任何文件：");
                 Console.detail("%s", result.detail());
@@ -59,12 +65,15 @@ final class RunReport {
     /**
      * 退出码：0 成功 · 1 失败（已回滚）· 2 模型要求补充信息（磁盘未动）· 3 人工中断（已回滚）·
      * 4 卡在环境/依赖上（已回滚，需要人去处理）· 5 上一次的改动还没处置（磁盘未动）·
-     * 6 上一次留下的施工单对不上现在的清单（磁盘未动）。
+     * 6 上一次留下的施工单对不上现在的清单（磁盘未动）· 7 测试没全过（改动还在磁盘上）。
      *
      * <p>中断单独给一个码，是为了让 CI 能区分「它自己做不到」和「是我叫停的」；
      * 环境问题单独给一个码，是为了让 CI 能区分「代码写错了」和「这台机器上跑不起来」；
      * 施工单过期单独给一个码，是为了让 CI 能区分「它做砸了」和「你得先把目标清单改回去」——
      * 这两种情况下用户要做的事完全不同。
+     *
+     * <p>测试没过单独给 7，而不是并进 0（它确实改动了磁盘）：CI 上「测试没过」必须是红的，
+     * 而它和 1（已回滚、什么都没留下）要做的事也不一样——这一档的改动还在，得有人看失败清单。
      */
     static int exitCode(AgentResult.Status status) {
         return switch (status) {
@@ -75,6 +84,7 @@ final class RunReport {
             case NEEDS_ENVIRONMENT -> 4;
             case PENDING_DECISION -> 5;
             case PLAN_OUTDATED -> 6;
+            case TESTS_FAILED -> 7;
         };
     }
 }

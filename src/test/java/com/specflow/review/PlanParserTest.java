@@ -396,4 +396,125 @@ class PlanParserTest {
         assertThat(parser.parseSteps("")).isEmpty();
         assertThat(parser.parseSteps(null)).isEmpty();
     }
+
+    // ---------- 用例清单 ----------
+
+    @Test
+    @DisplayName("用例按六栏拆开：编号、要测什么、怎么测、分级、期望、对应哪条验收标准")
+    void parsesTestCases() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+
+                <<<<<<< CASES
+                1 | 按编号查订单能查到 | 用已存在的编号查一次 | 必须过 | 返回的那条 id 等于传入的编号 | 订单能按编号查询
+                2 | 查不到的编号不抛异常 | 用不存在的编号查一次 | 建议过 | 返回空集合而不是抛异常 | 订单能按编号查询
+                3 | 编号是空串时给出明确提示 | 传空串查一次 | 可选 | 返回 400 和一句中文提示 | 无
+                >>>>>>> CASES
+                """);
+
+        assertThat(review.cases()).hasSize(3);
+        PlanReview.TestCase first = review.cases().get(0);
+        assertThat(first.index()).isEqualTo(1);
+        assertThat(first.what()).isEqualTo("按编号查订单能查到");
+        assertThat(first.how()).contains("已存在的编号");
+        assertThat(first.level()).isEqualTo(PlanReview.TestCase.Level.MUST);
+        assertThat(first.expected()).contains("id 等于传入的编号");
+        assertThat(first.acceptance()).contains("按编号查询");
+        assertThat(review.cases().get(1).level()).isEqualTo(PlanReview.TestCase.Level.SHOULD);
+        assertThat(review.cases().get(2).level()).isEqualTo(PlanReview.TestCase.Level.OPTIONAL);
+    }
+
+    @Test
+    @DisplayName("分级认不出来就标「未标」，绝不替它升级成「必须过」")
+    void unknownLevelNeverBecomesMust() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                <<<<<<< CASES
+                1 | 一条说不清重要性的用例 | 随便跑一下 | 挺重要的 | 正常 | 无
+                >>>>>>> CASES
+                """);
+
+        assertThat(review.cases()).singleElement().satisfies(testCase -> {
+            assertThat(testCase.level()).isEqualTo(PlanReview.TestCase.Level.UNKNOWN);
+            assertThat(testCase.level().label()).isEqualTo("未标");
+        });
+    }
+
+    @Test
+    @DisplayName("用例认不出的行不能悄悄消失：整行当成「要测什么」，宁可多一条让机器报出来")
+    void keepsUnparsedCaseLines() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                <<<<<<< CASES
+                顺便测一下别的地方
+                2 | 第二条 | 这么测 | 必须过 | 期望值 | 无
+                >>>>>>> CASES
+                """);
+
+        assertThat(review.cases()).as("清单是生成测试代码的唯一依据，少一条就少验一件事").hasSize(2);
+        assertThat(review.cases().get(0).what()).isEqualTo("顺便测一下别的地方");
+        assertThat(review.cases().get(0).index()).as("没写编号就按行号补一个").isEqualTo(1);
+        assertThat(review.cases().get(1).index()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("markdown 表格的表头与分隔行不该变成用例（模型偶尔顺手画个表）")
+    void skipsCaseTableChrome() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                <<<<<<< CASES
+                | 编号 | 要测什么 | 怎么测 | 分级 | 期望什么 | 对应哪条验收标准 |
+                |---|---|---|---|---|---|
+                1 | 第一条 | 这么测 | 必须过 | 期望值 | 无
+                >>>>>>> CASES
+                """);
+
+        assertThat(review.cases()).as("表头那行是有内容的，保留；分隔行丢掉").hasSize(2);
+        assertThat(review.cases()).extracting(PlanReview.TestCase::what)
+                .containsExactly("要测什么", "第一条");
+    }
+
+    @Test
+    @DisplayName("没有 CASES 块时是空列表，不是报错——那表示这次不测")
+    void emptyCasesWhenBlockMissing() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                """);
+
+        assertThat(review.cases()).isEmpty();
+        assertThat(parser.parseCases("我什么也没写。")).isEmpty();
+        assertThat(parser.parseCases(null)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("用例不进目标文件清单：它只是「要验什么」，不是这次要改的代码")
+    void casesDoNotBecomeTargets() {
+        PlanReview review = parser.parse("""
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+                <<<<<<< CASES
+                1 | 某件事 | 某个测法 | 必须过 | 某个期望 | 无
+                >>>>>>> CASES
+                """);
+
+        assertThat(review.cases()).hasSize(1);
+        assertThat(review.steps()).as("用例块不该顺便变出施工单").isEmpty();
+    }
 }

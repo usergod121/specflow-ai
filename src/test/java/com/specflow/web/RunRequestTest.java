@@ -78,4 +78,49 @@ class RunRequestTest {
         return RunRequest.of(null, "改点东西", null, null, null, List.of("Foo.java"),
                 null, null, null, true, 6, maxRounds);
     }
+
+    /**
+     * 用例清单是检查阶段产出的，测试阶段（以及下一批的界面）都靠它吃饭。
+     * 它同样要经得起「写出去、原样读回来」这一趟——界面是把整个 plan 原样回传的。
+     */
+    @Test
+    @DisplayName("用例清单要能原样回传：编号、要测什么、怎么测、分级、期望、对应的验收标准一个不丢")
+    void carriesTestCasesBackIntoTheRun() throws IOException {
+        PlanReview plan = PlanReview.of("摘要", "flowchart TD\n    A-->B", List.of(), List.of(),
+                List.of(new PlanReview.TestCase(1, "按编号查得到", "用已有编号查一次",
+                        PlanReview.TestCase.Level.MUST, "返回的那条 id 等于传入的编号",
+                        "订单能按编号查询")));
+
+        String json = Http.JSON.writeValueAsString(plan);
+        RunRequest echo = Http.JSON.readValue(
+                "{\"prompt\":\"改点东西\",\"targets\":[\"Foo.java\"],\"approvedPlan\":" + json + "}",
+                RunRequest.class);
+
+        assertThat(echo.approvedPlan().cases()).singleElement().satisfies(testCase -> {
+            assertThat(testCase.index()).isEqualTo(1);
+            assertThat(testCase.what()).isEqualTo("按编号查得到");
+            assertThat(testCase.how()).contains("已有编号");
+            assertThat(testCase.level()).isEqualTo(PlanReview.TestCase.Level.MUST);
+            assertThat(testCase.expected()).contains("id 等于传入的编号");
+            assertThat(testCase.acceptance()).contains("按编号查询");
+        });
+    }
+
+    /**
+     * 老记录、以及还没跟上这一版的界面，发回来的 plan 里没有 {@code cases} 这个键。
+     * 读出来是 {@code null} 的话，测试阶段会拿它去 {@code isEmpty()}——一次运行跑到一半 NPE。
+     * 「没带用例」和「没有用例」本来就该是同一个结果。
+     */
+    @Test
+    @DisplayName("方案里没有用例这一项时是空清单，不是 null")
+    void toleratesMissingCaseBlock() throws IOException {
+        RunRequest echo = Http.JSON.readValue(
+                "{\"prompt\":\"x\",\"targets\":[\"Foo.java\"],"
+                        + "\"approvedPlan\":{\"summary\":\"摘要\",\"flowchart\":\"flowchart TD\"}}",
+                RunRequest.class);
+
+        assertThat(echo.approvedPlan().cases()).isEmpty();
+        assertThat(echo.approvedPlan().steps()).isEmpty();
+        assertThat(echo.approvedPlan().missing()).isEmpty();
+    }
 }

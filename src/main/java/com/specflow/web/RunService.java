@@ -23,6 +23,7 @@ import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.SpecValidator;
 import com.specflow.template.TemplateRegistry;
+import com.specflow.tests.TestOutcome;
 import com.specflow.util.SafePathResolver;
 import com.specflow.verify.CompileVerifier;
 import com.specflow.verify.VerificationResult;
@@ -389,6 +390,21 @@ public final class RunService implements AgentListener {
             hub.publish(ProgressMessages.levelOf(result), round, currentStep, null,
                     ProgressMessages.verified(result));
         }
+    }
+
+    /**
+     * 测试阶段收场了：时间线上给一行。
+     *
+     * <p>整份失败清单<b>不在这里推</b>——它比一行字重得多，整块进留档
+     * （界面翻 {@code /api/run-detail} 就拿到）。这一行只回答「测试跑到哪了、成了没有」。
+     *
+     * <p>步号给 0（不属于任何一步）：测试阶段跑在整份施工单<b>之后</b>，
+     * 挂在最后一步上会让人以为它是那一步的一部分。
+     */
+    @Override
+    public void testsFinished(TestOutcome outcome) {
+        hub.publish(ProgressMessages.levelOf(outcome), 0, 0, null,
+                ProgressMessages.testsFinished(outcome));
     }
 
     @Override

@@ -21,6 +21,8 @@ import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.VerifySpec;
 import com.specflow.template.TemplateRegistry;
+import com.specflow.tests.EntryScripts;
+import com.specflow.tests.TestOutcome;
 import com.specflow.verify.CompileVerifier;
 import com.specflow.verify.VerificationContext;
 import com.specflow.verify.VerificationResult;
@@ -64,6 +66,10 @@ class DevelopmentAgentTest {
                 int b = 0;
             }
             """;
+
+    /** 系统提示词里那个产物目录：测试产物的路径带时间戳，只有从这里读得到。 */
+    private static final java.util.regex.Pattern ARTIFACT_DIRECTORY =
+            java.util.regex.Pattern.compile("tools/\\d{8}-\\d{6}(-\\d+)?");
 
     @BeforeEach
     void setUp() throws IOException {
@@ -428,6 +434,102 @@ class DevelopmentAgentTest {
         agent(llm, new ScriptedVerifier(passed())).run(TestSpecs.spec(List.of("Foo.java")));
 
         assertThat(llm.patches().get(0).get(1).content()).doesNotContain("已确认的实现方案");
+    }
+
+    // ---------- 测试阶段：生成 → 跑脚本 → 看退出码 ----------
+
+    @Test
+    @DisplayName("测试没过：改动留在磁盘上等处置，状态是「测试没过」而不是失败")
+    void keepsChangesWhenTestsFail() {
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(1, "FAIL | 1 | a == 2 | a == 1 | code is wrong"));
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()))
+                .run(TestSpecs.spec(List.of("Foo.java")), planWithCases());
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.TESTS_FAILED);
+        assertThat(read("Foo.java")).as("错的可能是用例，所以改动不回滚").contains("int a = 2;");
+        assertThat(result.detail())
+                .contains("退出码 1")
+                .contains("用例 1")
+                .contains("期望 a == 2")
+                .contains("实际 a == 1")
+                .as("谁错了机器判不了，所以不许替用户下结论")
+                .contains("交给你定");
+        assertThat(result.verifications()).as("测试脚本的结论挂在校验结果里，CLI 那一行才有得打")
+                .anySatisfy(verification -> assertThat(verification.verifier()).isEqualTo("测试脚本"));
+    }
+
+    /**
+     * 环境问题这一档和「测试没过」是两种收场：脚本压根没跑起来，磁盘上的改动也就没有
+     * 任何证据支撑，必须整轮回滚、把原始错误交给人——和编译那边判「缺依赖」是同一条路。
+     */
+    @Test
+    @DisplayName("测试跑不起来（环境问题）：整轮回滚，把原始错误交给人")
+    void rollsBackWhenTestsCannotRun() {
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(2, "BLOCKED | javac not found"));
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()))
+                .run(TestSpecs.spec(List.of("Foo.java")), planWithCases());
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.NEEDS_ENVIRONMENT);
+        assertThat(read("Foo.java")).isEqualTo(ORIGINAL);
+        assertThat(result.detail()).contains("javac not found").contains("环境问题");
+    }
+
+    /**
+     * 闸门：没有用例清单就不进测试阶段。
+     * 这一条护的是「老用法一个字节都没变」——它也会在多花一次模型调用这件事上立刻露出来。
+     */
+    @Test
+    @DisplayName("没有用例清单就不跑测试阶段，一次模型调用都不多花")
+    void skipsTestPhaseWithoutCases() {
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"));
+
+        AgentResult result = agent(llm, new ScriptedVerifier(passed()))
+                .run(TestSpecs.spec(List.of("Foo.java")),
+                        planWithSteps(step(1, "第一步", false, "Foo.java")));
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(llm.calls()).as("只有开发那一轮").hasSize(1);
+    }
+
+    /**
+     * 留档是这一批唯一的「事后可查」的地方：代码可能已经被改回去，失败清单不会。
+     * 所以用例清单与失败清单都要落在同一条记录里——只记失败的那几条，分母就没了。
+     */
+    @Test
+    @DisplayName("用例清单与失败清单都进运行留档")
+    void recordsTestOutcomeIntoTheRunArchive() {
+        Spec spec = TestSpecs.spec(List.of("Foo.java"));
+        PlanReview approved = planWithCases();
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(1, "FAIL | 1 | a == 2 | a == 1 | code is wrong"));
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+
+        new DevelopmentAgent(root, ProjectConfig.DEFAULT, TemplateRegistry.empty(), llm,
+                List.of(new ScriptedVerifier(passed())),
+                RunRecorder.start(store, spec, approved, AgentListener.NOOP)).run(spec, approved);
+
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+
+        assertThat(record.status()).isEqualTo("TESTS_FAILED");
+        assertThat(record.testCases()).as("用例清单是分母，失败清单是分子").hasSize(1);
+        assertThat(record.tests()).isNotNull();
+        assertThat(record.tests().failures()).singleElement().satisfies(failure -> {
+            assertThat(failure.kind()).isEqualTo(TestOutcome.Failure.Kind.ASSERTION);
+            assertThat(failure.testCase()).isEqualTo("1");
+            assertThat(failure.expected()).isEqualTo("a == 2");
+            assertThat(failure.actual()).isEqualTo("a == 1");
+        });
+        assertThat(record.tests().directory()).startsWith("tools/");
+        assertThat(record.timeline()).as("时间线上也要有一行，翻记录的人才知道跑过测试")
+                .anySatisfy(line -> assertThat(line.text()).contains("测试没过"));
     }
 
     // ---------- 施工单：按步循环 ----------
@@ -1289,6 +1391,27 @@ class DevelopmentAgentTest {
                 List.of(steps));
     }
 
+    /**
+     * 一份带<b>用例清单</b>的方案：测试阶段靠它启动（没有它就不跑测试）。
+     * 不分步，所以这次运行走的是单步那条路。
+     */
+    private static PlanReview planWithCases() {
+        return PlanReview.of("做点事", "flowchart TD\n    A[入口] --> B[出口]", List.of(), List.of(),
+                List.of(new PlanReview.TestCase(1, "a 变成 2", "读 Foo.java 里的 a",
+                        PlanReview.TestCase.Level.MUST, "a == 2", "无")));
+    }
+
+    /**
+     * 「生成测试产物」那一次调用的回复。
+     *
+     * <p>产物路径里的目录是引擎当次给的（带时间戳），测试写不出这个值——所以这里用
+     * {@code {{ENTRY}}} 占位，由假模型照系统提示词替换（真模型也是这么知道该写哪儿的）。
+     */
+    private String artifactsPatch(int exit, String failureLine) {
+        return "<<<<<<< SEARCH {{ENTRY}}\n=======\n" + EntryScripts.body(exit, failureLine)
+                + ">>>>>>> REPLACE\n";
+    }
+
     private static PlanStep step(int index, String goal, boolean intermediate, String... files) {
         return new PlanStep(index, goal, List.of(files), "能编译", intermediate);
     }
@@ -1361,7 +1484,27 @@ class DevelopmentAgentTest {
             if (responses.isEmpty()) {
                 throw new IllegalStateException("脚本已用尽，模型被调用了 " + calls.size() + " 次");
             }
-            return responses.poll();
+            return fill(responses.poll(), messages);
+        }
+
+        /**
+         * 填掉回复里的那两个占位符。
+         *
+         * <p>测试产物的目录带时间戳，用例写不出它——而真模型是从系统提示词里读到这个目录的，
+         * 假模型照做才像真的。占位符只在这两处替换，别的回复原样返回。
+         */
+        private static String fill(String response, List<ChatMessage> messages) {
+            if (!response.contains("{{")) {
+                return response;
+            }
+            String system = messages.get(0).content();
+            java.util.regex.Matcher matcher = ARTIFACT_DIRECTORY.matcher(system);
+            if (!matcher.find()) {
+                throw new IllegalStateException("系统提示词里没有产物目录：\n" + system);
+            }
+            String dir = matcher.group();
+            return response.replace("{{DIR}}", dir)
+                    .replace("{{ENTRY}}", dir + "/" + EntryScripts.name());
         }
 
         /** 认这次调用要的是不是「只产施工单」的那份协议。 */

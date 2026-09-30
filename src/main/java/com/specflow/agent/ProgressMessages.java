@@ -3,6 +3,7 @@ package com.specflow.agent;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanStep;
+import com.specflow.tests.TestOutcome;
 import com.specflow.verify.VerificationResult;
 
 import java.util.List;
@@ -84,5 +85,45 @@ public final class ProgressMessages {
     /** 校验失败时的级别：失败用 error，通过和跳过都是 info。 */
     public static String levelOf(VerificationResult result) {
         return result.failed() ? "error" : "info";
+    }
+
+    /**
+     * 测试阶段收场那一行。
+     *
+     * <p>详情（整份失败清单）在结果的 {@code detail} 里，这里只给<b>一行能扫过去的</b>：
+     * 时间线上要的是「什么时候、成了没有、失败了几条」，逐条明细在失败清单那一块。
+     */
+    public static String testsFinished(TestOutcome outcome) {
+        String where = outcome.directory().isEmpty() ? "" : "（产物在 " + outcome.directory() + "/）";
+        if (outcome.passed()) {
+            return "测试通过：脚本退出码 0，没有失败用例" + where;
+        }
+        // 超时单独说一句：留档里那句「测试没能跑起来」看不出是超时还是起不来，
+        // 而这两种事的下一步动作完全不同
+        if (outcome.worst() == TestOutcome.Failure.Kind.TIMEOUT) {
+            return "测试超时：脚本没在时限内结束，已经被强制终止（整棵进程树一起收掉了）" + where;
+        }
+        if (outcome.exit() < 0) {
+            return "测试没能跑起来" + where + "：" + firstFailure(outcome);
+        }
+        return "测试没过：退出码 " + outcome.exit() + "，失败 " + outcome.failures().size()
+                + " 条" + where + "：" + firstFailure(outcome);
+    }
+
+    /**
+     * 测试阶段在时间线上的级别。
+     *
+     * <p>环境问题是 error（它会连累整个运行收场），断言没过是 warn（改动还在，等人看），
+     * 通过是 info。和校验器那一套口径一致。
+     */
+    public static String levelOf(TestOutcome outcome) {
+        if (outcome.passed()) {
+            return "info";
+        }
+        return outcome.environmental() ? "error" : "warn";
+    }
+
+    private static String firstFailure(TestOutcome outcome) {
+        return outcome.failures().isEmpty() ? "没有失败清单" : outcome.failures().get(0).describe();
     }
 }

@@ -9,6 +9,7 @@ import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
 import com.specflow.spec.Spec;
+import com.specflow.tests.TestOutcome;
 import com.specflow.verify.VerificationResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -89,6 +90,18 @@ public final class RunRecorder implements AgentListener {
      * 挂最近的那一轮最接近事实。
      */
     private int round;
+
+    /**
+     * 测试阶段的结论：这一次测试留档里最值钱的那一块。
+     *
+     * <p>它比时间线上那一行重得多：里面是产物路径、退出码和<b>整份失败清单</b>
+     * （哪条用例、期望、实际、哪一类失败）。用户事后翻记录时只有它答得出
+     * 「那几条到底怎么错的」——代码可能已经被改回去了，失败清单不会。
+     *
+     * <p>没跑过测试阶段（没有用例清单、或者运行没走到那一步）时它是 {@code null}，
+     * 留档里于是没有这一项——而不是写一个空壳，那会变成「跑过但没失败」的另一种说法。
+     */
+    private TestOutcome tests;
 
     private RunRecorder(RunStore store, AgentListener delegate, Spec spec, PlanReview approved) {
         this.store = store;
@@ -189,6 +202,20 @@ public final class RunRecorder implements AgentListener {
         delegate.verificationFinished(round, results);
     }
 
+    /**
+     * 测试阶段跑完了。
+     *
+     * <p>记两笔：时间线上那<b>一行</b>（什么时候、成了没有、失败几条），
+     * 以及留档里那<b>一整块</b>（失败清单）。前者给人扫，后者给人查——
+     * 一行摘要里塞不下四条失败用例的期望与实际。
+     */
+    @Override
+    public void testsFinished(TestOutcome outcome) {
+        this.tests = outcome;
+        record(round, ProgressMessages.levelOf(outcome), ProgressMessages.testsFinished(outcome));
+        delegate.testsFinished(outcome);
+    }
+
     @Override
     public void workspaceRestored(int round, String reason) {
         record(round, "warn", ProgressMessages.restored(reason));
@@ -222,6 +249,7 @@ public final class RunRecorder implements AgentListener {
                 spec.targets(), result.attempts(), result.detail(),
                 approved == null ? List.of() : approved.missing(),
                 changesOf(result.changes()), stepsOf(result), planSteps, stepsSource,
+                approved == null ? List.of() : approved.cases(), tests,
                 List.copyOf(timeline));
         try {
             store.save(record);

@@ -44,7 +44,17 @@ public record VerificationResult(
         /** 模型改代码能解决。 */
         CODE,
         /** 改代码解决不了：缺依赖、编译级别、路径权限、工具找不到之类。 */
-        ENVIRONMENT
+        ENVIRONMENT,
+        /**
+         * 跑过头了：命令没在时限内结束，已经被强制终止。
+         *
+         * <p>为什么单独一档而不并进 {@link #ENVIRONMENT}：两者的收场方式不一样。
+         * 环境问题是「这台机器上跑不起来」（缺命令、连不上），处理完之后结论不会变；
+         * 超时是「它跑不完」——可能只是慢，也可能卡住了，而磁盘上那份改动未必有错。
+         * 并进环境问题会让一次本来就慢的测试把编译通过的改动一起回滚掉，
+         * 而报告里写的原因是「缺命令、连不上」这种对不上的话。
+         */
+        TIMEOUT
     }
 
     public static VerificationResult passed(String verifier, String command, String output) {
@@ -78,5 +88,15 @@ public record VerificationResult(
     /** 这次失败改代码解决不了，得人去看依赖或环境。 */
     public boolean environmental() {
         return kind == Kind.ENVIRONMENT;
+    }
+
+    /**
+     * 这次失败是「跑过头了」。
+     *
+     * <p>它<b>不算环境问题</b>：环境问题要立刻停并回滚，超时只是没跑完，
+     * 磁盘上的改动是好是坏还没人看过（见 {@link Kind#TIMEOUT}）。
+     */
+    public boolean timedOut() {
+        return kind == Kind.TIMEOUT;
     }
 }

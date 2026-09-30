@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
+import com.specflow.tests.TestOutcome;
 
 import java.util.List;
 
@@ -44,6 +45,11 @@ import java.util.List;
  *                  老记录里没有这一项，读出来是 {@code null}（那一次续跑只能现生成）
  * @param stepsSource 施工单是从哪来的（{@code APPROVED} / {@code GENERATED} / {@code RESUMED}
  *                    / {@code SINGLE}）；没有施工单这个概念的记录里是 {@code null}
+ * @param testCases 检查阶段定下来的<b>用例清单</b>（这次打算验什么）。它和 {@code tests} 的分工：
+ *                  这个是<b>开工时</b>的清单，那个是<b>跑完之后</b>的账。要算「必须过 3/3」这种
+ *                  通过率，两个都得有——只记失败的那几条，分母就没了。
+ *                  老记录、以及没跑过检查的运行里没有这一项，读出来是 {@code null}
+ * @param tests     测试阶段那一次的结果（产物、退出码、失败清单）。没有用例清单就不会有它
  * @param timeline  逐条的过程记录
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -64,6 +70,8 @@ public record RunRecord(
         List<Step> steps,
         List<PlanStep> planSteps,
         String stepsSource,
+        List<PlanReview.TestCase> testCases,
+        TestOutcome tests,
         List<Line> timeline
 ) {
 

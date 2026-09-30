@@ -927,7 +927,7 @@ const statuses = agentResultSource
     .split('\n').map(line => line.trim())
     .filter(line => /^[A-Z][A-Z_]*[,]?$/.test(line))
     .map(line => line.replace(',', ''));
-check(statuses.length === 8, '从 AgentResult.Status 里读出的终态共 8 个：' + statuses.join(','));
+check(statuses.length === 9, '从 AgentResult.Status 里读出的终态共 9 个：' + statuses.join(','));
 const historyTable = load('index.html', ['STATUS_LABEL'], 'const STATUS_LABEL', 'async function openHistory');
 const resultTable = load('index.html', ['STATUS_TEXT'], 'const STATUS_TEXT', 'function renderResult');
 const notInHistory = statuses.filter(name => !historyTable.STATUS_LABEL[name]);

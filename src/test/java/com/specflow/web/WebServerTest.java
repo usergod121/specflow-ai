@@ -519,6 +519,52 @@ class WebServerTest {
     }
 
     /**
+     * 用例清单是下一批界面要画的东西，也是测试阶段启动的依据（没有它就不跑测试）。
+     * 它必须真的发到页面上——「引擎解析出来了、响应体里没有」这件事在施工单那次已经发生过
+     * （见上面 {@code stepAudit} 那条），代价是整条链静默失效。
+     *
+     * <p>断言刻意落在<b>字段名</b>上，而不只是「有没有 cases 这个键」：下一批的界面读的是
+     * {@code plan.cases[].index/what/how/level/expected/acceptance}，名字对不上就是读不到，
+     * 而两边的测试还会各自是绿的。
+     */
+    @Test
+    @DisplayName("检查接口把用例清单原样发出去：编号、要测什么、怎么测、分级、期望、验收标准")
+    void reviewSendsTestCasesToThePage() throws Exception {
+        try (StubModelServer model = StubModelServer.answering(CASES_ANSWER)) {
+            Path projectRoot = stubbedProject(model);
+            try (WebServer reviewed = WebServer.start(projectRoot, 0,
+                    new RecentProjects(root.resolve("review-recent.json")))) {
+                HttpClient client = HttpClient.newHttpClient();
+                HttpResponse<String> response = client.send(HttpRequest.newBuilder(
+                                URI.create(reviewed.url() + "/api/review"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("""
+                                {"prompt": "加一个按编号查询", "targets": ["src/main/java/com/demo/Foo.java"],
+                                 "verifyCompile": false}
+                                """))
+                        .build(), HttpResponse.BodyHandlers.ofString());
+
+                assertThat(response.statusCode()).isEqualTo(200);
+                JsonNode cases = body(response).path("plan").path("cases");
+                assertThat(cases.isArray()).as("plan.cases 要是数组，缺了它界面上一张用例卡片都画不出来")
+                        .isTrue();
+                assertThat(cases).hasSize(2);
+
+                JsonNode first = cases.get(0);
+                assertThat(first.path("index").asInt()).as("编号是失败清单对回用例的键").isEqualTo(1);
+                assertThat(first.path("what").asText()).isEqualTo("按编号查订单能查到");
+                assertThat(first.path("how").asText()).contains("已存在的编号");
+                assertThat(first.path("level").asText())
+                        .as("分级发枚举名，红/橙/灰由界面自己映射")
+                        .isEqualTo("MUST");
+                assertThat(first.path("expected").asText()).isEqualTo("返回的那条的 id 等于 1");
+                assertThat(first.path("acceptance").asText()).isEqualTo("订单能按编号查询");
+                assertThat(cases.get(1).path("level").asText()).isEqualTo("SHOULD");
+            }
+        }
+    }
+
+    /**
      * 续跑那条链的灰盒：{@code /api/run} 挂起一次，{@code /api/continue?force=1} 接着跑。
      *
      * <p>两件事一起钉，因为它们在同一条路上：
@@ -727,6 +773,23 @@ class WebServerTest {
             2 | 接着把 a 改成 3 | src/main/java/com/demo/Foo.java | 能编译 | 自洽
             3 | 最后收尾 | src/main/java/com/demo/Foo.java | 能编译 | 自洽
             >>>>>>> STEPS
+            """;
+
+    /** 一份带用例清单的检查结果：检查接口要把它原样发给界面。 */
+    private static final String CASES_ANSWER = """
+            <<<<<<< SUMMARY
+            加一个按编号查询的方法。
+            >>>>>>> SUMMARY
+
+            <<<<<<< FLOW
+            flowchart TD
+                A[入口] --> B[出口]
+            >>>>>>> FLOW
+
+            <<<<<<< CASES
+            1 | 按编号查订单能查到 | 用已存在的编号查一次 | 必须过 | 返回的那条的 id 等于 1 | 订单能按编号查询
+            2 | 查不到的编号不抛异常 | 用不存在的编号查一次 | 建议过 | 返回空集合而不是抛异常 | 无
+            >>>>>>> CASES
             """;
 
     @Test

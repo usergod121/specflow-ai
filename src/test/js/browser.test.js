@@ -55,6 +55,12 @@ let otherProject = null;
  */
 let reviewProject = null;
 /**
+ * 链 25 临时造出来的「带假模型的项目」（测试阶段那一链）。
+ * 和链 23 一样：目录跟着 TEMP_PATHS 删，但「最近打开」里那条记录要单独去接口上删——
+ * 留着它会以「已不在磁盘上」的样子一直待在真实的用户目录里。
+ */
+let testsProject = null;
+/**
  * 链 23 起的本机假模型服务。跑完必须关掉——它是一个真在监听的端口，
  * 留着它下一次跑测试会多一个没人认领的进程。
  */
@@ -134,6 +140,46 @@ function startStubModel(answer) {
       req.on('end', () => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: answer } }] }));
+      });
+    });
+    server.listen(0, '127.0.0.1', () => resolve({
+      port: server.address().port,
+      close: () => server.close(),
+    }));
+  });
+}
+
+/**
+ * 按顺序回话的假模型：链 25 要用（一次运行里有三次调用：检查 → 开发 → 生成测试产物，
+ * 三次的回答必须不一样，而 {@link startStubModel} 每次都回同一句）。
+ *
+ * <p>回复里的 {@code {{DIR}}} / {@code {{ENTRY}}} 按<b>这一次请求</b>里系统提示词给出的
+ * 产物目录替换：那个目录带时间戳，用例写不出来，而真模型正是从提示词里读到它的。
+ * 拿不到替换的报文就原样返回——真模型也不会因为看不懂提示就报错。
+ */
+function startScriptedModel(answers) {
+  const queue = [...answers];
+  return new Promise(resolve => {
+    const server = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        if (!queue.length) {
+          // 用 500 回过去，而不是悄悄重复最后一条：这一链每多一次调用都说明引擎多问了一遍，
+          // 而重复答案会让那件事看起来很正常（Java 那边的假模型也是这个规矩）
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: '脚本已用尽' } }));
+          return;
+        }
+        let content = queue.shift();
+        const request = Buffer.concat(chunks).toString('utf8');
+        const dir = (request.match(/tools\/\d{8}-\d{6}(-\d+)?/) || [])[0];
+        if (dir) {
+          content = content.replace(/\{\{DIR\}\}/g, dir)
+              .replace(/\{\{ENTRY\}\}/g, dir + '/run.cmd');
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }));
       });
     });
     server.listen(0, '127.0.0.1', () => resolve({
@@ -2757,6 +2803,135 @@ async function main() {
     stubModel.close();
     stubModel = null;
 
+    // ---------- 链 25：测试阶段（生成 → 跑脚本 → 看退出码） ----------
+    // 这一批的整条链只有一段是界面能看见的，也就只在这里验：
+    //   ① /api/review 的响应体里带着用例清单（下一批界面拿它画卡片，所以断的是字段名）；
+    //   ② 测试没过时运行是「TESTS_FAILED」——改动留在磁盘上，结果面板与历史列表都有说法；
+    //   ③ 失败清单进了留档（哪条用例 / 期望 / 实际 / 哪一类失败），事后翻记录查得到。
+    // 引擎那一侧的分档、回滚、产物白名单由 Java 测试钉着，这里只走真浏览器看得见的那一段。
+    console.log('\n链 25　测试阶段：用例清单发得出来、测试没过有状态、失败清单进留档：');
+
+    testsProject = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-tests-'));
+    TEMP_PATHS.push(testsProject);    fs.mkdirSync(path.join(testsProject, 'src', 'main', 'java', 'com', 'demo'), { recursive: true });
+    fs.writeFileSync(path.join(testsProject, 'pom.xml'), '<project/>\n');
+    fs.writeFileSync(path.join(testsProject, 'src', 'main', 'java', 'com', 'demo', 'Foo.java'),
+        'class Foo {\n    int a = 1;\n}\n');
+    stubModel = await startScriptedModel([
+      // ① 检查：一份带用例块和单步施工单的结果（单步 = 不额外花一次「只产施工单」的调用）
+      ['<<<<<<< SUMMARY', '给 Foo 加一个方法。', '>>>>>>> SUMMARY', '',
+       '<<<<<<< FLOW', 'flowchart TD', '    A[入口] --> B[出口]', '>>>>>>> FLOW', '',
+       '<<<<<<< CASES',
+       '1 | a 能变成 2 | 读 Foo.java 里的 a | 必须过 | a == 2 | 无',
+       '>>>>>>> CASES', '',
+       '<<<<<<< STEPS',
+       '1 | 给 Foo 加一个方法 | src/main/java/com/demo/Foo.java | 能编译 | 自洽',
+       '>>>>>>> STEPS', ''].join('\n'),
+      // ② 开发那一轮：把 a 改成 2
+      ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
+       '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
+      // ③ 生成测试产物：入口脚本打印一条失败并非 0 退出。
+      // 正文只用 ASCII——.cmd 是按本机代码页读的，中文会把 `^|` 的转义吃掉（引擎的提示词里也写了这条）
+      ['<<<<<<< SEARCH {{ENTRY}}', '=======',
+       '@echo off',
+       'echo FAIL ^| 1 ^| a == 2 ^| a == 1 ^| code is wrong',
+       'exit /b 1',
+       '>>>>>>> REPLACE', ''].join('\n'),
+    ]);
+    fs.mkdirSync(path.join(testsProject, '.specflow'), { recursive: true });
+    fs.writeFileSync(path.join(testsProject, '.specflow', 'project.yaml'),
+        'llm:\n  base-url: http://127.0.0.1:' + stubModel.port + '\n  model: stub\n'
+        + '  api-key-env: SPECFLOW_TEST_KEY\n');
+    fs.writeFileSync(path.join(testsProject, '.specflow', 'local.env'), 'SPECFLOW_TEST_KEY=sk-test\n');
+
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: testsProject }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(testsProject))})`, '页面切到测试用的项目');
+
+    await setField('demand', '给 Foo 加一个方法，让 a 变成 2');
+    await evaluate(`(() => {
+      state.selected = new Set(['src/main/java/com/demo/Foo.java']);
+      updatePicked();
+      return 'ok';
+    })()`);
+    await clickButton('review');
+    await waitFor(`state.plan && state.plan.cases && state.plan.cases.length === 1`,
+        '真后端回来的用例清单画出来了', 20000);
+
+    // 界面读的就是响应体里那几个字段名——所以这条断的是「下一批能拿到什么」
+    const caseFields25 = await evaluate(`(() => {
+      const one = state.plan.cases[0];
+      return { index: one.index, what: one.what, how: one.how, level: one.level,
+               expected: one.expected, acceptance: one.acceptance };
+    })()`);
+    check(caseFields25.index === 1 && caseFields25.what === 'a 能变成 2'
+            && caseFields25.level === 'MUST' && caseFields25.expected === 'a == 2'
+            && caseFields25.acceptance === '无',
+        'plan.cases 里六栏一个不少（编号/要测什么/怎么测/分级/期望/验收标准）：'
+            + JSON.stringify(caseFields25));
+
+    await clickButton('run');
+    await waitFor(`state.running === false && document.querySelector('#result .status') !== null`,
+        '这一次真运行跑到收场', 60000);
+
+    const resultText25 = await evaluate(`document.getElementById('result').textContent`);
+    check(resultText25.includes('测试没全过'),
+        '结果面板说的是「测试没全过」，不是「编译通过」也不是「失败」：' + JSON.stringify(resultText25));
+    check(resultText25.includes('用例 1') && resultText25.includes('a == 2'),
+        '失败清单（哪条用例、期望什么）就摆在结果里：' + JSON.stringify(resultText25));
+    check(await evaluate(`[...document.querySelectorAll('#log .line')]
+        .some(line => line.textContent.includes('测试没过'))`),
+        '时间线上有测试那一行——它来自引擎的事件，不是界面按结果猜的：'
+            + JSON.stringify(await evaluate(`[...document.querySelectorAll('#log .line')]
+                .map(line => line.textContent).filter(text => text.includes('测试'))`)));
+    check(fs.readFileSync(path.join(testsProject, 'src', 'main', 'java', 'com', 'demo', 'Foo.java'),
+        'utf8').includes('int a = 2;'),
+        '改动没有被回滚（错的可能是用例，机器判不了，所以留着等人处置）');
+    const testDirs25 = fs.readdirSync(path.join(testsProject, 'tools'));
+    check(testDirs25.length === 1 && fs.existsSync(
+        path.join(testsProject, 'tools', testDirs25[0], 'run.cmd')),
+        '测试产物留在磁盘上给人看：' + JSON.stringify(testDirs25));
+
+    // 留档那一侧：事后翻记录的人只有它
+    const runs25 = await (await fetch(BASE + 'api/runs')).json();
+    check(runs25.runs.length === 1 && runs25.runs[0].status === 'TESTS_FAILED',
+        '这一次在留档里是「测试没过」：' + JSON.stringify(runs25.runs.map(run => run.status)));
+    const detail25 = await (await fetch(BASE + 'api/run-detail?id='
+        + encodeURIComponent(runs25.runs[0].id))).json();
+    check(detail25.testCases && detail25.testCases.length === 1,
+        '用例清单也在留档里（没有它，通过率就没有分母）：' + JSON.stringify(detail25.testCases));
+    check(detail25.tests && detail25.tests.exit === 1
+            && detail25.tests.failures[0].kind === 'ASSERTION'
+            && detail25.tests.failures[0].testCase === '1'
+            && detail25.tests.failures[0].expected === 'a == 2'
+            && detail25.tests.failures[0].actual === 'a == 1',
+        '失败清单四要素都在：' + JSON.stringify(detail25.tests && detail25.tests.failures));
+
+    // 历史列表里那一行也要读得懂（这张表少一行就是红底 + 英文枚举名）
+    await clickButton('historylink');
+    await waitFor(`!document.getElementById('history').hidden`, '历史弹层打开');
+    await sleep(400);
+    const historyText25 = await evaluate(`document.getElementById('history').textContent`);
+    check(historyText25.includes('测试没过'),
+        '历史列表里那一行读得懂（不是 TESTS_FAILED 这种英文枚举名）：' + JSON.stringify(historyText25));
+    await evaluate(`(() => { document.getElementById('history').hidden = true; return 'ok'; })()`);
+
+    // 换回原项目：这一链改的是服务的「当前项目」，留着它后面就在临时目录里跑了
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: PROJECT_ROOT }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(PROJECT_ROOT))})`, '换回原项目');
+    stubModel.close();
+    stubModel = null;
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,
@@ -2799,6 +2974,12 @@ async function main() {
       // 而残留的「最近打开」记录会一直留在真实的用户目录里
       try {
         await fetch(BASE + 'api/recent?path=' + encodeURIComponent(reviewProject), { method: 'DELETE' });
+      } catch (e) { /* 清理尽力而为 */ }
+    }
+    if (testsProject) {
+      // 链 25 的临时项目也一样：目录由 TEMP_PATHS 删，这一条删的是「最近打开」里那条记录
+      try {
+        await fetch(BASE + 'api/recent?path=' + encodeURIComponent(testsProject), { method: 'DELETE' });
       } catch (e) { /* 清理尽力而为 */ }
     }
     try { ws && ws.close(); } catch (e) { /* ignore */ }

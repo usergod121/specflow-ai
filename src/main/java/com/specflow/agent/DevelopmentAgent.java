@@ -22,6 +22,8 @@ import com.specflow.review.StepsProtocol;
 import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.template.TemplateRegistry;
+import com.specflow.tests.TestAgent;
+import com.specflow.tests.TestOutcome;
 import com.specflow.util.ProjectFiles;
 import com.specflow.util.SafePathResolver;
 import com.specflow.verify.CompileFailure;
@@ -437,12 +439,68 @@ public final class DevelopmentAgent {
                     "施工单最后一步被标成「中间态」且编译未通过：磁盘上的代码可能编不过。"
                             + "施工单本该保证最后一步之后项目能编译，请修正施工单后重跑");
         }
+
+        // 编译过了不等于做对了：检查阶段给过用例清单，就把它们真的跑一遍（十五.2）。
+        // 这一步还没 markPending，所以「环境问题要立刻停、回滚」在这里是一条干净的路
+        TestOutcome tests = testPhase(spec, approved);
+        if (tests != null && tests.environmental()) {
+            log.warn("测试跑不起来（环境问题）：{}", tests.detail());
+            closeRun(snapshot, true, rounds, "测试跑不起来（环境问题）");
+            return AgentResult.needsEnvironment(rounds, lastChanges, withTests(lastResults, tests),
+                    tests.detail());
+        }
         if (snapshot != null) {
             // 编译通过不等于用户满意：改动留在磁盘上，快照改名等着人表态。
             // 在这里 discard 就等于替人做了「接受」，而编译通过只证明语法没错。
             snapshot.markPending();
         }
-        return finish(rounds, lastChanges, lastResults);
+        if (tests != null && !tests.passed()) {
+            // 有失败用例：不回滚（改动可能是对的，错的可能是用例），也不回喂（本批不自动回喂）。
+            // 磁盘上那份改动和平时一样进「待处置」，等用户看完失败清单再决定
+            log.info("测试没全过，改动留在磁盘上等人处置");
+            return AgentResult.testsFailed(rounds, lastChanges, withTests(lastResults, tests),
+                    tests.detail());
+        }
+        return finish(rounds, lastChanges, withTests(lastResults, tests));
+    }
+
+    /**
+     * 测试阶段：生成测试产物 → 跑入口脚本 → 看退出码。
+     *
+     * <p>闸门是「检查阶段给过用例清单」。测试要验的就是那几条用例，没有清单就没有可验的东西，
+     * 硬跑一轮只会生成一份没有依据的测试代码——而它一样要花一次模型调用。
+     * 这也是「没走检查的老用法一个字节都没变」的落点：老记录、老流程里根本没有用例这一项。
+     *
+     * <p>它<b>不改产品代码、不重试、不回喂</b>。失败清单交给人：谁错了机器判不了，
+     * 硬判就会逼出「为了过一条写错的用例，把正确代码改成错的」（十四.3 那条教训）。
+     *
+     * @return 这次测试阶段的结论；没有用例清单时返回 {@code null}（= 没跑）
+     */
+    private TestOutcome testPhase(Spec spec, PlanReview approved) {
+        if (approved == null || approved.cases().isEmpty()) {
+            return null;
+        }
+        TestOutcome outcome = new TestAgent(projectRoot, project, templates, llm)
+                .run(spec, approved.cases());
+        listener.testsFinished(outcome);
+        return outcome;
+    }
+
+    /**
+     * 把测试阶段的结论挂进校验结果列表。
+     *
+     * <p>它和编译校验在流程上是同一件事（写入之后、收尾之前的一段可失败检查），
+     * 所以走同一个列表：CLI 那一行、以及任何读 {@code AgentResult.verifications()} 的地方
+     * 都不用为它另开一条路。
+     */
+    private static List<VerificationResult> withTests(List<VerificationResult> results,
+                                                      TestOutcome tests) {
+        if (tests == null) {
+            return results;
+        }
+        List<VerificationResult> all = new ArrayList<>(results);
+        all.add(tests.verification());
+        return List.copyOf(all);
     }
 
     // ---------- 施工单 ----------

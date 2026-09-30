@@ -3,6 +3,7 @@ package com.specflow.agent;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanStep;
+import com.specflow.tests.TestOutcome;
 import com.specflow.verify.VerificationResult;
 
 import java.util.List;
@@ -171,6 +172,19 @@ public interface AgentListener {
 
     /** 校验跑完了（可能通过，也可能失败）。 */
     default void verificationFinished(int round, List<VerificationResult> results) {
+    }
+
+    /**
+     * 测试阶段跑完了：生成测试产物 → 跑入口脚本 → 看退出码，有了结论。
+     *
+     * <p>单独一个回调，而不是塞进 {@link #verificationFinished}：那一个传的是
+     * 「校验器的结论」（通过/未通过/跳过），而这里要交出去的是<b>失败清单</b>——
+     * 哪条用例、期望什么、实际什么、是哪一类失败。留档要的就是它，
+     * 界面下一批要画的也是它。
+     *
+     * @param outcome 这次测试阶段的全部事实；它可能一条失败都没有（脚本退出码 0）
+     */
+    default void testsFinished(TestOutcome outcome) {
     }
 
     /** 校验未通过，工作区已回滚到本轮开始前的状态。 */

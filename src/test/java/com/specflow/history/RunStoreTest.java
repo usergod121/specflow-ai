@@ -72,7 +72,7 @@ class RunStoreTest {
     private static RunRecord record(String id, String status, String detail) {
         return new RunRecord(id, "2026-01-01T00:00", status, null, "改点东西", List.of(),
                 List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of(),
-                List.of(), null, List.of());
+                List.of(), null, List.of(), null, List.of());
     }
 
     @Test
@@ -508,6 +508,57 @@ class RunStoreTest {
         assertThat(record.steps()).isNull();
         assertThat(record.planSteps()).as("老记录里也没有施工单：续跑时只能现生成").isNull();
         assertThat(record.stepsSource()).isNull();
+    }
+
+    /**
+     * 用例级的账（{@code tests.cases}）是后加的：加它之前跑过的运行里那一项不存在。
+     * 和 {@code context}、{@code steps} 同样的道理——读不出来就是静默跳过，
+     * 用户只会看到「历史莫名少了几条」，而这次少掉的是带着失败清单的那一条。
+     */
+    @Test
+    @DisplayName("没有 cases 字段的老记录仍然读得出来：失败清单照样在")
+    void readsLegacyRecordWithoutCaseResults() throws IOException {
+        Path dir = root.resolve(RunStore.DEFAULT_DIR);
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("20260104-000000-000.json"), """
+                {
+                  "id" : "20260104-000000-000",
+                  "startedAt" : "2026-01-04 00:00:00",
+                  "status" : "TESTS_FAILED",
+                  "template" : "implement",
+                  "prompt" : "老需求",
+                  "targets" : [ "Foo.java" ],
+                  "attempts" : 1,
+                  "detail" : "结束",
+                  "tests" : {
+                    "directory" : "tools/20260104-000000",
+                    "files" : [ "tools/20260104-000000/run.cmd" ],
+                    "calls" : 1,
+                    "exit" : 1,
+                    "verification" : {
+                      "verifier" : "测试脚本",
+                      "status" : "FAILED",
+                      "command" : "run.cmd",
+                      "output" : "FAIL | 1 | a | b | c",
+                      "kind" : "NONE"
+                    },
+                    "failures" : [ {
+                      "kind" : "ASSERTION",
+                      "testCase" : "1",
+                      "expected" : "a",
+                      "actual" : "b",
+                      "opinion" : "c"
+                    } ]
+                  }
+                }
+                """);
+        RunStore store = new RunStore(dir);
+
+        assertThat(store.list()).as("老记录不能消失").hasSize(1);
+        RunRecord record = store.load("20260104-000000-000");
+        assertThat(record.tests().failures()).singleElement()
+                .satisfies(failure -> assertThat(failure.testCase()).isEqualTo("1"));
+        assertThat(record.tests().cases()).as("缺字段就是一个空表，不是读取失败").isEmpty();
     }
 
     /**

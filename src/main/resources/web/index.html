@@ -3984,6 +3984,8 @@ function applyRunRequest(data) {
 const STATUS_LABEL = {
   SUCCESS: ['ok', '成功'],
   SUCCESS_UNVERIFIED: ['mid', '未校验'],
+  // 测试没过不是「失败」：改动还在磁盘上等人处置（接受或撤回），失败清单在运行记录里
+  TESTS_FAILED: ['mid', '测试没过：改动留着，等你看失败清单'],
   FAILED: ['bad', '失败'],
   NEEDS_ENVIRONMENT: ['bad', '待你处理环境'],
   CANCELLED: ['mid', '中断'],
@@ -5164,6 +5166,8 @@ const STATUS_TEXT = {
   // 把话说准，用户才不会把「编译过了」读成「活干完了」。
   SUCCESS: ['ok', '改动已写入，编译校验通过'],
   SUCCESS_UNVERIFIED: ['mid', '改动已写入，但没有执行任何校验'],
+  // 这一档说的是「验过了，没全过」，所以绝不能并进上面那句「编译校验通过」
+  TESTS_FAILED: ['mid', '改动已写入、编译通过，但测试没全过：改动留着你判断'],
   FAILED: ['bad', '失败：已回滚到运行前'],
   NEEDS_ENVIRONMENT: ['bad', '这不是改代码能解决的：依赖或环境问题，已回滚到运行前'],
   CANCELLED: ['mid', '已中断：改动已回滚到运行前'],
@@ -5206,7 +5210,8 @@ function renderResult(result) {
   }
 
   // 新建的文件要出现在树里，否则下一轮想改它还得手输路径
-  if (result.changes && result.changes.length && result.status === 'SUCCESS') {
+  if (result.changes && result.changes.length
+      && (result.status === 'SUCCESS' || result.status === 'TESTS_FAILED')) {
     refreshFiles().catch(e => notice('warn', '刷新文件列表失败：' + e.message));
   }
 }

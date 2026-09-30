@@ -19,6 +19,7 @@ public final class ReviewProtocol {
     public static final String FLOW_MARKER = "<<<<<<< FLOW";
     public static final String MISSING_MARKER = "<<<<<<< MISSING";
     public static final String STEPS_MARKER = "<<<<<<< STEPS";
+    public static final String CASES_MARKER = "<<<<<<< CASES";
     public static final String END_SUFFIX = ">>>>>>>";
 
     /** 缺失清单里表示「什么都不缺」的写法。 */
@@ -66,6 +67,40 @@ public final class ReviewProtocol {
             能自洽就自洽，做不到就明说「中间态」，别硬凑。
             """;
 
+    /**
+     * 用例块那一行怎么写，以及为什么这么要求。
+     *
+     * <p>这些用例<b>不是给人看的清单</b>：测试阶段会拿着它们去生成真正的测试代码并跑起来，
+     * 所以第 2、3、5 栏写虚了，生成出来的测试就是虚的——它会照着「验证功能正常」写出一句
+     * 永远为真的断言。清单在这里定稿，是因为此刻依据的是<b>需求与验收标准</b>，
+     * 而不是模型自己刚写完的那份代码（那时它只能测出「我写的和我写的一样」）。
+     *
+     * <p>和施工单一样的写法约定：编号开头、竖线分隔、每行一条。它同样<b>不进目标文件清单</b>——
+     * 用例是验代码用的，不是这次要改的代码本身。
+     */
+    public static final String CASES_RULES = """
+            <编号> | <要测什么> | <怎么测> | <必须过/建议过/可选> | <期望什么> | <对应哪条验收标准>
+
+            用例怎么写（它们后面会真的变成测试代码跑起来，写虚了等于没写）：
+            - 每行一条，从 1 开始编号；六个字段用竖线 | 分隔，不要加粗，也不要在单元格外写字。
+            - 第 2 栏用大白话写「要测什么」：不懂这块代码的人也要看得懂它验的是哪件事。
+              不要写「测试 XxxService」「验证功能正常」这种等于没写的。
+            - 第 3 栏写「怎么测」：从哪个入口进、造什么数据、看哪个结果。
+              例：用不存在的编号查一次，看它返回空集合还是抛异常。
+            - 第 4 栏只能填三档之一，含义是「不过它意味着什么」：
+              * 必须过 —— 不过就等于这次需求没做到（直接来自验收标准的那几条写它）；
+              * 建议过 —— 边界、异常路径、参数校验这类，不过也不代表需求没实现；
+              * 可选 —— 锦上添花。
+              三档都要用上；拿不准就往低里写——标高了会在功能其实没问题时报出一个吓人的红灯。
+            - 第 5 栏「期望什么」必须是**具体的值**，不许写「正常」「能跑通」「没问题」。
+              例：返回空列表而不是抛异常；状态码 400；列表里有且只有 1 条；字段值为 null。
+            - 第 6 栏写它对应哪一条验收标准（照抄那一条，没有对应关系就写「无」）。
+              每条验收标准至少要有一条用例；一条用例只对应一条。
+            - 条数控制在 3 到 8 条：覆盖这次需求的主链路，再带一两处边界就够了。
+              不要给 getter/setter、纯转发这类没有信息量的东西写用例。
+            - 这些用例**不进目标文件清单**：它们是拿来验代码的，不是这次要改的代码。
+            """;
+
     public static final String INSTRUCTIONS = """
             现在进入「检查」阶段。你不要写代码，只需回答一个问题：
             基于已有的信息，这个需求你能不能做？打算怎么做？
@@ -93,7 +128,13 @@ public final class ReviewProtocol {
 
             %s
             %s
+            %s CASES
+
+            %s
+            %s
             %s STEPS
+
+            %s
 
             流程图只认下面这些写法（多写的会被忽略，等于图缺了一块）：
             - 第一行必须是 `flowchart TD`，整段只有一个图表头。
@@ -152,11 +193,15 @@ public final class ReviewProtocol {
                最后一步标了中间态、第 3 栏写了目标清单外的文件，都会被拦下来要求改。
                这几条不是格式要求，是「照着做会卡住」的硬事实。（只有 1 步不在此列：
                那不拦，机器只记一句「这次不需要分步」。）
+            8. 用例块（CASES）也是**必须**的，至少一条。它会被人过一眼，然后照它生成真正的
+               测试代码并跑起来；第 5 栏写「正常」「能跑通」这种，生成出来的断言永远是绿的——
+               那比没有测试更糟，因为它会让人以为验过了。
 
-            注意 SUMMARY / MISSING 两块在内容为空时可以省略，FLOW 与 STEPS 两块必须给出。
+            注意 SUMMARY / MISSING 两块在内容为空时可以省略，FLOW / STEPS / CASES 三块必须给出。
             """.formatted(SUMMARY_MARKER, END_SUFFIX,
             FLOW_MARKER, END_SUFFIX,
             MISSING_MARKER, END_SUFFIX,
+            CASES_MARKER, CASES_RULES, END_SUFFIX,
             STEPS_MARKER, STEPS_RULES, END_SUFFIX, STEPS_WHY,
             NOTHING_MISSING, NOTHING_MISSING);
 }
