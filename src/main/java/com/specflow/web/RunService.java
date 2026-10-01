@@ -29,9 +29,9 @@ import com.specflow.spec.SpecValidator;
 import com.specflow.template.TemplateRegistry;
 import com.specflow.tests.ExecutionLocation;
 import com.specflow.tests.TestAgent;
-import com.specflow.tests.TestArtifacts;
 import com.specflow.tests.TestOutcome;
 import com.specflow.tests.TestSettings;
+import com.specflow.tests.Teardown;
 import com.specflow.util.SafePathResolver;
 import com.specflow.verify.CompileVerifier;
 import com.specflow.verify.VerificationResult;
@@ -324,82 +324,24 @@ public final class RunService implements AgentListener {
     }
 
     /**
-     * 接受：把快照删掉，磁盘上的改动保持不动。
+     * 接受：把快照删掉，磁盘上的改动保持不动（十五.8）。
      *
      * <p>「接受」不需要动文件——改动早就写进去了，快照留着只是为了让人还来得及撤回。
-     *
-     * <p>顺带清环境数据（十五.8：接受 = 保留改动 + 删快照 + 删测试产物 + 清环境数据）。
-     * 代价只有一条 reset 命令，而好处是「这次验过的库」不会把下一轮的断言带偏。
-     * 清不动只记一条警告：真正的问题是清理本身，而不是这次接受。
+     * 剩下的三件事（删测试产物、清环境数据、把「带着几条失败接受的」写进留档）
+     * 都在 {@link Teardown} 里，和 CLI 的 {@code accept} 共用同一份实现。
      */
-    public void accept() {
-        dispose(false);
-        clearTestArtifacts();
-        resetEnvironmentData();
+    public Teardown.Done accept() {
+        return Teardown.settle(projectRoot, project, store, environment, Teardown.Choice.ACCEPT);
     }
 
     /**
-     * 撤回：按快照把文件恢复原样，然后删掉快照，清测试产物与环境数据。
+     * 中断：按快照把文件恢复原样，然后删快照、删测试产物、清环境数据（十五.8）。
+     *
+     * <p>它和 {@link #accept()} 走的是同一条路，只差 {@link Teardown.Choice} 一个参数：
+     * 两条路的收尾动作一模一样，分头写就一定会有一边少做一件。
      */
-    public void rollback() {
-        dispose(true);
-        clearTestArtifacts();
-        resetEnvironmentData();
-    }
-
-    /**
-     * 处置完之后把这一轮的测试产物删掉（十五.8：接受/中断都要删）。
-     *
-     * <p>为什么现在删而不是留着：留档里已经存了这次验了什么、哪条没过、为什么——
-     * 而那几份脚本是<b>指向这一轮改动</b>的。改动都被接受或撤回了，留着它们只是
-     * 让 {@code tools/} 一次比一次长（前一批里它只增不减）。
-     *
-     * <p>删不掉只记一条警告：处置已经生效了，为一次清理把请求变成 500，
-     * 用户会以为自己的决定没生效。
-     */
-    private void clearTestArtifacts() {
-        try {
-            String latest = store.latestId();
-            if (latest.isEmpty()) {
-                return;
-            }
-            RunRecord record = store.load(latest);
-            TestArtifacts.delete(projectRoot,
-                    record.tests() == null ? "" : record.tests().directory());
-        } catch (RuntimeException e) {
-            log.warn("清测试产物没成功（不影响这次处置）：{}", e.getMessage());
-        }
-    }
-
-    /**
-     * 收场时把环境数据清回一个已知状态（{@code reset}），失败只警告。
-     *
-     * <p>为什么是 best-effort 而不是抛出去：这个动作发生在「用户刚做了决定」之后，
-     * 而那个决定（接受还是撤回）已经生效了、文件也处置完了。为一条清理命令把整个请求
-     * 变成 500，用户会以为自己的决定没生效——而它其实生效了。
-     *
-     * <p>只在环境真的活着时做：没声明、docker 没了、没初始化，这里一次进程都不起。
-     */
-    private void resetEnvironmentData() {
-        try {
-            if (environment.declared() && environment.docker().ready()
-                    && environment.activeComposeFile() != null) {
-                environment.reset();
-            }
-        } catch (RuntimeException e) {
-            log.warn("清环境数据没成功（不影响这次处置）：{}", e.getMessage());
-        }
-    }
-
-    private void dispose(boolean restore) {
-        WorkspaceSnapshot snapshot = waitingSnapshot();
-        if (snapshot == null) {
-            throw new IllegalStateException("没有待处置的改动");
-        }
-        if (restore) {
-            snapshot.restore();
-        }
-        snapshot.discard();
+    public Teardown.Done rollback() {
+        return Teardown.settle(projectRoot, project, store, environment, Teardown.Choice.INTERRUPT);
     }
 
     /**
@@ -409,11 +351,7 @@ public final class RunService implements AgentListener {
      * 多份只可能来自「清理快照失败」这类残留，那就从最早的一份开始算。
      */
     private WorkspaceSnapshot waitingSnapshot() {
-        SafePathResolver resolver = new SafePathResolver(projectRoot);
-        return WorkspaceSnapshot.undisposed(resolver, resolver.resolve(project.snapshot().dir()))
-                .stream()
-                .findFirst()
-                .orElse(null);
+        return Teardown.waiting(projectRoot, project).stream().findFirst().orElse(null);
     }
 
     private void execute(Spec spec, LlmClient llm, PlanReview approved, TestSettings settings) {
@@ -632,6 +570,9 @@ public final class RunService implements AgentListener {
         TestAgent.Generated generated = new TestAgent(projectRoot, project, templates(), llm)
                 .generate(spec, cases, settingsOf(request), variables,
                         ExecutionLocation.of(environment));
+        // 生成成功才把人这笔判断与产物账记下来（十五.6 第二条路）：生成失败什么都没换，
+        // 记成「测试代码错了」会让人以为已经重生成过了
+        markRegenerated(generated.directory());
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("directory", generated.directory());
         payload.put("files", generated.files());
@@ -766,19 +707,20 @@ public final class RunService implements AgentListener {
         }
     }
 
-    // ---------- 「已知失败」落档 ----------
+    // ---------- 人对失败用例的判断落档 ----------
 
     /**
-     * 把「这几条不重要」写进运行留档（十五.6 的第三条路）。
+     * 把「这几条怎么判的」写进运行留档（十五.6 里落在用例上的那三条路）。
      *
      * <p>它为什么要有接口：这是<b>人做的判断</b>，而留档是它唯一的去处。
      * 只留在界面上，刷新一次就没了——事后翻记录的人只会看到一片红，
      * 然后以为那次运行是失败的。
      *
      * @param id     哪一次运行；空串表示「界面上正看着的那一次」，按最新那条落（见下面注释）
-     * @param cases  标成已知失败的用例编号（<b>完整的一份集合</b>，不是增量）
+     * @param cases  被这样判定的用例编号（<b>完整的一份集合</b>，不是增量）
+     * @param owner  谁错了，见 {@link RunRecord.Verdict}
      */
-    public RunRecord markKnownFailures(String id, List<Integer> cases) {
+    public RunRecord judge(String id, List<Integer> cases, String owner) {
         String target = id == null ? "" : id.strip();
         if (target.isEmpty()) {
             // 刷新过页面之后，界面手里只有屏幕上那份失败清单，拿不到记录 id。
@@ -787,9 +729,35 @@ public final class RunService implements AgentListener {
             target = store.latestId();
         }
         if (target.isEmpty()) {
-            throw new IllegalStateException("一条运行记录都没有：先跑一次测试，才有可标记的失败清单");
+            throw new IllegalStateException("一条运行记录都没有：先跑一次测试，才有可判的失败清单");
         }
-        return store.markKnownFailures(target, cases);
+        return store.judge(target, cases, owner);
+    }
+
+    /**
+     * 记一笔「测试代码错了」：人点了「重新生成」，这条判断和那批新产物都要落在
+     * 被他判的那次运行上。
+     *
+     * <p>为什么由服务端自己记，而不是让界面再发一个请求：这一次动作本身就是那个判断
+     * （他点的就是「测试代码错了」），不需要再多一次往返——而多出来的那一次往返，
+     * 正是最容易被漏掉的那一次（用户在生成完之后刷新页面，判断就没了）。
+     *
+     * <p>判的范围是<b>最新那条记录上没过的那几条用例</b>：他看的就是这份清单。
+     * 写不进去只记一条警告，绝不让它把一次成功的生成变成失败——产物已经生成好了。
+     */
+    private void markRegenerated(String directory) {
+        String latest = store.latestId();
+        if (latest.isEmpty()) {
+            return;
+        }
+        try {
+            RunRecord record = store.load(latest);
+            List<Integer> failing = record.tests() == null
+                    ? List.of() : record.tests().failingCases();
+            store.regenerated(latest, failing, directory);
+        } catch (RuntimeException e) {
+            log.warn("这次重新生成的测试代码没能记进留档：{}", e.getMessage());
+        }
     }
 
     // ---------- 内部 ----------

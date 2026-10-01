@@ -11,6 +11,7 @@ import com.specflow.review.ReviewOutcome;
 import com.specflow.template.PromptTemplate;
 import com.specflow.template.Tags;
 import com.specflow.template.TemplateStore;
+import com.specflow.tests.Teardown;
 import com.specflow.util.UserPath;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -210,8 +211,8 @@ public final class WebServer implements AutoCloseable {
                 case "/api/run" -> startRun(now, exchange);
                 // 「测试代码错了」那条路：只重新生成测试产物，不跑、不改产品代码（十五.6）
                 case "/api/tests/regenerate" -> regenerateTests(now, exchange);
-                // 「不重要 / 误报」：把人的判断写进运行留档（刷新之后不能丢）
-                case "/api/tests/known" -> markKnownFailures(now, exchange);
+                // 「这几条怎么判的」：开发 AI 错了 / 测试代码错了 / 不重要（十五.6 的三条路）
+                case "/api/tests/judge" -> judgeFailures(now, exchange);
                 // 测试环境：现在什么状态 / 初始化 / 清空（十五.5、§15.8 的手动入口）
                 case "/api/env" -> Http.sendJson(exchange, 200, environmentOf(now, exchange));
                 case "/api/env/init" -> initEnvironment(now, exchange);
@@ -575,21 +576,22 @@ public final class WebServer implements AutoCloseable {
     }
 
     /**
-     * 「这几条不重要」——把它写进那一次运行的留档（十五.6）。
+     * 「这几条怎么判的」——把它写进那一次运行的留档（十五.6）。
      *
-     * <p>它的请求体是 {@code {"id":"...","cases":[1,2]}}，{@code id} 空着表示
-     * 「界面上正看着的那一次」（见 {@code RunService.markKnownFailures}）。
+     * <p>请求体是 {@code {"id":"...","cases":[1,2],"owner":"KNOWN"}}，{@code id} 空着表示
+     * 「界面上正看着的那一次」（见 {@code RunService.judge}）。{@code owner} 就是
+     * 「谁错了」：开发 AI 错了（回喂）/ 测试代码错了（重新生成）/ 不重要、误报。
      */
-    private void markKnownFailures(OpenProject project, HttpExchange exchange) throws IOException {
+    private void judgeFailures(OpenProject project, HttpExchange exchange) throws IOException {
         if (!Http.requirePost(exchange)) {
             return;
         }
-        Payloads.KnownFailures request = Http.readJson(exchange, Payloads.KnownFailures.class);
+        Payloads.Judgement request = Http.readJson(exchange, Payloads.Judgement.class);
         if (request == null) {
             return;
         }
         project.requireOpen();
-        project.runs().markKnownFailures(request.id(), request.cases());
+        project.runs().judge(request.id(), request.cases(), request.owner());
         Http.sendJson(exchange, 200, Map.of("done", true));
     }
 
@@ -675,22 +677,25 @@ public final class WebServer implements AutoCloseable {
     }
 
     /**
-     * 处置上一次留下的改动：接受（保留）或撤回（恢复原样）。
+     * 处置上一次留下的改动：接受（保留）或中断（恢复原样）。
      *
      * <p>没有待处置的改动时抛 {@link IllegalStateException} → 409：界面据此能确定
      * 「现在没有东西可处置」，而不是显示一个永远不会兑现的结果。
+     *
+     * <p>收场本身（删快照、删测试产物、清环境数据、落档）在 {@link
+     * com.specflow.tests.Teardown} 里，CLI 的 {@code accept}/{@code rollback} 走的是同一份。
+     * 返回体里带上那一行结论：用户要知道「改动留没留、带着几条失败接受的」，而不是一个 {@code true}。
      */
     private void decidePending(OpenProject project, HttpExchange exchange, boolean rollback)
             throws IOException {
         if (!Http.requirePost(exchange)) {
             return;
         }
-        if (rollback) {
-            project.runs().rollback();
-        } else {
-            project.runs().accept();
+        Teardown.Done done = rollback ? project.runs().rollback() : project.runs().accept();
+        if (!done.settled()) {
+            throw new IllegalStateException(done.summarize());
         }
-        Http.sendJson(exchange, 200, Map.of("done", true));
+        Http.sendJson(exchange, 200, Map.of("done", true, "teardown", done.summarize()));
     }
 
     /**

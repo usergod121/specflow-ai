@@ -268,11 +268,14 @@ public final class TestArtifacts {
      * <p>路径照样要先过白名单：它来自留档（可能被手工改过），而删东西这件事
      * 只允许发生在 {@code tools/} 底下——一个被改坏的记录不该能删掉别的目录。
      *
-     * @param directory 产物目录（相对项目根）；空串或不在 {@code tools/} 下就什么都不做
+     * @param directory 产物目录（相对项目根）；空串表示这次没有产物
+     * @return 那个目录现在还<b>在不在</b>。{@code true} = 已经不在了（删掉了，或者本来就没有），
+     *         {@code false} = 没删成（路径不在 {@code tools/} 下、或者删不动）。
+     *         收场要据此如实报出来——「以为删了、其实还在」正是清理漏掉一整轮的那种方式
      */
-    public static void delete(Path projectRoot, String directory) {
+    public static boolean delete(Path projectRoot, String directory) {
         if (directory == null || directory.isBlank()) {
-            return;
+            return true;
         }
         SafePathResolver resolver = new SafePathResolver(projectRoot);
         Path target;
@@ -280,22 +283,24 @@ public final class TestArtifacts {
             target = resolver.resolve(directory);
         } catch (IllegalArgumentException e) {
             log.warn("留档里的产物路径不合法，不删：{}", directory);
-            return;
+            return false;
         }
         String shown = resolver.relativize(target);
         if (!shown.equals(ROOT) && !shown.startsWith(ROOT + "/")) {
             // 只删产物目录，一个字符都不能越界：这条路径是留档里的字符串，
             // 而留档是磁盘上的文件（用户可能手工改过，工具也可能被改坏）
             log.warn("留档里的产物路径不在 {}/ 下，不删：{}", ROOT, shown);
-            return;
+            return false;
         }
         try (var paths = Files.walk(target)) {
             for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
                 Files.deleteIfExists(path);
             }
             log.info("已清掉测试产物 {}", shown);
+            return true;
         } catch (IOException e) {
             log.warn("清理测试产物失败 {}：{}", shown, e.getMessage());
+            return false;
         }
     }
 
@@ -399,15 +404,56 @@ public final class TestArtifacts {
      * compose 内容走的是同一道闸。两处各写一份「高危表」，迟早有一处少一条——
      * 而少的那一条正好是能删库的那条。
      *
+     * <p>它判的是<b>宿主上执行</b>的东西（AI 生成的测试脚本、生成的 compose 内容）：
+     * 一个字都不放宽。容器内执行的那一类走 {@link #forbiddenInContainer}。
+     *
      * @param content 一个补丁块的完整内容（也可以只给一行）
      * @return 命中的那段原文（给用户看凭什么拦），没有就返回 {@code null}
      */
     public static String forbidden(String content) {
+        return forbidden(content, null);
+    }
+
+    /**
+     * 在<b>容器里</b>执行的一条命令有没有高危写法（十五.5 的 {@code init} / {@code reset}）。
+     *
+     * <p>它和 {@link #forbidden} 的差别只有一处：<b>删东西的目标</b>这一条按容器内的
+     * 命名空间来判。理由是「清库」这件正常事被误拒了——{@code rm -rf /data/*}（MySQL/Redis
+     * 容器的数据目录）在宿主上确实是「删根目录下的东西」，在容器里只是删它自己的数据；
+     * 拿宿主那把尺子量它，用户会得到一句「测试环境只该跑测试」，而他写的是最正当不过的一行。
+     *
+     * <p><b>为什么这个例外是安全的：</b>
+     * <ol>
+     *   <li>这些命令由引擎包成 {@code docker compose exec -T app sh -c "<命令>"} 执行，
+     *       跑在<b>容器的挂载命名空间里</b>——{@code /data} 是容器自己的文件系统
+     *       （镜像层或它自己的卷），不是这台机器上的 {@code /data}；</li>
+     *   <li>容器里唯一看得见的宿主路径是项目目录（生成的 compose 只挂它一个，见
+     *       {@code ComposeFile}），而例外<b>不覆盖它</b>：目标等于挂载点、在挂载点里面、
+     *       或者是个相对路径（相对路径就是挂载点底下的东西）一律照旧拒绝；</li>
+     *   <li>{@link #FORBIDDEN} 那张表<b>一个字都没放宽</b>——提权、写块设备、挂宿主根、
+     *       {@code docker.sock}、借宿主网络、{@code $HOME}、{@code curl | sh} 要么是容器逃逸、
+     *       要么本来就冲着宿主去，它们和「清自己容器里的数据」不是一回事；</li>
+     *   <li>例外只给 {@code env.yaml} 里的 {@code init/reset}，也就是<b>用户自己写的</b>那几行；
+     *       AI 生成的测试脚本走 {@link #forbidden}，一个字都不放宽——那是模型写的、
+     *       而且是在宿主上真跑的。</li>
+     * </ol>
+     *
+     * @param content          一条命令（或一整块内容）
+     * @param containerWorkdir 项目目录挂进容器里的位置（如 {@code /work}）。
+     *                         为空表示「不是在容器里执行」——那就按 {@link #forbidden} 判
+     */
+    public static String forbiddenInContainer(String content, String containerWorkdir) {
+        return containerWorkdir == null || containerWorkdir.isBlank()
+                ? forbidden(content)
+                : forbidden(content, normalizeWorkdir(containerWorkdir));
+    }
+
+    private static String forbidden(String content, String containerWorkdir) {
         if (content == null || content.isBlank()) {
             return null;
         }
         for (String line : logicalLines(content)) {
-            String hit = lineHit(line);
+            String hit = lineHit(line, containerWorkdir);
             if (hit != null) {
                 return hit;
             }
@@ -416,14 +462,14 @@ public final class TestArtifacts {
     }
 
     /** 一条逻辑行里有没有高危写法。 */
-    private static String lineHit(String line) {
+    private static String lineHit(String line, String containerWorkdir) {
         String text = collapse(line);
         for (Pattern pattern : FORBIDDEN) {
             if (pattern.matcher(text).find()) {
                 return clip(text);
             }
         }
-        return deletesProjectFiles(text) ? clip(text) : null;
+        return deletesProjectFiles(text, containerWorkdir) ? clip(text) : null;
     }
 
     /**
@@ -437,17 +483,107 @@ public final class TestArtifacts {
      * <p>所以判据是<b>动词 + 目标</b>，而且目标这一头刻意粗（通配符、盘符、上级目录、
      * 变量、批量旗标都算）。两边不对称：多拦一条只是让人来看一眼，
      * 放过一条就是产品代码没了、而这次运行还写着「通过」。
+     *
+     * @param workdir 在容器里执行时，项目目录挂载点的位置；{@code null} = 宿主执行（不放宽）
      */
-    private static boolean deletesProjectFiles(String text) {
+    private static boolean deletesProjectFiles(String text, String workdir) {
         var matcher = DESTRUCTIVE.matcher(text);
         while (matcher.find()) {
             String rest = text.substring(matcher.end());
-            if (BULK_FLAG.matcher(rest).find() || PROJECT_MARKERS.stream()
-                    .anyMatch(marker -> marker.matcher(rest).find())) {
-                return true;
+            if (!BULK_FLAG.matcher(rest).find()
+                    && PROJECT_MARKERS.stream().noneMatch(marker -> marker.matcher(rest).find())) {
+                continue;
             }
+            // 容器内的受控例外：这一次删的目标全在容器自己的文件系统里，且碰不到挂载进来的
+            // 项目目录（怎么判、为什么安全见 forbiddenInContainer）。**只看这一处动词的目标**——
+            // 这一行里若还有第二处删东西的命令，下一轮循环会单独判它
+            if (workdir != null && onlyContainerTargets(rest, workdir)) {
+                continue;
+            }
+            return true;
         }
         return false;
+    }
+
+    /**
+     * 这一段里的删除目标是不是「只碰容器自己的盘」。
+     *
+     * <p>判到下一个 shell 分隔符为止（{@code ; && || | &}）：那之后是另一条命令，
+     * 而它要是也删东西，{@link #deletesProjectFiles} 的循环会在下一轮单独判它——
+     * 于是 {@code rm -rf /data/* ; rm -rf /work} 这种「一条干净的 + 一条要命的」照样被拦。
+     *
+     * <p>四条都成立才算通过，任何一条说不清就拒：
+     * <ol>
+     *   <li>是个绝对路径（相对路径的落点是容器的 cwd，也就是挂载进来的项目目录）；</li>
+     *   <li>没有 {@code ..}（能爬出自己那个目录）；</li>
+     *   <li>没有变量展开（{@code $DIR}、{@code %DIR%} 指向哪儿这里看不出来）；</li>
+     *   <li>它（去掉尾部的 {@code *} 与 {@code /} 之后）不是 {@code /}，也不等于挂载点、
+     *       不在挂载点底下。<b>这一条是例外的边界</b>：容器里唯一能伤到用户代码的地方就是那儿。</li>
+     * </ol>
+     *
+     * <p>解析不出任何目标（{@code rm -rf} 后面什么都没有）时判「不通过」：
+     * 说不清目标在哪的批量删除，不放行。
+     */
+    private static boolean onlyContainerTargets(String rest, String workdir) {
+        List<String> targets = deletionTargets(rest);
+        if (targets.isEmpty()) {
+            return false;
+        }
+        for (String target : targets) {
+            if (!target.startsWith("/") || target.contains("..")
+                    || target.indexOf('$') >= 0 || target.indexOf('%') >= 0) {
+                return false;
+            }
+            String base = stripWildcards(target);
+            if (base.isEmpty() || base.equals(workdir) || base.startsWith(workdir + "/")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 一段文本里被删的那些目标：到 shell 分隔符为止，去掉旗标与引号。 */
+    private static List<String> deletionTargets(String rest) {
+        String head = rest.split("[;&|]", 2)[0];
+        List<String> targets = new ArrayList<>();
+        for (String raw : head.strip().split("\\s+")) {
+            String token = unquote(raw.strip());
+            // 旗标（-rf、--force）不是目标；分隔符已经切掉了，剩下的空串也不要
+            if (token.isEmpty() || token.startsWith("-")) {
+                continue;
+            }
+            targets.add(token);
+        }
+        return targets;
+    }
+
+    private static String unquote(String token) {
+        String text = token;
+        while (!text.isEmpty() && (text.charAt(0) == '"' || text.charAt(0) == '\'')) {
+            text = text.substring(1);
+        }
+        while (!text.isEmpty() && (text.endsWith("\"") || text.endsWith("'"))) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return text;
+    }
+
+    /** 去掉末尾的通配符与斜杠，得到「这次删的是哪个目录」——{@code /data/*} 与 {@code /data} 是同一个。 */
+    private static String stripWildcards(String target) {
+        String text = target;
+        while (text.endsWith("*") || text.endsWith("/")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return text;
+    }
+
+    /** 挂载点的写法归一：去掉末尾的斜杠，免得 {@code /work/} 与 {@code /work} 被当成两个地方。 */
+    private static String normalizeWorkdir(String workdir) {
+        String text = workdir.strip();
+        while (text.length() > 1 && text.endsWith("/")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return text;
     }
 
     /**

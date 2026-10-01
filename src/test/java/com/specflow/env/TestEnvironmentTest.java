@@ -390,6 +390,87 @@ class TestEnvironmentTest {
         assertThat(TestArtifacts.forbidden("python -m build-db")).isNull();
     }
 
+    /**
+     * 清库那种正当命令要放行——而且放行的是「碰不到项目目录」那一类。
+     *
+     * <p>{@code workdir} 就是项目目录挂进容器里的位置，所以例外的边界跟着它走：
+     * 挂到 {@code /data} 上时，{@code rm -rf /data/*} 删的正是用户的源码，必须拒。
+     */
+    @Test
+    @DisplayName("容器内例外的边界就是挂载点：workdir=/data 时 rm -rf /data/* 一样被拒")
+    void refusesClearingTheMountedProjectDirectory() throws IOException {
+        declare("""
+                image: "x:1"
+                workdir: "/data"
+                reset:
+                  - "rm -rf /data/*"
+                """);
+        FakeCommandRunner runner = dockerReady();
+        TestEnvironment environment = new TestEnvironment(root, runner);
+
+        assertThatThrownBy(environment::up).isInstanceOf(EnvProblem.class)
+                .satisfies(thrown -> {
+                    EnvProblem problem = (EnvProblem) thrown;
+                    assertThat(problem.step()).isEqualTo(EnvProblem.CHECK);
+                    assertThat(problem.output()).contains("rm -rf /data/*");
+                });
+        assertThat(runner.ran("up -d --wait")).as("拒在起容器之前").isFalse();
+    }
+
+    @Test
+    @DisplayName("容器内的数据目录放行：reset 里 rm -rf /data/* 起得来，也真的进了容器")
+    void allowsClearingContainerData() throws IOException {
+        declare("""
+                image: "x:1"
+                workdir: "/work"
+                reset:
+                  - "rm -rf /data/*"
+                """);
+        FakeCommandRunner runner = dockerReady().ok("up -d --wait", "").ok("exec -T app", "");
+        TestEnvironment environment = new TestEnvironment(root, runner);
+
+        environment.up();
+        EnvRegistration reset = environment.reset();
+
+        assertThat(reset.commands()).containsExactly("rm -rf /data/*");
+        assertThat(runner.ran("exec -T app sh -c rm -rf /data/*"))
+                .as("命令进的是容器：宿主上这条命令是「删 /data」，一个字都不该发生")
+                .isTrue();
+    }
+
+    /**
+     * 闸门也要管 {@code reset} 这条路：{@code specflow env reset} 与收场时的「清环境数据」
+     * 都只调 {@code reset()}，不经过 {@code up()}。
+     *
+     * <p>不判它，这条命令就成了绕开闸门的一条路——场景很实在：环境起好之后，
+     * 用户把 {@code env.yaml} 里的 reset 改成了一条会删源码的命令。
+     */
+    @Test
+    @DisplayName("环境起好之后改了 env.yaml：reset 自己再判一遍，不许绕开闸门")
+    void rechecksResetCommandsOnEveryReset() throws IOException {
+        declare(DECLARATION);
+        FakeCommandRunner runner = dockerReady().ok("up -d --wait", "").ok("exec -T app", "");
+        TestEnvironment environment = new TestEnvironment(root, runner);
+        environment.up();
+
+        // 起环境之后把 reset 改成一条冲着项目目录去的命令
+        declare("""
+                image: "eclipse-temurin:17"
+                workdir: "/work"
+                reset:
+                  - "rm -rf /work/src"
+                """);
+
+        assertThatThrownBy(environment::reset).isInstanceOf(EnvProblem.class)
+                .satisfies(thrown -> {
+                    EnvProblem problem = (EnvProblem) thrown;
+                    assertThat(problem.step()).isEqualTo(EnvProblem.CHECK);
+                    assertThat(problem.output()).contains("rm -rf /work/src");
+                });
+        assertThat(runner.ran("exec -T app sh -c rm -rf /work/src"))
+                .as("拒了就不许执行").isFalse();
+    }
+
     // ---------- 收环境 ----------
 
     @Test

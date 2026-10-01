@@ -3,6 +3,9 @@ package com.specflow.web;
 import com.specflow.TestSpecs;
 import com.specflow.agent.AgentListener;
 import com.specflow.agent.AgentResult;
+import com.specflow.env.FakeCommandRunner;
+import com.specflow.env.TestEnvironment;
+import com.specflow.history.RunRecord;
 import com.specflow.history.RunRecorder;
 import com.specflow.history.RunStore;
 import com.specflow.project.LlmConfig;
@@ -12,6 +15,7 @@ import com.specflow.review.PlanStep;
 import com.specflow.review.ReviewOutcome;
 import com.specflow.review.StepAudit;
 import com.specflow.snapshot.WorkspaceSnapshot;
+import com.specflow.tests.Teardown;
 import com.specflow.tests.TestOutcome;
 import com.specflow.util.SafePathResolver;
 import com.specflow.verify.VerificationResult;
@@ -207,6 +211,88 @@ class RunServiceTest {
         assertThat(target.resolve("Foo.java")).as("越界的路径不删").exists();
     }
 
+    /**
+     * 接受要走完整条收场（十五.8），而且要把「带着几条失败接受的」写进留档。
+     *
+     * <p>这一栏是这套工具最基本的诚实：失败清单还在记录里，但「人是<b>知道它红着</b>还接受了」
+     * 只有它说得出来——过几天再翻，「带着一条红的被接受」和「全绿」在记录里长得一样。
+     */
+    @Test
+    @DisplayName("接受之后：留档里写下「接受」与当时带着的那几条失败用例")
+    void acceptRecordsWhatTheUserChose() throws Exception {
+        Path artifacts = root.resolve("tools/20260930-122000");
+        Files.createDirectories(artifacts);
+        Files.writeString(artifacts.resolve("run.cmd"), "echo FAIL\n");
+        Files.writeString(root.resolve("Foo.java"), "old");
+        markPendingSnapshot(root.resolve("Foo.java"));
+        recordFailingRun(artifacts);
+
+        RunService service = service();
+        Teardown.Done done = service.accept();
+        service.shutdown();
+
+        assertThat(done.settled()).isTrue();
+        assertThat(done.summarize()).contains("已接受").contains("测试产物");
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecord.Settlement settlement = store.load(store.latestId()).settlement();
+        assertThat(settlement.choice()).isEqualTo(RunRecord.Settlement.ACCEPT);
+        assertThat(settlement.failing()).containsExactly(2);
+        assertThat(settlement.summarize()).contains("带着 1 条失败用例").contains("用例 2");
+        assertThat(artifacts).doesNotExist();
+    }
+
+    /**
+     * 收场只清数据，<b>不动容器</b>（十五.5：容器常驻复用）。
+     *
+     * <p>这条判据很容易被「顺手收干净」写坏：收场那一段里同时有 reset 和 down 两个方法，
+     * 而调错一个的代价是「每接受一次就重建一次容器」——用户看到的是每次跑测试都要重新等镜像。
+     */
+    @Test
+    @DisplayName("收场不动容器：环境活着只 reset 数据（down 一次都不许调）")
+    void settlementNeverTearsTheEnvironmentDown() throws Exception {
+        Files.createDirectories(root.resolve(".specflow"));
+        Files.writeString(root.resolve(".specflow/env.yaml"), """
+                image: "x:1"
+                workdir: "/work"
+                reset:
+                  - "rm -rf /data/*"
+                """);
+        FakeCommandRunner docker = new FakeCommandRunner()
+                .ok("version", "fake docker").ok("ps -a", "")
+                .ok("volume ls", "").ok("network ls", "").ok("down", "")
+                .ok("up -d --wait", "").ok("exec -T app", "");
+        TestEnvironment environment = new TestEnvironment(root, docker);
+        environment.up();
+        Files.writeString(root.resolve("Foo.java"), "old");
+        markPendingSnapshot(root.resolve("Foo.java"));
+        Path artifacts = root.resolve("tools/20260930-123000");
+        Files.createDirectories(artifacts);
+        recordFailingRun(artifacts);
+
+        RunService service = new RunService(root, ProjectConfig.DEFAULT,
+                root.resolve(".specflow/templates"), environment);
+        Teardown.Done done = service.rollback();
+        service.shutdown();
+
+        assertThat(done.reset()).as("环境活着：数据重置过").isTrue();
+        assertThat(docker.ran("exec -T app sh -c rm -rf /data/*")).isTrue();
+        assertThat(docker.ran("down"))
+                .as("只有「环境坏了 / 关项目 / 用户手动」才 down -v，收场不是那个时候").isFalse();
+    }
+
+    /** 造一条「跑过测试、第 1 条过了、第 2 条没过」的运行记录。 */
+    private void recordFailingRun(Path artifacts) {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        TestOutcome tests = new TestOutcome(root.relativize(artifacts).toString().replace('\\', '/'),
+                List.of(), 1, 1, VerificationResult.failed("测试脚本", "run", "一条没过"),
+                List.of(), List.of(new TestOutcome.CaseResult(1, true),
+                        new TestOutcome.CaseResult(2, false)));
+        AgentListener recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+        ((RunRecorder) recorder).testsFinished(tests);
+        recorder.finished(AgentResult.testsFailed(1, List.of(), List.of(), "一条没过"));
+    }
+
     /** 造一条「跑过测试」的运行记录，产物目录按参数给。 */
     private void recordTestRun(Path artifacts) {
         RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
@@ -218,7 +304,6 @@ class RunServiceTest {
         ((RunRecorder) recorder).testsFinished(tests);
         recorder.finished(AgentResult.unverified(1, List.of(), List.of(), "没配编译命令"));
     }
-
     private void markPendingSnapshot(Path file) {
         WorkspaceSnapshot.capture(new SafePathResolver(root),
                         root.resolve(SnapshotConfig.DEFAULT_DIR), List.of(file))

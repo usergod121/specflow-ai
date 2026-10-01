@@ -1,9 +1,17 @@
 package com.specflow.cli;
 
 import com.specflow.SpecflowCli;
+import com.specflow.TestSpecs;
+import com.specflow.agent.AgentListener;
+import com.specflow.agent.AgentResult;
+import com.specflow.history.RunRecord;
+import com.specflow.history.RunRecorder;
+import com.specflow.history.RunStore;
 import com.specflow.project.SnapshotConfig;
 import com.specflow.snapshot.WorkspaceSnapshot;
+import com.specflow.tests.TestOutcome;
 import com.specflow.util.SafePathResolver;
+import com.specflow.verify.VerificationResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -219,6 +227,70 @@ class SpecflowCliTest {
     @DisplayName("env clear：没声明环境时返回 0，并说清没有可清的东西")
     void envClearWithoutDeclaration() {
         assertThat(SpecflowCli.execute("env", "clear", "-p", project)).isZero();
+    }
+
+    /**
+     * {@code env reset}：命令行上「把数据恢复到一个已知状态」的那个入口。
+     *
+     * <p>为什么必须有：界面上这一步藏在「每次跑测试之前」和收场里（没有单独的按钮），
+     * 所以命令行用户没有它就没法处理「上一轮的数据把这一轮的断言带偏」——
+     * 而那种失败看起来像被测代码不稳定，最难查。
+     */
+    @Test
+    @DisplayName("env reset：没声明环境时返回 0，并说清没有可重置的数据")
+    void envResetWithoutDeclaration() {
+        assertThat(SpecflowCli.execute("env", "reset", "-p", project)).isZero();
+    }
+
+    /** 声明了却没初始化过：这一次真做不成，退出码 1，原始错误里写着先初始化。 */
+    @Test
+    @DisplayName("env reset：声明了但没初始化 → 1")
+    void envResetBeforeInit() throws Exception {
+        Path file = root.resolve(".specflow/env.yaml");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "image: \"x:1\"\nworkdir: \"/work\"\n");
+
+        assertThat(SpecflowCli.execute("env", "reset", "-p", project)).isEqualTo(1);
+    }
+
+    /**
+     * 命令行的 {@code accept} 同样是<b>完整</b>收场（十五.8）：删产物、把人的选择写进留档。
+     *
+     * <p>两个入口各写一遍收场，迟早有一边少做一件；而少的那一件不是当场看得出来的
+     * （产物没删要等下次翻 {@code tools/}，留档没写要等事后想复盘「那次为什么带着红接受」）。
+     */
+    @Test
+    @DisplayName("accept：产物删掉、留档里写下「接受」与当时带着的失败")
+    void acceptRecordsTheSettlement() throws Exception {
+        Path file = root.resolve("Foo.java");
+        Files.writeString(file, "old");
+        markPendingSnapshot(file);
+        Files.writeString(file, "new");
+        Path artifacts = root.resolve("tools/20260930-180000");
+        Files.createDirectories(artifacts);
+        Files.writeString(artifacts.resolve("run.cmd"), "echo FAIL\n");
+        recordFailingRun(artifacts);
+
+        assertThat(SpecflowCli.execute("accept", "-p", project)).isZero();
+
+        assertThat(Files.readString(file)).as("接受 = 文件留在磁盘上").isEqualTo("new");
+        assertThat(artifacts).doesNotExist();
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecord.Settlement settlement = store.load(store.latestId()).settlement();
+        assertThat(settlement.choice()).isEqualTo(RunRecord.Settlement.ACCEPT);
+        assertThat(settlement.failing()).containsExactly(2);
+    }
+
+    /** 造一条「跑过测试、第 1 条过了、第 2 条没过」的运行记录。 */
+    private void recordFailingRun(Path artifacts) {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+        recorder.testsFinished(new TestOutcome(root.relativize(artifacts).toString().replace('\\', '/'),
+                List.of(), 1, 1, VerificationResult.failed("测试脚本", "run", "一条没过"),
+                List.of(), List.of(new TestOutcome.CaseResult(1, true),
+                        new TestOutcome.CaseResult(2, false))));
+        recorder.finished(AgentResult.testsFailed(1, List.of(), List.of(), "一条没过"));
     }
 
     /** 造一份「校验通过、等人处置」的快照，模拟上一次运行留下的东西。 */

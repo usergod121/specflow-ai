@@ -11,6 +11,7 @@ import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
 import com.specflow.spec.Spec;
+import com.specflow.tests.TestOutcome;
 import com.specflow.verify.VerificationResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -73,7 +74,9 @@ class RunStoreTest {
     private static RunRecord record(String id, String status, String detail) {
         return new RunRecord(id, "2026-01-01T00:00", status, null, "改点东西", List.of(),
                 List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of(),
-                List.of(), null, List.of(), null, null, null, List.of());
+                List.of(), null, List.of(), null, null,
+                // 判决、收场、重新生成过哪几份产物：都是跑完之后人写的那几笔，直接造时留空
+                null, null, null, List.of());
     }
 
     @Test
@@ -759,43 +762,110 @@ class RunStoreTest {
     }
 
     /**
-     * 「已知失败」要落档：它是<b>人做的判断</b>，只留在界面上就是刷新一下就没了——
+     * 「这几条怎么判的」要落档：它是<b>人做的判断</b>，只留在界面上就是刷新一下就没了——
      * 而事后翻记录的人正是靠它解释「为什么那几条红的最后没被当成问题」。
+     *
+     * <p>三档（开发错了 / 测试代码错了 / 不重要）用的是同一栏：它们回答的是同一个问题
+     * 「谁错了」，分成三栏就会出现「同一条用例在两个地方各有一个判断」。
      */
     @Test
-    @DisplayName("「已知失败」写进留档：换一次读取还在，重复标记不刷新原来的时间")
-    void recordsKnownFailures() {
+    @DisplayName("人的判断写进留档：换一次读取还在，同一档不刷新原来的时间，改判就换一档")
+    void recordsVerdicts() {
         RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
         record(store, "测试没过");
         String id = store.latestId();
 
-        RunRecord marked = store.markKnownFailures(id, List.of(2, 1));
-        assertThat(marked.knownFailures()).extracting(RunRecord.KnownFailure::index)
+        RunRecord marked = store.judge(id, List.of(2, 1), RunRecord.Verdict.KNOWN);
+        assertThat(marked.verdicts()).extracting(RunRecord.Verdict::index)
                 .as("按编号排好，界面直接画").containsExactly(1, 2);
-        String firstAt = marked.knownFailures().get(0).at();
+        String firstAt = marked.verdicts().get(0).at();
         assertThat(firstAt).isNotBlank();
 
         // 再标一次（界面会把完整的一份发回来）：已经在里面的保留原时间——
         // 那个时间记的是「哪一刻人的判断变了」，每次重标都刷掉就等于抹掉了最初那一刻
-        RunRecord again = store.markKnownFailures(id, List.of(1, 2, 3));
-        assertThat(again.knownFailures()).extracting(RunRecord.KnownFailure::index)
+        RunRecord again = store.judge(id, List.of(1, 2, 3), RunRecord.Verdict.KNOWN);
+        assertThat(again.verdicts()).extracting(RunRecord.Verdict::index)
                 .containsExactly(1, 2, 3);
-        assertThat(again.knownFailures().get(0).at()).isEqualTo(firstAt);
+        assertThat(again.verdicts().get(0).at()).isEqualTo(firstAt);
+        assertThat(again.verdicts().get(0).owner()).isEqualTo(RunRecord.Verdict.KNOWN);
 
         // 读回来还是同一份（落盘、不是只改内存）
-        assertThat(store.load(id).knownFailures()).hasSize(3);
+        assertThat(store.load(id).verdicts()).hasSize(3);
 
-        // 取消标记（发一份空的上来）之后这一栏就该没有——而不是留一个空数组
-        RunRecord cleared = store.markKnownFailures(id, List.of());
-        assertThat(cleared.knownFailures()).isNull();
+        // 改判：同一条用例只有一个判断，新的那一档把它换掉（而不是两条并存）
+        RunRecord changed = store.judge(id, List.of(2), RunRecord.Verdict.CODE);
+        assertThat(changed.verdicts()).extracting(RunRecord.Verdict::owner)
+                .contains(RunRecord.Verdict.KNOWN, RunRecord.Verdict.CODE);
+
+        // 取消标记（发一份空的上来）之后这一档就该没有——而不是留一个空数组
+        RunRecord cleared = store.judge(id, List.of(), RunRecord.Verdict.KNOWN);
+        assertThat(cleared.verdicts()).extracting(RunRecord.Verdict::owner)
+                .as("取消「不重要」不该顺手把「开发错了」也抹掉")
+                .containsExactly(RunRecord.Verdict.CODE);
+        assertThat(store.judge(id, List.of(), RunRecord.Verdict.CODE).verdicts()).isNull();
+    }
+
+    /**
+     * 收场要落档（十五.8）：接受还是中断，以及当时<b>带着几条失败用例</b>。
+     *
+     * <p>为什么这一笔最要紧：失败清单只说明「当时红在哪几条上」，说明不了
+     * 「人是知道它红着还接受了」。过几天再翻，「带着 2 条失败被接受」和「全绿」
+     * 在记录里长得一模一样——而它们是两件完全不同的事。
+     */
+    @Test
+    @DisplayName("收场写进留档：怎么收的场 + 当时带着哪几条失败用例")
+    void recordsSettlement() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        record(store, "测试没过，改动留着等人处置");
+        String id = store.latestId();
+
+        RunRecord accepted = store.settle(id, RunRecord.Settlement.ACCEPT, List.of(1, 3));
+
+        RunRecord.Settlement settlement = accepted.settlement();
+        assertThat(settlement.choice()).isEqualTo(RunRecord.Settlement.ACCEPT);
+        assertThat(settlement.at()).isNotBlank();
+        assertThat(settlement.failing()).containsExactly(1, 3);
+        assertThat(settlement.failures()).as("带着几条失败接受——界面与留档都用它").isEqualTo(2);
+        assertThat(settlement.summarize()).contains("已接受").contains("2 条失败用例");
+        assertThat(store.load(id).settlement().failing()).containsExactly(1, 3);
+
+        // 中断走的是同一栏：两条收场路在记录里必须是同一件事的两种取值
+        RunRecord interrupted = store.settle(id, RunRecord.Settlement.INTERRUPT, List.of(2));
+        assertThat(interrupted.settlement().summarize()).contains("已中断");
+        assertThat(interrupted.settlement().failing()).containsExactly(2);
+    }
+
+    /**
+     * 重新生成的那份产物也要记在留档里。
+     *
+     * <p>不记的后果很具体：收场时会按留档删产物，漏掉的那一份就永远留在 {@code tools/} 里——
+     * 而「上一次接受之后产物没了」是用户唯一能看见的、收场真的做完了的证据。
+     */
+    @Test
+    @DisplayName("重新生成：判断（测试代码错了）与新产物目录一起落进留档")
+    void recordsRegeneratedArtifacts() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        recordTestRun(store);
+        String id = store.latestId();
+
+        RunRecord first = store.regenerated(id, List.of(1, 2), "tools/20260930-130000");
+        assertThat(first.regenerated()).containsExactly("tools/20260930-130000");
+        assertThat(first.verdicts()).extracting(RunRecord.Verdict::owner)
+                .containsOnly(RunRecord.Verdict.TEST);
+
+        // 同一个目录点两次「放行」不会记两笔；换一个目录就是多了一份要收的产物
+        RunRecord twice = store.regenerated(id, List.of(1, 2), "tools/20260930-130000");
+        assertThat(twice.regenerated()).hasSize(1);
+        assertThat(store.regenerated(id, List.of(1, 2), "tools/20260930-131500").regenerated())
+                .containsExactly("tools/20260930-130000", "tools/20260930-131500");
     }
 
     @Test
-    @DisplayName("标一个不存在的记录：报错，而不是悄悄新建一条")
+    @DisplayName("判一个不存在的记录：报错，而不是悄悄新建一条")
     void refusesToMarkAnUnknownRun() {
         RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
 
-        assertThatThrownBy(() -> store.markKnownFailures("nope", List.of(1)))
+        assertThatThrownBy(() -> store.judge("nope", List.of(1), RunRecord.Verdict.KNOWN))
                 .isInstanceOf(SpecflowException.class);
     }
 
@@ -810,14 +880,14 @@ class RunStoreTest {
     }
 
     /**
-     * 老记录里没有这两栏（测试环境登记、「已知失败」）：读出来必须是 {@code null}，
-     * 而不是让整条记录读不出来。
+     * 老记录里没有这几栏（测试环境登记、人的判断、收场、重新生成过的产物）：
+     * 读出来必须是 {@code null}，而不是让整条记录读不出来。
      *
      * <p>读不出来是<b>静默跳过</b>的（见 {@code RunStore.read}），所以这一类问题的表现
      * 只是「历史里少了一条」——没有一条点名的断言，它可以在很久以后才被发现。
      */
     @Test
-    @DisplayName("老记录没有环境登记与已知失败：读出来是 null，不是读失败")
+    @DisplayName("老记录没有环境登记与判决：读出来是 null，不是读失败")
     void readsLegacyRecordWithoutNewFields() throws IOException {
         Path dir = root.resolve(RunStore.DEFAULT_DIR);
         Files.createDirectories(dir);
@@ -838,7 +908,54 @@ class RunStoreTest {
 
         assertThat(record.status()).isEqualTo("SUCCESS");
         assertThat(record.environment()).as("老记录里没有这一项").isNull();
-        assertThat(record.knownFailures()).as("老记录里也没有这一项").isNull();
+        assertThat(record.verdicts()).as("老记录里也没有这一项").isNull();
+        assertThat(record.settlement()).as("收场是这一批新加的").isNull();
+        assertThat(record.regenerated()).isNull();
+    }
+
+    /**
+     * 「标记为已知失败」那一栏<b>改过名字</b>：它以前叫 {@code knownFailures}，
+     * 而且每条只有 {@code index} 与 {@code at} 两栏（那时唯一存在的判断就是已知失败）。
+     *
+     * <p>必须认这个形状：老记录里那些记号是<b>人做过的判断</b>，读不出来是静默跳过，
+     * 用户只会看到历史里的记号凭空消失——而这正是前一批踩过的那个坑
+     * （缺失项那两个老字段名，不映射就整条记录读不出来）。
+     */
+    @Test
+    @DisplayName("老记录里的 knownFailures：读成「不重要」那一档，而不是丢掉")
+    void readsLegacyKnownFailuresAsKnownVerdicts() throws IOException {
+        Path dir = root.resolve(RunStore.DEFAULT_DIR);
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("20260102-000000-000.json"), """
+                {
+                  "id": "20260102-000000-000",
+                  "startedAt": "2026-01-02T00:00",
+                  "status": "TESTS_FAILED",
+                  "prompt": "老需求",
+                  "acceptance": [],
+                  "targets": ["a.txt"],
+                  "attempts": 1,
+                  "detail": "那次带着两条失败被接受了",
+                  "knownFailures": [
+                    { "index": 2, "at": "2026-01-02T00:05" },
+                    { "index": 3, "at": "2026-01-02T00:06" }
+                  ]
+                }
+                """);
+
+        RunRecord record = new RunStore(dir).load("20260102-000000-000");
+
+        assertThat(record.verdicts()).extracting(RunRecord.Verdict::index).containsExactly(2, 3);
+        assertThat(record.verdicts()).extracting(RunRecord.Verdict::owner)
+                .as("老记录里没有 owner：那时唯一的判断就是「已知失败」")
+                .containsOnly(RunRecord.Verdict.KNOWN);
+        assertThat(record.verdicts().get(0).at()).as("原来的时间要保留").isEqualTo("2026-01-02T00:05");
+        // 写回去之后是新名字，而且读得回来（老记录被就地升级，不会两边各说各的）
+        RunStore store = new RunStore(dir);
+        store.judge(record.id(), List.of(2, 3), RunRecord.Verdict.KNOWN);
+        assertThat(Files.readString(dir.resolve(record.id() + ".json")))
+                .contains("\"verdicts\"").doesNotContain("\"knownFailures\"");
+        assertThat(store.load(record.id()).verdicts()).hasSize(2);
     }
 
     private static PatchApplier.FileChange change(String path, String diff) {
@@ -849,6 +966,27 @@ class RunStoreTest {
         RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("a.txt")),
                 null, AgentListener.NOOP);
         recorder.finished(AgentResult.failed(1, List.of(), List.of(), detail));
+    }
+
+    /**
+     * 造一次「跑过测试、带着两条失败」的运行。
+     *
+     * <p>收场与「重新生成」那两条都要按 {@code tests.cases} 算出「哪几条没过」，
+     * 所以这两条测试用的记录必须真的带一份测试结论——不然验的是「空表也能写进去」，
+     * 而真实场景里它总是有内容的。
+     */
+    private void recordTestRun(RunStore store) {
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("a.txt")),
+                null, AgentListener.NOOP);
+        recorder.testsFinished(new TestOutcome("tools/20260930-120000",
+                List.of("tools/20260930-120000/run.cmd"), 1, 1,
+                VerificationResult.failed("测试脚本", "run", "两条没过"),
+                List.of(),
+                // 三档都要有：过的、没过的、压根没跑到的（没跑到的也算没过）
+                List.of(new TestOutcome.CaseResult(1, true),
+                        new TestOutcome.CaseResult(2, false),
+                        new TestOutcome.CaseResult(3, false))));
+        recorder.finished(AgentResult.testsFailed(1, List.of(), List.of(), "两条没过"));
     }
 
     /** 跑一次带缺失项的运行，用它验统计口径。 */

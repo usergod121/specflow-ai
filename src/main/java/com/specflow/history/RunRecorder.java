@@ -291,9 +291,10 @@ public final class RunRecorder implements AgentListener {
                 approved == null ? List.of() : approved.missing(),
                 changesOf(result.changes()), stepsOf(result), planSteps, stepsSource,
                 approved == null ? List.of() : approved.cases(), tests, environment,
-                // 已知失败是**跑完之后**人点的，落档要另写一次（见 RunStore.markKnownFailures）；
-                // 这里给 null，留档里于是没有这一项——「没人标过」和「标了一个空表」是两件事
-                null,
+                // 判决、收场、重新生成过哪几份产物，都是**跑完之后**人写的（见 RunStore.judge /
+                // settle / regenerated）；这里给 null，留档里于是没有这几项——
+                // 「没人判过」和「判了一个空表」是两件事
+                null, null, null,
                 List.copyOf(timeline));
         try {
             store.save(record);

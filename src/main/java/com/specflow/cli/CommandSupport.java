@@ -1,16 +1,14 @@
 package com.specflow.cli;
 
 import com.specflow.exception.SpecflowException;
+import com.specflow.history.RunStore;
 import com.specflow.project.ProjectConfig;
 import com.specflow.project.ProjectConfigLoader;
-import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.SpecLoader;
-import com.specflow.util.SafePathResolver;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 
 /**
  * 命令行的公共前置步骤：把「项目根目录 + spec 路径」变成加载好的对象。
@@ -47,13 +45,13 @@ final class CommandSupport {
     }
 
     /**
-     * 磁盘上还没被处置的快照（按时间从早到晚）。
+     * 这个项目的运行留档在哪儿。
      *
-     * <p>{@code accept} 与 {@code rollback} 找的是同一批东西，判据也必须一样：
-     * 分头各写一遍，迟早会变成「一个命令说有、另一个说没有」。
+     * <p>位置只有这一处算：{@code RunService}、{@code accept}/{@code rollback} 各自
+     * {@code resolve} 一遍的话，某一天改了目录名就会变成「一条路径写、另一条路径读」——
+     * 而它的表现是「留档里什么都没有」，看不出是路径错了。
      */
-    static List<WorkspaceSnapshot> undisposedSnapshots(Path root, ProjectConfig project) {
-        SafePathResolver resolver = new SafePathResolver(root);
-        return WorkspaceSnapshot.undisposed(resolver, resolver.resolve(project.snapshot().dir()));
+    static RunStore runStore(Path root) {
+        return new RunStore(root.resolve(RunStore.DEFAULT_DIR));
     }
 }

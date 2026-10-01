@@ -1102,6 +1102,56 @@ class WebServerTest {
         assertThat(body(get("/api/pending")).path("present").asBoolean()).isFalse();
     }
 
+    /**
+     * 收场那一行要随 200 一起回去（十五.8）。
+     *
+     * <p>为什么不能只回一个 {@code done:true}：收场不只是「文件留没留」——还有删掉的测试产物、
+     * 重置过的环境数据、以及「这次是带着几条失败用例接受的」。界面自己拼一句「已保留改动」，
+     * 用户就永远看不到后面那三样，而它们正是事后要对的账。
+     */
+    @Test
+    @DisplayName("接受：返回体里带着收场那一行（删了哪些产物、清没清环境数据）")
+    void acceptingReportsWhatTheTeardownDid() throws Exception {
+        Path foo = root.resolve("src/main/java/com/demo/Foo.java");
+        Files.writeString(foo, "class Foo { int a = 1; }\n");
+        Files.createDirectories(root.resolve("tools/20260930-170000"));
+        Files.writeString(root.resolve("tools/20260930-170000/run.cmd"), "echo PASS\n");
+        WorkspaceSnapshot.capture(new SafePathResolver(root),
+                root.resolve(SnapshotConfig.DEFAULT_DIR), List.of(foo)).markPending();
+        new RunStore(root.resolve(RunStore.DEFAULT_DIR)).save(recordWithTests(
+                "tools/20260930-170000"));
+        Files.writeString(foo, "class Foo { int a = 2; }\n");
+
+        HttpResponse<String> response = post("/api/accept", "{}");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        assertThat(body(response).path("teardown").asText())
+                .contains("已接受").contains("测试产物");
+        assertThat(root.resolve("tools/20260930-170000"))
+                .as("产物当着用户的面删掉，而且这事儿得说得出来").doesNotExist();
+        // 留档里那一栏：怎么收的场 + 当时带着几条失败（这次没跑过用例，所以是 0）
+        JsonNode settlement = body(get("/api/run-detail?id=" + encode(latestRunId())))
+                .path("settlement");
+        assertThat(settlement.path("choice").asText()).isEqualTo("ACCEPT");
+        assertThat(settlement.path("summary").asText()).contains("已接受");
+    }
+
+    /** 一条「跑过测试、留了产物」的记录，用来验收场要按留档删产物。 */
+    private RunRecord recordWithTests(String directory) {
+        return new RunRecord("20260930-170000", "2026-09-30T17:00", "TESTS_FAILED", null, "做点什么",
+                List.of(), List.of(), null, List.of("src/main/java/com/demo/Foo.java"), 1, "一条没过",
+                List.of(), List.of(), List.of(), List.of(), null, List.of(),
+                new com.specflow.tests.TestOutcome(directory, List.of(directory + "/run.cmd"), 1, 1,
+                        com.specflow.verify.VerificationResult.failed("测试脚本", "run", "一条没过"),
+                        List.of(),
+                        List.of(new com.specflow.tests.TestOutcome.CaseResult(1, false))),
+                null, null, null, null, List.of());
+    }
+
+    private String latestRunId() {
+        return new RunStore(root.resolve(RunStore.DEFAULT_DIR)).latestId();
+    }
+
     @Test
     @DisplayName("没有待处置的改动时处置接口报 409，并且只接受 POST")
     void decidingWithoutPendingIsAConflict() throws Exception {
@@ -1421,36 +1471,40 @@ class WebServerTest {
     }
 
     /**
-     * 「不重要 / 误报」写进运行留档：接口收的是<b>完整的一份集合</b>，
+     * 「谁错了」写进运行留档：接口收的是<b>完整的一份集合</b> + 判的是哪一档，
      * 存下来之后翻记录还看得见（刷新一次不该把人的判断抹掉）。
      */
     @Test
-    @DisplayName("「已知失败」落档：接口写进去，运行详情读得回来")
-    void recordsKnownFailuresIntoTheArchive() throws Exception {
+    @DisplayName("判决落档：接口写进去，运行详情读得回来")
+    void recordsVerdictsIntoTheArchive() throws Exception {
         RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
         RunRecorder.start(store, TestSpecs.spec(List.of("README.md")), null, AgentListener.NOOP)
                 .finished(AgentResult.failed(1, List.of(), List.of(), "测试没过"));
         String id = store.latestId();
 
-        HttpResponse<String> response = post("/api/tests/known",
-                "{\"id\":" + quote(id) + ",\"cases\":[2,1]}");
+        HttpResponse<String> response = post("/api/tests/judge",
+                "{\"id\":" + quote(id) + ",\"cases\":[2,1],\"owner\":\"CODE\"}");
 
         assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
         JsonNode detail = body(get("/api/run-detail?id=" + encode(id)));
-        assertThat(detail.path("knownFailures")).hasSize(2);
-        assertThat(detail.path("knownFailures").get(0).path("index").asInt()).isEqualTo(1);
+        assertThat(detail.path("verdicts")).hasSize(2);
+        assertThat(detail.path("verdicts").get(0).path("index").asInt()).isEqualTo(1);
+        assertThat(detail.path("verdicts").get(0).path("owner").asText())
+                .as("留档里要说清这一判是「谁错了」").isEqualTo("CODE");
 
         // 不带 id（刷新过页面之后界面手里没有它）：按最新那条落
-        assertThat(post("/api/tests/known", "{\"cases\":[3]}").statusCode()).isEqualTo(200);
-        assertThat(body(get("/api/run-detail?id=" + encode(id)))
-                .path("knownFailures")).hasSize(1);
+        assertThat(post("/api/tests/judge", "{\"cases\":[3],\"owner\":\"KNOWN\"}")
+                .statusCode()).isEqualTo(200);
+        JsonNode after = body(get("/api/run-detail?id=" + encode(id))).path("verdicts");
+        assertThat(after).as("两条判断并存：一条是「开发错了」，一条是「不重要」").hasSize(3);
+        assertThat(after.get(2).path("owner").asText()).isEqualTo("KNOWN");
     }
 
-    /** 一条运行记录都没有时标「已知失败」：409 说清「先跑一次」。 */
+    /** 一条运行记录都没有时写判决：409 说清「先跑一次」。 */
     @Test
-    @DisplayName("没有运行记录时标「已知失败」：409，而不是静默丢掉这个判断")
-    void refusesKnownFailuresWithoutAnyRun() throws Exception {
-        HttpResponse<String> response = post("/api/tests/known", "{\"cases\":[1]}");
+    @DisplayName("没有运行记录时写判决：409，而不是静默丢掉这个判断")
+    void refusesVerdictsWithoutAnyRun() throws Exception {
+        HttpResponse<String> response = post("/api/tests/judge", "{\"cases\":[1],\"owner\":\"KNOWN\"}");
 
         assertThat(response.statusCode()).isEqualTo(409);
         assertThat(body(response).path("error").asText()).contains("跑一次");

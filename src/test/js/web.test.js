@@ -494,10 +494,12 @@ check(pendingPanelHtml({ present: false, id: null, canAccept: false, summary: '�
 
 const okHtml = pendingPanelHtml(verified);
 check(okHtml.includes('2 个文件：新增 1、修改 1'), 'summary 摆出来了');
-check(okHtml.includes('<button type="button" data-act="accept">保留改动</button>'),
+check(okHtml.includes('data-act="accept"') && okHtml.includes('>保留改动</button>'),
     '校验过时主按钮是「保留改动」，不带 ghost（它就是主路径）');
-check(okHtml.includes('<button type="button" class="ghost" data-act="rollback">撤回改动</button>'),
+check(okHtml.includes('class="ghost" data-act="rollback"') && okHtml.includes('>撤回改动</button>'),
     '次按钮是「撤回改动」');
+check(okHtml.includes('删掉快照与这次运行的测试产物') && okHtml.includes('把环境数据重置一次'),
+    '两个按钮的提示里写着收场的全部动作（十五.8：不只删快照，还有测试产物与环境数据）');
 check(okHtml.indexOf('data-act="accept"') < okHtml.indexOf('data-act="rollback"'),
     '主按钮排在次按钮前面（两个按钮长得几乎一样，顺序就是唯一的提示）');
 check(!okHtml.includes('class="pending-alert"'), '校验过的这一份不该挂「没校验」的警示');
@@ -511,13 +513,13 @@ check(okHtml.includes('<div class="del">-int a = 1;</div>'), '删除行渲染成
 check(okHtml.includes('<div class="add">+int a = 2;</div>'), '同一段 diff 里增删混着也不会串类');
 
 const unverified = pendingPanelHtml({ ...verified, canAccept: false, summary: '1 个文件：修改 1' });
-check(unverified.includes('<button type="button" data-act="rollback">恢复到运行前</button>'),
+check(unverified.includes('data-act="rollback"') && unverified.includes('>恢复到运行前</button>'),
     '没校验过时主按钮是「恢复到运行前」');
-check(unverified.includes('data-act="accept">保留当前内容</button>'), '次按钮是「保留当前内容」');
+check(unverified.includes('>保留当前内容</button>'), '次按钮是「保留当前内容」');
 check(unverified.indexOf('data-act="rollback"') < unverified.indexOf('data-act="accept"'),
     '没校验过时主次正好反过来');
 check(!unverified.includes('保留改动'), '这一份里不该出现「保留改动」这个说法（它和上面那份不是一回事）');
-check(unverified.includes('data-act="accept">保留当前内容</button><span class="pending-alert">'),
+check(unverified.includes('>保留当前内容</button><span class="pending-alert">'),
     '「没经过校验」这句就贴在这个次按钮旁边');
 check(unverified.includes('没有经过校验'), '警示必须写明没验过');
 
@@ -853,8 +855,7 @@ check(!pendingPanelHtml(pendingTwo, null, []).includes('step-group')
     '没有每步留档时一块都不分组：宁可一个文件一块，也不给改动乱安步号');
 check(pendingPanelHtml(pendingTwo).indexOf('<div class="step-group">') < 0,
     '连留档都不给时也是老样子（链 20 盯着两个文件各占一行）');
-check(pendingPanelHtml(pendingTwo, null, detailTwo).includes(
-    '<button type="button" data-act="accept">保留改动</button>'),
+check(pendingPanelHtml(pendingTwo, null, detailTwo).includes('>保留改动</button>'),
     '分组之后那两个按钮还在（分组只动正文）');
 check(pendingPanelHtml(pendingTwo, null, detailTwo).includes('<div class="add">+x</div>'),
     '分组之后 diff 的底色也还在');
@@ -948,6 +949,7 @@ check(!!historyTable.STATUS_LABEL.PENDING_DECISION,
 console.log('用例分档：');
 const caseApi = load('index.html', [
   'CASE_LEVELS', 'CASE_OUTCOME_MARKS', 'CASE_OUTCOME_TEXT', 'FAILURE_KINDS',
+  'VERDICT', 'VERDICT_LABELS',
   'caseLevel', 'caseLevelMeta', 'caseTiers', 'caseByIndex', 'caseOutcome', 'tierRate',
   'casePassRate', 'caseChipText', 'numbersIn', 'failureOf', 'failureKind', 'testsReport',
   'testsSummaryText', 'failPairHtml', 'guessHtml', 'failRowHtml', 'testActionPath', 'startsRun',
@@ -955,6 +957,7 @@ const caseApi = load('index.html', [
   'casesPanelHtml', 'casesFootHtml', 'hasCases', 'caseSignature', 'targetSignature',
   'planSignature', 'staleFreeze', 'needsConfirm', 'confirmCases', 'regenBlockHtml',
   'testsActionsHtml', 'testsPanelHtml', 'rateOfAll', 'caseListForTests',
+  'verdictLabel', 'verdictsOf', 'settlementText', 'judgementPayload',
 ], '// ---------- 用例与测试结果 ----------', 'async function refreshPending');
 
 const {
@@ -963,6 +966,7 @@ const {
   testActionPath, startsRun, refeedText, caseDetailHtml, casesPanelHtml, casesFootHtml,
   hasCases, caseSignature, targetSignature, planSignature, staleFreeze, needsConfirm,
   confirmCases, regenBlockHtml, testsActionsHtml, testsPanelHtml, rateOfAll,
+  VERDICT, verdictLabel, verdictsOf, settlementText,
 } = caseApi;
 
 check(caseLevel({ level: 'MUST' }) === 'MUST' && caseLevel({ level: '可选' }) === 'UNKNOWN',
@@ -1057,7 +1061,7 @@ check(failureKind('ASSERTION')[1] === '断言失败' && failureKind('TEST_CODE')
     '四类失败各有各的说法（合并成一句「测试没过」，用户就会去翻产品代码）');
 check(failureKind('WEIRD')[1] === 'WEIRD', '认不出来的类型原样显示，不假装认出来了');
 
-const failText = failRowHtml(failure, caseSample, new Set(), new Set());
+const failText = failRowHtml(failure, caseSample, new Set(), new Map());
 check(failText.includes('用例 2'), '① 哪条用例（编号）在里面：' + failText.slice(0, 120));
 check(failText.includes('查不到时返回 404'), 'chip 的语义描述跟着走，人不用回去翻清单');
 check(failText.includes('断言失败'), '② 失败原因是机器判的那一档');
@@ -1065,19 +1069,19 @@ check(failText.includes('期望：') && failText.includes('404'), '③ 期望在
 check(failText.includes('实际：') && failText.includes('500'), '③ 实际在里面');
 check(failText.includes('class="fail-guess"') && failText.includes('这是 AI 的猜测'),
     '④ AI 的猜测单独一块，并且标明它是猜测');
-check(!failRowHtml({ ...failure, opinion: '' }, caseSample, new Set(), new Set())
+check(!failRowHtml({ ...failure, opinion: '' }, caseSample, new Set(), new Map())
     .includes('fail-guess'), '它没说谁错时那一段整个不出现（不留一个空壳占位置）');
-check(failRowHtml({ ...failure, testCase: '', expected: '', actual: '' }, caseSample, new Set(), new Set())
+check(failRowHtml({ ...failure, testCase: '', expected: '', actual: '' }, caseSample, new Set(), new Map())
     .includes('（没写）'), '脚本没写期望/实际时明说「没写」，不留空行让人以为是漏显示');
 check(failText.includes('data-pick="2"'), '每条失败带一个勾选框，勾了才能回喂给开发');
-check(failRowHtml(failure, caseSample, new Set([2]), new Set()).includes('data-pick="2" checked'),
+check(failRowHtml(failure, caseSample, new Set([2]), new Map()).includes('data-pick="2" checked'),
     '勾上的那条画出来就是勾着的');
 
 console.log('失败清单那一块的转义与出处：');
 const nastyFail = failRowHtml({
   kind: 'ASSERTION', testCase: '1', expected: '<img src=x onerror=1>', actual: '</div>',
   opinion: '<b>代码错了</b>',
-}, caseSample, new Set(), new Set());
+}, caseSample, new Set(), new Map());
 check(nastyFail.includes('&lt;img src=x onerror=1&gt;') && !nastyFail.includes('<img src=x'),
     '期望/实际是脚本打印的原话，一律转义');
 check(nastyFail.includes('&lt;b&gt;代码错了&lt;/b&gt;'), 'AI 那句猜测也转义');
@@ -1089,7 +1093,7 @@ check(testsReport({ exit: 0, failures: [] }).passed === true, '退出码 0 且�
 check(testsReport({ exit: 1, failures: [], verification: { output: 'oops' } }).output === 'oops',
     '留档里那份没有 output 字段，退回 verification.output 取原始输出');
 
-const panel = testsPanelHtml(report, caseSample, { picked: new Set([2]), known: new Set(), pending: true });
+const panel = testsPanelHtml(report, caseSample, { picked: new Set([2]), known: new Map(), pending: true });
 check(panel.includes('测试结果'), '这一块有自己的标题：测试结果');
 check(panel.includes('断言失败') && panel.includes('404') && panel.includes('500'),
     '失败清单在结果面板里（四要素都在）');
@@ -1104,11 +1108,58 @@ check(testsPanelHtml(report, caseSample, { open: false }).includes('<div class="
 check(testsPanelHtml(report, caseSample, { actions: false }).includes('data-act="next-round"') === false,
     'actions: false（历史详情那种场合）时一个动作按钮都不画——它们动的是此刻的磁盘');
 
-console.log('失败清单：已知失败那一条：');
-const knownPanel = testsPanelHtml(report, caseSample, { known: new Set([2]), picked: new Set() });
-check(knownPanel.includes('已知失败'), '标过的那条改写成「已知失败」');
+console.log('失败清单：人判过的那几条：');
+/**
+ * 失败清单里那几个小标签的原文。
+ *
+ * <p>只看 {@code .fail-kind}，不看整块 HTML：动作按钮的提示里也写着「已知失败」「开发 AI 错了」
+ * 这些词，拿 {@code includes} 整块去比，界面**没画**这些标签也照样是绿的
+ * （实测：把判决那一行撤掉，这条断言一点反应都没有——它就是那种「看起来在测、其实没测」的断言）。
+ */
+function failKindLabels(html) {
+  return [...html.matchAll(/<span class="fail-kind[^"]*">([^<]*)<\/span>/g)].map(m => m[1]);
+}
+
+const knownPanel = testsPanelHtml(report, caseSample, {
+  known: new Map([[2, VERDICT.KNOWN]]), picked: new Set(),
+});
+check(failKindLabels(knownPanel).some(label => label.includes('已知失败')),
+    '标成「不重要」的那条改写成「已知失败」：' + JSON.stringify(failKindLabels(knownPanel)));
 check(knownPanel.indexOf('已知失败') > 0 && knownPanel.includes('data-known="true"'),
     '整行也跟着走，不只是那个小标签');
+// 「谁错了」这三档都要画得出来：判过的行还挂着「断言失败」，等于让人再判一次——
+// 而用户刚刚才判过，他只是过两天回来翻记录。
+// 这里要的是「两种判断各画各的」，所以两条都得真的在失败清单里（各喂一条失败）
+const twoFailures = {
+  exit: 1,
+  failures: [
+    { kind: 'ASSERTION', testCase: '2', expected: '404', actual: '500', opinion: '' },
+    { kind: 'ASSERTION', testCase: '3', expected: '400', actual: '200', opinion: '' },
+  ],
+  cases: [{ index: 2, passed: false }, { index: 3, passed: false }],
+};
+const judgedPanel = testsPanelHtml(twoFailures, caseSample, {
+  known: new Map([[2, VERDICT.CODE], [3, VERDICT.TEST]]), picked: new Set(),
+});
+const judgedLabels = failKindLabels(judgedPanel);
+check(judgedLabels.includes(verdictLabel(VERDICT.CODE))
+        && judgedLabels.includes(verdictLabel(VERDICT.TEST)),
+    '判过的行改成写着「谁错了」：' + JSON.stringify(judgedLabels));
+check(!judgedPanel.includes('data-known="true"'),
+    '「开发错了 / 测试错了」不等于「不重要」：那两行的底色不该跟着变灰');
+check(verdictLabel('SOMETHING') === '判过：SOMETHING',
+    '认不出来的判断原样显示，不归到三档里任何一档（那是替人改口供）');
+
+console.log('留档里那两栏读回界面：');
+check(verdictsOf({ verdicts: [{ index: 2, owner: 'KNOWN' }, { index: 3, owner: 'CODE' }] })
+    .get(2) === 'KNOWN' && verdictsOf({ verdicts: [{ index: 3, owner: 'CODE' }] }).get(3) === 'CODE',
+    'verdicts 变成「编号 → 判断」的表');
+check(verdictsOf({}).size === 0 && verdictsOf(null).size === 0,
+    '没人判过（老记录里也没有这一栏）时是空表');
+check(settlementText({ choice: 'ACCEPT', summary: '已接受（改动留在磁盘上）；当时带着 2 条失败用例（用例 1、3）' })
+    .includes('带着 2 条失败用例'), '收场那一行直接用留档里那句结论（带着几条失败是重点）');
+check(settlementText(null) === '' && settlementText({}) === '',
+    '没收过场的记录不画这一行');
 
 // ---------- 四个动作 ----------
 console.log('四个动作各打哪儿：');
@@ -1126,7 +1177,7 @@ const paths = ['next-round', 'regenerate', 'accept', 'interrupt'].map(testAction
 check(new Set(paths).size === paths.length,
     '四条路两两不同（接到同一个接口上就是「点张三打了李四」）：' + paths.join(','));
 
-const actionsHtml = testsActionsHtml(bigReport, caseSample, new Set([2]), new Set(), { pending: true });
+const actionsHtml = testsActionsHtml(bigReport, caseSample, new Set([2]), new Map(), { pending: true });
 check(actionsHtml.includes('data-act="next-round"') && actionsHtml.includes('data-act="regenerate"')
     && actionsHtml.includes('data-act="known"') && actionsHtml.includes('data-act="accept"')
     && actionsHtml.includes('data-act="interrupt"'),
@@ -1134,13 +1185,13 @@ check(actionsHtml.includes('data-act="next-round"') && actionsHtml.includes('dat
 check(actionsHtml.includes('下一轮（回喂选中的 1 条）'), '「下一轮」把回喂的条数写在按钮上');
 check(actionsHtml.includes('我的设计错了') === false,
     '界面上不许出现「我的设计错了」这种按钮（十五.6）');
-check(testsActionsHtml(bigReport, caseSample, new Set(), new Set(), { pending: true })
+check(testsActionsHtml(bigReport, caseSample, new Set(), new Map(), { pending: true })
     .includes('data-act="next-round" disabled'),
     '一条都没勾时「下一轮」是按住的（回喂得先说出要修哪几条）');
-check(testsActionsHtml(bigReport, caseSample, new Set([2]), new Set(),
+check(testsActionsHtml(bigReport, caseSample, new Set([2]), new Map(),
     { pending: true, regenerated: { released: false } }).includes('data-act="next-round" disabled'),
     '重新生成的那批还没放行之前，「下一轮」也是按住的（十五.6 的那条顺序）');
-check(testsActionsHtml(bigReport, caseSample, new Set([2]), new Set(), { pending: false })
+check(testsActionsHtml(bigReport, caseSample, new Set([2]), new Map(), { pending: false })
     .includes('data-act="accept"') === false,
     '磁盘上没有待处置的改动时不画「接受 / 中断」（点了只会拿到 409）');
 
@@ -1284,14 +1335,16 @@ const hintNotInit = integrationHint({ declared: true, docker: 'READY', usable: f
 check(hintNotInit.includes('还没初始化'), '环境没初始化时，那句话指的就是「初始化」：' + hintNotInit);
 check(integrationHint({ usable: true }).includes('集成测试'), '能勾的时候说的是勾上会发生什么');
 
-// 「已知失败」发出去的正文：完整的一份集合 + 那一次运行的 id
-const { knownPayload } = load('index.html', ['knownPayload'],
-    'function knownPayload', 'async function onTestAction');
-const known = knownPayload('20260930-120000', [2, 1]);
-check(known.id === '20260930-120000' && known.cases.join() === '2,1',
-    '带上记录 id 和勾中的那些编号：' + JSON.stringify(known));
-check(knownPayload('', [3]).id === '', '不知道是哪一次时 id 给空串（服务端按最新那条落，不丢这个判断）');
-check(JSON.stringify(knownPayload(null, [])) === '{"id":"","cases":[]}',
+// 「谁错了」发出去的正文：完整的一份集合 + 那一次运行的 id + 判的是哪一档
+const { judgementPayload } = load('index.html', ['judgementPayload'],
+    'function judgementPayload', 'async function onTestAction');
+const judgement = judgementPayload('20260930-120000', [2, 1], 'CODE');
+check(judgement.id === '20260930-120000' && judgement.cases.join() === '2,1',
+    '带上记录 id 和勾中的那些编号：' + JSON.stringify(judgement));
+check(judgement.owner === 'CODE', '并且说清这一判是「谁错了」——少这一栏，留档里的判断就无从解释');
+check(judgementPayload('', [3], 'KNOWN').id === '',
+    '不知道是哪一次时 id 给空串（服务端按最新那条落，不丢这个判断）');
+check(JSON.stringify(judgementPayload(null, [], 'KNOWN')) === '{"id":"","cases":[],"owner":"KNOWN"}',
     'null 也要变成空串和空表，不发一个 null 出去');
 
 console.log(failed ? '\n失败 ' + failed + ' 项' : '\n全部通过');

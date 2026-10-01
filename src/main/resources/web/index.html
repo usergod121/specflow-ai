@@ -1577,7 +1577,7 @@ const state = {
   testsOpen: true,      // 失败清单展开与否
   testsCases: null,     // 测试结果对着的那份用例清单（刷新过页面时只有留档里有）
   picked: new Set(),    // 失败清单里勾上「要回喂给开发」的用例编号
-  known: new Set(),     // 被标成「不重要 / 误报」的用例编号（落档在运行记录里，见 markKnown）
+  known: new Map(),     // 用例编号 → 人的判断（CODE/TEST/KNOWN），落档在运行记录里（见 markVerdict）
   regenerated: null,    // 重新生成出来、等着放行的那批测试代码
   actionBusy: '',       // 正在做的那个动作（'' = 没有）；'regenerate' = 正在重新生成测试代码
   viewRecord: null,     // 历史面板正在看的那条留档：点开某条用例的细节时按它重画
@@ -3428,16 +3428,16 @@ async function postRun(path) {
   state.stepStates = new Map();
   state.stepDetail = null;
   state.lastResult = null;
-  // 测试那一摊同理：上一轮的失败清单、勾选、已知失败的记号、重新生成的那批代码
+  // 测试那一摊同理：上一轮的失败清单、勾选、人的判决、重新生成的那批代码
   // 都是冲着上一轮那份结论做的决定，跟到这一轮来就成了「还没跑就有失败清单」
   state.tests = null;
   state.testsOpen = true;
   state.picked = new Set();
-  state.known = new Set();
+  state.known = new Map();
   state.regenerated = null;
   state.actionBusy = '';
   state.phase = '';
-  // 上一次运行的那条记录 id 也不能跟过来：界面上的「已知失败」是按它写留档的，
+  // 上一次运行的那条记录 id 也不能跟过来：界面上的判决是按它写留档的，
   // 而这一次还没跑完——留着它，人的判断会被写进<b>上一条</b>记录里
   state.recordId = '';
   $('result').innerHTML = '';
@@ -4651,6 +4651,21 @@ function renderRunDetail(record) {
     box.appendChild(wrap);
   }
 
+  // 这次跑完人是怎么收的场（十五.8）：接受还是中断、当时还带着几条失败用例。
+  // 失败清单只说明「当时红在哪几条上」，说明不了「人是知道它红着还接受了」——
+  // 而这两件事在留档里必须分得开，否则「一次带着 2 条失败被接受的改动」
+  // 和「一次全绿的改动」事后看起来一模一样
+  const settlement = settlementText(record.settlement);
+  if (settlement) {
+    const wrap = document.createElement('div');
+    wrap.className = 'run-env';
+    const head = document.createElement('div');
+    head.className = 'run-env-head';
+    head.textContent = '收场：' + settlement;
+    wrap.appendChild(head);
+    box.appendChild(wrap);
+  }
+
   // 用例清单与失败清单：隔几天回来翻记录的人，最想知道的就是
   // 「那一次验了什么、哪条没过、当时人怎么判的」。两块都用主面板那套渲染，
   // 差别只有两个：没有「确认（冻结）」按钮（这一次早就跑完了，冻不冻它没有意义），
@@ -4668,9 +4683,9 @@ function renderRunDetail(record) {
     open: state.testsOpen,
     actions: false,
     picked: new Set(),
-    // 当时人把哪几条判成「不重要」：它现在就写在留档里（knownFailures）。
+    // 当时人把这几条判成了什么：它现在就写在留档里（verdicts）。
     // 不摆出来的话，事后翻记录的人只会看到一片红，然后以为那一次是失败的
-    known: new Set((record.knownFailures || []).map(item => item.index)),
+    known: verdictsOf(record),
   });
   if (testsHtml) {
     const holder = document.createElement('div');
@@ -5337,10 +5352,10 @@ function applyRunDetail(record) {
     // 而屏幕上这份失败清单就是这条记录跑出来的——所以这个 id 必须留下来
     state.recordId = record.id;
   }
-  // 人标过的「已知失败」也在留档里：刷新一次之后要照样是灰的，
-  // 否则那个判断看起来从没发生过（它现在是留档的一部分，不再只是界面上的记号）
-  if (record && record.knownFailures) {
-    state.known = new Set(record.knownFailures.map(item => item.index));
+  // 人写下的那几笔（判决、收场）也在留档里：刷新一次之后要照样看得见，
+  // 否则那些判断看起来从没发生过——它们现在是留档的一部分，不再只是界面上的记号
+  if (record && record.verdicts) {
+    state.known = verdictsOf(record);
     refreshResult();
   }
   const steps = ((record && record.steps) || []).filter(step => step && step.index > 0);
@@ -5454,6 +5469,44 @@ function caseTiers(cases) {
 /** 用例编号找用例。清单里没有就返回 null（失败清单可能指向一条界面上没有的用例）。 */
 function caseByIndex(cases, index) {
   return (cases || []).find(one => Number(one.index) === Number(index)) || null;
+}
+
+/**
+ * 「谁错了」那三档（十五.6）。
+ *
+ * <p>它和人点的那三个按钮是同一件事的两种说法：点了「下一轮」就是判产品代码错了、
+ * 点了「测试代码错了」就是判测试代码错了、点了「不重要 / 误报」就是两条都不认。
+ * 判完要落进运行留档（{@code verdicts}），因为它回答的是「为什么那几条红的最后没被当成问题」——
+ * 而这个问题过两天只有留档答得出来。
+ */
+const VERDICT = { CODE: 'CODE', TEST: 'TEST', KNOWN: 'KNOWN' };
+
+const VERDICT_LABELS = {
+  CODE: '开发 AI 错了（已回喂）',
+  TEST: '测试代码错了（已重新生成）',
+  KNOWN: '不重要 / 误报（已知失败）',
+};
+
+/** 某一档的中文说法。认不出来的原样显示成「判过」——不替人改口供。 */
+function verdictLabel(owner) {
+  return VERDICT_LABELS[owner] || ('判过：' + owner);
+}
+
+/** 留档里那一栏（{@code verdicts}）变成「编号 → 判断」的一张表。 */
+function verdictsOf(record) {
+  const map = new Map();
+  for (const item of (record && record.verdicts) || []) {
+    if (item && item.index !== undefined) map.set(Number(item.index), item.owner);
+  }
+  return map;
+}
+
+/** 留档里那一栏（{@code settlement}）的那一行结论：怎么收的场、当时带着几条失败。 */
+function settlementText(settlement) {
+  if (!settlement || !settlement.choice) {
+    return '';
+  }
+  return settlement.summary || settlement.choice;
 }
 
 /**
@@ -5617,14 +5670,15 @@ function guessHtml(opinion) {
  * 期望 vs 实际，再加一段可选的 AI 猜测。少掉「期望 vs 实际」的话，
  * 用户看到的只是一句「断言没过」——他连代码该改成什么样都不知道。
  *
- * @param known 被标成「不重要 / 误报」的用例编号集合：那一档不写失败类型，
- *              改写成「已知失败」——它已经不算数了，还挂着红色只会让人再判一次
+ * @param verdicts 用例编号 → 人的判断（CODE/TEST/KNOWN）。判过的那些行改成那条判断的说法，
+ *                 并把「不重要」那几条画成虚线灰框——它们已经不算数了，还挂着红色只会让人再判一次
  */
-function failRowHtml(failure, cases, picked, known) {
+function failRowHtml(failure, cases, picked, verdicts) {
   const [kindCls, kindLabel] = failureKind(failure.kind);
   const index = numbersIn(failure.testCase)[0];
   const one = index === undefined ? null : caseByIndex(cases, index);
-  const isKnown = index !== undefined && known.has(index);
+  const owner = index === undefined ? undefined : verdicts.get(index);
+  const known = owner === VERDICT.KNOWN;
   const title = index === undefined
       ? '（这条失败不属于某一条用例）'
       : '用例 ' + index + (one ? '：' + caseChipText(one) : '（清单里没有这一条）');
@@ -5632,11 +5686,11 @@ function failRowHtml(failure, cases, picked, known) {
       : '<input type="checkbox" data-pick="' + index + '"'
           + (picked.has(index) ? ' checked' : '') + ' aria-label="把这条回喂给开发">';
   return '<div class="fail" data-case="' + (index === undefined ? '' : index) + '"'
-      + ' data-known="' + isKnown + '">'
+      + ' data-known="' + known + '">'
       + '<div class="fail-head">' + check
       + '<span class="fail-case">' + escapeHtml(title) + '</span>'
-      + '<span class="fail-kind ' + (isKnown ? 'known' : kindCls) + '">'
-      + escapeHtml(isKnown ? '已知失败' : kindLabel) + '</span></div>'
+      + '<span class="fail-kind ' + (known || owner ? 'known' : kindCls) + '">'
+      + escapeHtml(owner ? verdictLabel(owner) : kindLabel) + '</span></div>'
       + failPairHtml('期望', failure.expected)
       + failPairHtml('实际', failure.actual)
       + guessHtml(failure.opinion)
@@ -6043,9 +6097,11 @@ function testsActionsHtml(report, cases, picked, known, opts) {
       + '不重要 / 误报</button>'
       + (opts.pending
           ? '<button type="button" class="ghost" data-act="accept"'
-              + ' title="改动就留在磁盘上，删掉快照">接受这批改动</button>'
+              + ' title="接受：改动留在磁盘上，删掉快照与测试产物，并把环境数据重置一次">'
+              + '接受这批改动</button>'
               + '<button type="button" class="ghost" data-act="interrupt"'
-              + ' title="把文件恢复到这次运行之前，并删掉快照">中断 / 恢复到初始</button>'
+              + ' title="中断：文件恢复到这次运行之前，删掉快照与测试产物，并把环境数据重置一次">'
+              + '中断 / 恢复到初始</button>'
           : '')
       + '<span class="hint">只有「下一轮」会把失败回喂给开发；'
       + '「测试代码错了」只换测试代码，不会自动重跑。</span>'
@@ -6066,7 +6122,7 @@ function testsPanelHtml(raw, cases, opts = {}) {
     return '';
   }
   const picked = opts.picked || new Set();
-  const known = opts.known || new Set();
+  const known = opts.known || new Map();
   const open = opts.open !== false;
   const list = cases || [];
 
@@ -6225,8 +6281,16 @@ async function nextRound() {
     return;
   }
   const count = state.picked.size;
-  putRefeedContext(refeedText([...state.picked].sort((a, b) => a - b), caseListForTests(),
-      state.tests, [...state.selected]));
+  const picked = [...state.picked].sort((a, b) => a - b);
+  // 先把「开发 AI 错了」这个判断写进留档，再开这一轮：它回答的是
+  // 「这几条当时是谁判的、判成了什么」，而它比这一轮的运行记录更需要留下来——
+  // 下一轮跑完之后，屏幕上那份失败清单就换成新的一份了。
+  // 写不进去只提示一句，不拦着这一轮：用户点的是「接着修」，而回喂的那段话照样在上下文里
+  const recorded = await markVerdict(VERDICT.CODE, picked);
+  if (!recorded) {
+    notice('warn', '这几条判断没能写进留档（这一轮照跑；回喂的内容还在「上下文依赖」里）。');
+  }
+  putRefeedContext(refeedText(picked, caseListForTests(), state.tests, [...state.selected]));
   const started = await postRun('/api/run');
   if (started) {
     notice('ok', '已把选中的 ' + count + ' 条失败回喂给开发（在「上下文依赖」里看得见），'
@@ -6302,11 +6366,11 @@ function releaseRegenerated() {
 }
 
 /**
- * 「不重要 / 误报」：把勾中的那几条标成已知失败，并<b>写进运行留档</b>。
+ * 「不重要 / 误报」：把勾中的那几条判成已知失败，并<b>写进运行留档</b>（十五.6）。
  *
  * <p>这是个纯人的判断（十五.6 的第三条路），机器做不了，但机器能把它记下来。
  * 早先它只改界面上那个记号——刷新一次就没了，于是「我当时判过它不重要」这件事
- * 在事后翻记录时查无实据。现在它落进那条运行记录（{@code knownFailures}），
+ * 在事后翻记录时查无实据。现在它落进那条运行记录（{@code verdicts}），
  * 界面再从这里把它读回来。
  *
  * <p>它<b>不</b>开一次运行、也不改产品代码：没有任何机器动作配得上这个判断。
@@ -6319,15 +6383,10 @@ async function markKnown() {
     return;
   }
   const marked = [...state.picked];
-  const result = await sendJson('POST', '/api/tests/known',
-      JSON.stringify(knownPayload(state.recordId, marked)));
-  if (!result.ok) {
+  const ok = await markVerdict(VERDICT.KNOWN, marked);
+  if (!ok) {
     // 没写进留档就不要在界面上假装标过了：那样用户以为记下了，实际刷新就丢
     return;
-  }
-  for (const index of marked) {
-    state.known.add(index);
-    state.picked.delete(index);
   }
   refreshResult();
   notice('ok', '已标成已知失败：' + marked.length + ' 条（已写进这次运行的留档）。'
@@ -6335,7 +6394,35 @@ async function markKnown() {
 }
 
 /**
- * 「已知失败」那个请求的正文。
+ * 把「这几条怎么判的」写进那条运行留档（十五.6）。
+ *
+ * <p>三个动作共用它：不重要 / 误报（KNOWN）、回喂给开发（CODE）、测试代码错了（TEST，
+ * 由服务端在重新生成成功时自己记）。判断只存一份，界面按它把失败清单画成对应的样子——
+ * 分头各存一份，就会出现「界面上是灰的、留档里还是红的」。
+ *
+ * @param owner 谁错了，见 {@link VERDICT}
+ * @return 写进去了没有。<b>返回假时调用方不许改界面</b>：用户会以为记下了，实际刷新就丢
+ */
+async function markVerdict(owner, indices) {
+  const result = await sendJson('POST', '/api/tests/judge',
+      JSON.stringify(judgementPayload(state.recordId, indices, owner)));
+  if (!result.ok) {
+    return false;
+  }
+  for (const index of indices) {
+    // 同一条用例只有一个判断：改判就把它换成新的那一档
+    if (owner === VERDICT.KNOWN) {
+      state.known.set(index, owner);
+      state.picked.delete(index);
+    } else {
+      state.known.set(index, owner);
+    }
+  }
+  return true;
+}
+
+/**
+ * 「谁错了」那个请求的正文。
  *
  * <p>发的是<b>完整的一份集合</b>（不是「这次新加的几条」）：界面上的记号本来就是一个集合，
  * 发全量就不存在「两次点击乱序到达」这种要命的状态——而它的后果是人的一个判断被静默吞掉。
@@ -6343,8 +6430,8 @@ async function markKnown() {
  * <p>{@code id} 空着表示「屏幕上正看着的那一次」：刷新过页面之后界面手里没有记录 id，
  * 而屏幕上那份失败清单就是最新一次跑出来的（服务端按最新那条落）。
  */
-function knownPayload(recordId, indices) {
-  return { id: recordId || '', cases: [...indices] };
+function judgementPayload(recordId, indices, owner) {
+  return { id: recordId || '', cases: [...indices], owner };
 }
 
 /** 失败清单/动作行上的点击分发。 */
@@ -6449,10 +6536,14 @@ function pendingPanelHtml(data, open, stepDetail) {
   // 而且必须在次按钮旁边说清「这份改动没验过」——两块面板长得一样的话，
   // 用户没理由想到，点「保留当前内容」拿到的是一份没编译过的改动。
   const actions = data.canAccept
-      ? '<button type="button" data-act="accept">保留改动</button>'
-          + '<button type="button" class="ghost" data-act="rollback">撤回改动</button>'
-      : '<button type="button" data-act="rollback">恢复到运行前</button>'
-          + '<button type="button" class="ghost" data-act="accept">保留当前内容</button>'
+      ? '<button type="button" data-act="accept" title="接受：改动留在磁盘上，'
+            + '删掉快照与这次运行的测试产物，并把环境数据重置一次">保留改动</button>'
+          + '<button type="button" class="ghost" data-act="rollback" title="中断：文件恢复到'
+            + '这次运行之前，删掉快照与测试产物，并把环境数据重置一次">撤回改动</button>'
+      : '<button type="button" data-act="rollback" title="中断：文件恢复到这次运行之前，'
+            + '删掉快照与测试产物，并把环境数据重置一次">恢复到运行前</button>'
+          + '<button type="button" class="ghost" data-act="accept" title="接受：改动留在磁盘上，'
+            + '删掉快照与这次运行的测试产物，并把环境数据重置一次">保留当前内容</button>'
           + '<span class="pending-alert">这些改动没有经过校验：上一次运行是被打断的，'
           + '「保留当前内容」不会再替你验一遍。</span>';
 
@@ -6582,23 +6673,25 @@ function wirePanel(box, onToggle, onAct) {
 }
 
 /**
- * 处置这份改动：accept = 保留磁盘上的内容，rollback = 恢复成改动之前的样子。
+ * 处置这份改动：accept = 保留磁盘上的内容，rollback = 中断（恢复成改动之前的样子）。
  *
- * <p>成功之前一个字都不改界面：撤回失败（比如快照已经被别处处置掉了）时改动还在磁盘上，
+ * <p>成功之前一个字都不改界面：中断失败（比如快照已经被别处处置掉了）时改动还在磁盘上，
  * 面板先消失就等于骗用户「已经处理好了」。失败说明由 sendJson 摆出来，不吞。
+ *
+ * <p>提示里用的是<b>服务端那句结论</b>（{@code teardown}）：收场不只是「文件留没留」，
+ * 还有删掉的测试产物、重置过的环境数据，以及「这次是带着几条失败用例接受的」。
+ * 界面上自己拼一句「已保留改动」，用户就永远看不到后面那三样——而它们正是事后要对的账。
  */
 async function resolvePending(act) {
-  const accepting = act === 'accept';
   const result = await sendJson('POST', pendingActionPath(act), '{}');
   if (!result.ok) {
     return;
   }
-  notice('ok', accepting
-      ? '已保留改动：它们就这样留在磁盘上。'
-      : '已撤回改动：文件都回到了改动之前的样子。');
+  notice('ok', result.payload.teardown
+      || (act === 'accept' ? '已保留改动：它们就这样留在磁盘上。' : '已中断：文件回到了改动之前的样子。'));
   state.pendingOpen = null;
   await refreshPending();
-  // 撤回会把文件改回去（新建的会消失），保留也可能让新文件正式出现在树里；
+  // 中断会把文件改回去（新建的会消失），保留也可能让新文件正式出现在树里；
   // 树还照着老样子画就是在骗人。
   refreshFiles();
 }

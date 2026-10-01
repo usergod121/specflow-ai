@@ -1,10 +1,19 @@
 package com.specflow.env;
 
+import com.specflow.history.RunRecord;
+import com.specflow.history.RunStore;
+import com.specflow.project.ProjectConfig;
+import com.specflow.project.SnapshotConfig;
+import com.specflow.snapshot.WorkspaceSnapshot;
+import com.specflow.tests.Teardown;
+import com.specflow.tests.TestOutcome;
+import com.specflow.util.SafePathResolver;
+import com.specflow.verify.VerificationResult;
+import com.specflow.web.RunService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -452,6 +461,138 @@ class RealDockerEnvironmentTest {
         assertThat(result.status()).isEqualTo(com.specflow.agent.AgentResult.Status.NEEDS_ENVIRONMENT);
         assertThat(result.detail()).contains("环境问题").contains("初始化");
         assertNothingLeft(environment.composeProject());
+    }
+
+    // ---------- 2c. 收场与清库（真容器） ----------
+
+    /**
+     * 收场（十五.8）在真容器上走一遍：<b>删产物、清数据、容器留着</b>。
+     *
+     * <p>三条断言各有一个只有真 docker 能给的答案：
+     * <ul>
+     *   <li>{@code reset} 真的在容器里跑了——它写的 marker 出现在宿主的项目目录里（说明挂载真的通）；</li>
+     *   <li><b>容器还在</b>：收场不是关环境（十五.5：容器常驻复用）。写坏这一个的代价是
+     *       「每接受一次就重建一次容器」，用户看到的是每次跑测试都要重新等镜像；</li>
+     *   <li>收场之后自检零残留——收场没顺手留下一堆没人管的东西。</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("收场（真 docker）：reset 在容器里真的跑了、产物删了、容器留着复用")
+    void settlesOnARealContainer() throws IOException {
+        requireDocker();
+        requireImages("busybox:latest");
+        declare("""
+                image: "busybox:latest"
+                workdir: "/work"
+                reset:
+                  - "echo reset-ran > /work/reset.marker"
+                """);
+        TestEnvironment environment = TestEnvironment.of(root);
+        String project = environment.composeProject();
+        createdProjects.add(project);
+        environment.up();
+
+        // 一次「跑完了、产物还在、改动等着人处置」的运行
+        Path artifacts = root.resolve("tools/20260930-120000");
+        Files.createDirectories(artifacts);
+        Files.writeString(artifacts.resolve("run.cmd"), "echo PASS\n");
+        Files.writeString(root.resolve("Foo.java"), "class Foo { int a = 1; }\n");
+        WorkspaceSnapshot.capture(new SafePathResolver(root),
+                root.resolve(SnapshotConfig.DEFAULT_DIR), List.of(root.resolve("Foo.java")))
+                .markPending();
+        new RunStore(root.resolve(RunStore.DEFAULT_DIR)).save(recordWith(artifacts));
+
+        String before = containerOf(project, "app");
+        RunService runs = new RunService(root, ProjectConfig.DEFAULT,
+                root.resolve(".specflow/templates"), environment);
+        Teardown.Done done = runs.accept();
+        runs.shutdown();
+
+        assertThat(done.settled()).isTrue();
+        assertThat(read("reset.marker")).as("清环境数据真的进了容器跑（文件出现在挂载出来的目录里）")
+                .isEqualTo("reset-ran");
+        assertThat(artifacts).as("产物删掉、记录留下").doesNotExist();
+        assertThat(containerOf(project, "app")).as("容器留着复用：还是同一个，没有被重建")
+                .isEqualTo(before);
+        assertThat(stateOf(before)).isEqualTo("running");
+        assertThat(new RunStore(root.resolve(RunStore.DEFAULT_DIR))
+                .load(new RunStore(root.resolve(RunStore.DEFAULT_DIR)).latestId())
+                .settlement().summarize())
+                .as("留档里写下这次是怎么收的场").contains("已接受");
+        assertThat(environment.status().leftovers()).as("收场不制造残留").isZero();
+        // 这个测试要的正是「容器还留着」，所以最后由它自己真收一次，再自检零残留：
+        // 一条没人认领的容器不该在这台机器上过夜（上面那几条断言都看过了它还在）
+        assertNothingLeftAfterDown(environment, project);
+    }
+
+    /**
+     * 清库那种正当命令（{@code rm -rf /data/*}）在真容器里跑得通，而且<b>只碰容器自己的东西</b>。
+     *
+     * <p>这一条是「受控例外」的实测：闸门放行它，前提是它碰不到挂载进来的项目目录——
+     * 而这件事只能用真容器证明（假 runner 只会说「命令我收到了」）。
+     * 证据有两头：容器里的 {@code /data} 真的空了，宿主上的 {@code Keep.java} 还在。
+     */
+    @Test
+    @DisplayName("清库命令（真 docker）：rm -rf /data/* 放行、清掉容器里的数据、项目目录一个字节没动")
+    void clearsContainerDataWithoutTouchingTheProject() throws IOException {
+        requireDocker();
+        requireImages("busybox:latest");
+        declare("""
+                image: "busybox:latest"
+                workdir: "/work"
+                init:
+                  - "mkdir -p /data && echo seeded > /data/seed.txt"
+                reset:
+                  - "rm -rf /data/*"
+                """);
+        TestEnvironment environment = TestEnvironment.of(root);
+        String project = environment.composeProject();
+        createdProjects.add(project);
+
+        EnvRegistration up = environment.up();
+
+        assertThat(up.state()).as("这条 reset 被闸门放行了（受控例外）")
+                .isEqualTo(EnvRegistration.State.READY);
+        assertThat(exec(environment, "cat /data/seed.txt")).as("init 造出来的数据在容器里")
+                .contains("seeded");
+        Files.writeString(root.resolve("Keep.java"), "class Keep {}\n");
+
+        environment.reset();
+
+        assertThat(exec(environment, "ls /data")).as("容器里的数据被清掉了").doesNotContain("seed.txt");
+        assertThat(root.resolve("Keep.java")).as("挂载进来的项目目录一个字节都没动").exists();
+        assertThat(environment.activeComposeFile()).as("重置不重建容器：把手还在").exists();
+        assertThat(namesOf(project)).as("容器也还在（reset 不是 down）").isNotEmpty();
+        assertNothingLeftAfterDown(environment, project);
+    }
+
+    /** 收尾：真收一次环境，再自检零残留。 */
+    private void assertNothingLeftAfterDown(TestEnvironment environment, String project) {
+        environment.down(true);
+        assertThat(environment.status().leftovers()).isZero();
+        assertNothingLeft(project);
+    }
+
+    /** 在常驻容器里跑一条命令（引擎那套参数：{@code compose exec -T app sh -c}）。 */
+    private String exec(TestEnvironment environment, String command) {
+        List<String> full = new ArrayList<>(List.of("docker", "compose", "-p",
+                environment.composeProject(), "-f", environment.activeComposeFile().toString(),
+                "exec", "-T", "app", "sh", "-c", command));
+        CommandRunner.Result result = docker.run(full, Map.of(), root, 60);
+        assertThat(result.exit()).as("容器里这条命令要成功：%s", result.output()).isZero();
+        return result.output();
+    }
+
+    /** 一条「跑过测试、留了产物」的运行记录，给收场用。 */
+    private RunRecord recordWith(Path artifacts) {
+        return new RunRecord("20260930-120000", "2026-09-30T12:00", "TESTS_FAILED", null, "做点什么",
+                List.of(), List.of(), null, List.of("Foo.java"), 1, "一条没过", List.of(),
+                List.of(), List.of(), List.of(), null, List.of(),
+                new TestOutcome(root.relativize(artifacts).toString().replace('\\', '/'),
+                        List.of(), 1, 1,
+                        VerificationResult.failed("测试脚本", "run", "一条没过"),
+                        List.of(), List.of(new TestOutcome.CaseResult(1, false))),
+                null, null, null, null, List.of());
     }
 
     // ---------- 辅助：真 docker 查询 ----------

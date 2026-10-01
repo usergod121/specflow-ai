@@ -2081,8 +2081,12 @@ async function main() {
           window.__decisions.push(u.slice(u.lastIndexOf('/') + 1));
           window.__pending = { present: false, id: null, canAccept: false,
             summary: '没有待处置的改动', files: [] };
-          return Promise.resolve(new Response(JSON.stringify({ done: true }),
-              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          // 服务端收场之后回的那一句（十五.8）：界面要原样摆出来，而不是自己拼一句
+          // 「已保留改动」——那样「删了哪些产物、清没清环境数据」用户永远看不到
+          return Promise.resolve(new Response(JSON.stringify({
+            done: true,
+            teardown: '已接受：改动留在磁盘上；删掉快照与 1 份测试产物；环境数据已重置（容器留着复用）',
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
         }
         return inner(url, opts);
       };
@@ -2195,6 +2199,9 @@ async function main() {
     await waitFor(`document.querySelector('#pending .pending') === null`, '处置之后面板消失');
     check(JSON.stringify(await evaluate(`window.__decisions`)) === '["accept"]',
         '「保留改动」打的是 /api/accept：' + JSON.stringify(await evaluate(`window.__decisions`)));
+    check((await noticeText()).includes('删掉快照与 1 份测试产物'),
+        '回音用的是服务端那句收场结论（也说清了产物与环境数据），不是界面自己拼的「已保留改动」：'
+            + (await noticeText()));
     check(await evaluate(`document.getElementById('run').disabled`) === false,
         '处置完之后「运行」解锁');
 
@@ -3153,6 +3160,7 @@ async function main() {
     // ④ 四个动作：从这里开始装桩——那几件事的后果是改磁盘和烧模型调用
     await evaluate(`(() => {
       window.__calls = [];
+      window.__judged = [];
       window.__realFetch2 = window.fetch;
       window.fetch = (url, opts) => {
         const target = String(url);
@@ -3164,6 +3172,14 @@ async function main() {
             files: ['tools/20990101-000000/run.cmd'],
             sources: { 'tools/20990101-000000/run.cmd': 'echo PASS ^| 1\\r\\n' },
           }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (target.endsWith('/api/tests/judge')) {
+          // 「谁错了」那三档都走这一个接口（开发错了 / 测试代码错了 / 不重要）。
+          // 不桩它的话，请求会打到真服务上，把判断写进真项目的留档里
+          window.__calls.push(target + ' ' + method);
+          window.__judged.push(String((opts && opts.body) || ''));
+          return Promise.resolve(new Response(JSON.stringify({ done: true }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
         }
         if (target.endsWith('/api/run')) {
           window.__calls.push(target + ' ' + method);
@@ -3184,6 +3200,7 @@ async function main() {
     const calls26 = () => evaluate(`window.__calls.join(' | ')`);
     const runCalls26 = () => evaluate(
         `window.__calls.filter(call => call.startsWith('/api/run ')).length`);
+    const judged26 = () => evaluate(`window.__judged.join(' | ')`);
 
     check(await evaluate(`document.querySelector('#result [data-act="next-round"]').disabled`),
         '一条都没勾时「下一轮」是按住的');
@@ -3200,8 +3217,11 @@ async function main() {
         .includes('回喂选中的 1 条'), '勾上一条之后「下一轮」的文案跟着变');
     await evaluate(`document.querySelector('#result [data-act="known"]').click(); 'ok'`);
     await sleep(300);
-    check(await evaluate(`window.__calls.length`) === 0,
-        '③「不重要/误报」不发任何请求（没有机器动作配得上这个判断）');
+    check((await calls26()).includes('/api/tests/judge POST'),
+        '③「不重要/误报」只把人的判断写进留档：' + JSON.stringify(await calls26()));
+    check((await judged26()).includes('"owner":"KNOWN"') && (await judged26()).includes('"cases":[2]'),
+        '写进去的是「谁错了 = 不重要」加上勾中的那几条：' + JSON.stringify(await judged26()));
+    check(await runCalls26() === 0, '它不开运行、也不改产品代码（没有机器动作配得上这个判断）');
     check(String(await evaluate(`document.querySelector('#result .fail').textContent`))
         .includes('已知失败'), '那一条被标成已知失败，不再是红色的断言失败');
 
@@ -3231,6 +3251,9 @@ async function main() {
     await evaluate(`document.querySelector('#result [data-act="next-round"]').click(); 'ok'`);
     await sleep(600);
     check(await runCalls26() === 1, '①「下一轮」只开一次运行：' + JSON.stringify(await calls26()));
+    check((await judged26()).includes('"owner":"CODE"'),
+        '而且先把「开发 AI 错了」这个判断写进留档，再开这一轮（这一次失败清单马上就被新的替换了）：'
+            + JSON.stringify(await judged26()));
     const refeedBody26 = String(await evaluate(`window.__lastRunBody`));
     check(refeedBody26.includes('上一轮测试失败（回喂给开发）')
             && refeedBody26.includes('用例 2') && refeedBody26.includes('compiled'),

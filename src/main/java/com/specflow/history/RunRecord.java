@@ -1,6 +1,8 @@
 package com.specflow.history;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.specflow.env.EnvRegistration;
 import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
@@ -8,6 +10,7 @@ import com.specflow.spec.ContextItem;
 import com.specflow.tests.TestOutcome;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * 一次运行的完整留档。
@@ -55,10 +58,17 @@ import java.util.List;
  *                  init/reset，环境是好是坏（十五.8 的第一件「登记」）。
  *                  没声明环境（没有 {@code env.yaml}）、或这次只跑了单元测试时是 {@code null}——
  *                  留档里于是没有这一项，而不是写一个空壳假装跑过环境
- * @param knownFailures 用户标成「不重要 / 误报」的那几条用例。
- *                 为什么它必须落档：这个判断是<b>人做的证据</b>（十五.6 的第三条路），
- *                  只留在界面上就等于刷新一下就没了——而事后翻记录的人正是靠它解释
- *                  「为什么那几条红的最后没被当成问题」。老记录里没有这一项
+ * @param verdicts 人对<b>每一条失败用例</b>的判断（十五.6 里落在用例上的那三条路）：
+ *                 开发 AI 错了（回喂）、测试代码错了（重新生成）、不重要 / 误报（标成已知失败）。
+ *                 为什么它必须落档：这些是<b>人做的证据</b>——只留在界面上就等于刷新一下就没了，
+ *                 而事后翻记录的人正是靠它们解释「为什么那几条红的最后没被当成问题」。
+ *                 <b>旧记录里这一栏叫 {@code knownFailures}</b>，只有编号与时间，见 {@link Verdict}
+ * @param settlement 用户把这次运行<b>怎么了结</b>的（十五.8：接受 / 中断），以及那一刻还带着
+ *                 几条失败用例。它和 {@code verdicts} 的分工：那个是逐条怎么判的，
+ *                 这个是整次运行最后怎么收的场
+ * @param regenerated 人判定「测试代码错了」之后<b>重新生成</b>的那几份产物目录（十五.6 第二条路）。
+ *                 为什么要单独记：重新生成会开一个新的 {@code tools/<时间戳>/}，而留档里本来只有
+ *                 它跑过的那一份——收场时按留档删产物就会漏掉这几份，{@code tools/} 于是只增不减
  * @param timeline  逐条的过程记录
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -82,18 +92,121 @@ public record RunRecord(
         List<PlanReview.TestCase> testCases,
         TestOutcome tests,
         EnvRegistration environment,
-        List<KnownFailure> knownFailures,
+        @JsonAlias("knownFailures") List<Verdict> verdicts,
+        Settlement settlement,
+        List<String> regenerated,
         List<Line> timeline
 ) {
 
     /**
-     * 一条被标成「不重要」的失败用例。
+     * 人对<b>一条失败用例</b>的判断（十五.6）。
+     *
+     * <p>三档不是三种严重度，而是「接下来该谁动手」：产品代码错了就回喂给开发，
+     * 测试代码错了就重新生成，两条都不认就是「不重要 / 误报」。机器判不了这一条——
+     * 硬判就会逼出「为了过一条写错的用例，把正确代码改成错的」——所以它只能由人写下来。
      *
      * @param index 用例编号（和 {@code testCases} 对得上）
-     * @param at    标记的时间，ISO 格式。<b>它记的是「哪一刻人的判断变了」</b>——
-     *              同一条用例上一轮是问题、这一轮不是，只有时间分得清
+     * @param owner 谁错了，见 {@link #CODE} / {@link #TEST} / {@link #KNOWN}
+     * @param at    判定的时间，ISO 格式。<b>它记的是「哪一刻人的判断变了」</b>——
+     *              同一条用例上一轮算问题、这一轮不算，只有时间分得清
      */
-    public record KnownFailure(int index, String at) {
+    public record Verdict(int index, String owner, String at) {
+
+        /** 开发 AI 错了：这几条被<b>回喂</b>给开发（十五.6 第一条路）。 */
+        public static final String CODE = "CODE";
+        /** 测试代码错了：Test Agent <b>重新生成</b>过这批测试代码（第二条路）。 */
+        public static final String TEST = "TEST";
+        /** 不重要 / 误报：标成已知失败，接受时不算它（第三条路）。 */
+        public static final String KNOWN = "KNOWN";
+
+        public Verdict {
+            owner = normalize(owner);
+            at = at == null ? "" : at;
+        }
+
+        /**
+         * 认这一栏。
+         *
+         * <p><b>空值必须落成 {@link #KNOWN}</b>：旧记录里这一栏叫 {@code knownFailures}，
+         * 每条只有 {@code index} 和 {@code at}——那时候唯一存在的判断就是「已知失败」。
+         * 不认这个形状，历史面板里那几次运行的记号会整个消失，而消失是<b>静默</b>的
+         * （{@code RunStore.read} 捕掉异常返回空），用户只会看到历史莫名少了几条。
+         *
+         * <p>认不出来的词<b>不假装认识</b>：原样留着，界面上显示成「没认出来的判断」——
+         * 归到三档里的任何一档都是在替人改口供。
+         */
+        private static String normalize(String owner) {
+            if (owner == null || owner.isBlank()) {
+                return KNOWN;
+            }
+            String text = owner.strip().toUpperCase(Locale.ROOT);
+            return switch (text) {
+                case CODE, TEST, KNOWN -> text;
+                default -> text;
+            };
+        }
+
+        /** 这一档的中文说法。 */
+        @JsonProperty(value = "label", access = JsonProperty.Access.READ_ONLY)
+        public String label() {
+            return switch (owner) {
+                case CODE -> "开发 AI 错了（已回喂）";
+                case TEST -> "测试代码错了（已重新生成）";
+                case KNOWN -> "不重要 / 误报（已知失败）";
+                default -> "没认出来的判断：" + owner;
+            };
+        }
+    }
+
+    /**
+     * 人把这次运行<b>怎么了结</b>的（十五.8）。
+     *
+     * <p>两种收场都落这一栏，因为它们回答的是同一个问题：磁盘上的改动最后留没留。
+     * 「接受时带着几条失败用例」也必须写在这里——那是这次运行最重要的一个事实，
+     * 而它过几天再看就不明显了：失败清单还挂在记录里，但「人是知道它红着也接受了」这件事，
+     * 只有这一栏说得出来。
+     *
+     * @param choice  {@link #ACCEPT}（保留改动）或 {@link #INTERRUPT}（恢复到运行前）
+     * @param at      收场的时间，ISO 格式
+     * @param failing 收场那一刻<b>还带着的失败用例编号</b>。中断时同样记下来：
+     *                文件是回滚了，但「它当时红在哪几条上」是这次运行的结论，不该跟着一起没
+     */
+    public record Settlement(String choice, String at, List<Integer> failing) {
+
+        /** 接受：磁盘上的改动留着，快照与测试产物删掉。 */
+        public static final String ACCEPT = "ACCEPT";
+        /** 中断（恢复到初始）：文件按快照回到运行前，快照与测试产物删掉。 */
+        public static final String INTERRUPT = "INTERRUPT";
+
+        public Settlement {
+            choice = choice == null ? "" : choice.strip().toUpperCase(Locale.ROOT);
+            at = at == null ? "" : at;
+            failing = failing == null ? List.of() : List.copyOf(failing);
+        }
+
+        /** 收场那一刻带着几条失败用例——「用户接受时带着 N 条失败」里的那个 N。 */
+        @JsonProperty(value = "failures", access = JsonProperty.Access.READ_ONLY)
+        public int failures() {
+            return failing.size();
+        }
+
+        /** 给界面与历史的一行。 */
+        @JsonProperty(value = "summary", access = JsonProperty.Access.READ_ONLY)
+        public String summarize() {
+            String what = switch (choice) {
+                case ACCEPT -> "已接受（改动留在磁盘上）";
+                case INTERRUPT -> "已中断（文件恢复到这个运行开始前）";
+                default -> "已收场：" + choice;
+            };
+            if (failing.isEmpty()) {
+                return what + "；当时没有失败用例";
+            }
+            StringBuilder indexes = new StringBuilder();
+            for (Integer index : failing) {
+                indexes.append(indexes.length() == 0 ? "" : "、").append(index);
+            }
+            return what + "；当时带着 " + failing.size() + " 条失败用例（用例 " + indexes + "）";
+        }
     }
 
     /**
@@ -143,15 +256,35 @@ public record RunRecord(
     }
 
     /**
-     * 只换「已知失败」那一栏，其余原样。
+     * 只换「跑完之后人写下的那三笔」，其余原样。
      *
-     * <p>为什么要这个方法：那一条是<b>跑完之后</b>人点的（十五.6 的第三条路），
-     * 而留档是一次写死的。要改其中一栏，只能整份重建——把它写在这里，
+     * <p>为什么要这一组方法：那三笔（判决 / 收场 / 重新生成过哪几份产物）都是<b>跑完之后</b>
+     * 人做的动作，而留档是一次写死的。要改其中一栏只能整份重建——把它收在这里，
      * 就只有一个地方知道「重建时哪些字段要原样带着」，漏一个字段就丢一栏历史。
+     *
+     * <p>三个入参同时给，是为了不让「改 A 的时候顺手把 B 抹掉」发生：谁想改哪一栏就调哪个方法，
+     * 另外两栏原样传下去。
      */
-    public RunRecord withKnownFailures(List<KnownFailure> known) {
+    private RunRecord with(List<Verdict> newVerdicts, Settlement newSettlement,
+                           List<String> newRegenerated) {
         return new RunRecord(id, startedAt, status, template, prompt, acceptance, context,
                 requirementId, targets, attempts, detail, missing, changes, steps, planSteps,
-                stepsSource, testCases, tests, environment, known, timeline);
+                stepsSource, testCases, tests, environment, newVerdicts, newSettlement,
+                newRegenerated, timeline);
+    }
+
+    /** 换「每一条失败用例怎么判的」那一栏。 */
+    public RunRecord withVerdicts(List<Verdict> newVerdicts) {
+        return with(newVerdicts, settlement, regenerated);
+    }
+
+    /** 换「这次运行怎么收的场」那一栏。 */
+    public RunRecord withSettlement(Settlement newSettlement) {
+        return with(verdicts, newSettlement, regenerated);
+    }
+
+    /** 换「重新生成过哪几份测试产物」那一栏。 */
+    public RunRecord withRegenerated(List<String> newRegenerated) {
+        return with(verdicts, settlement, newRegenerated);
     }
 }

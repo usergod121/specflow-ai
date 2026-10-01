@@ -250,14 +250,12 @@ public final class TestEnvironment {
         // 闸门放在最前面：一条高危命令要在写文件、起容器之前就被拒——
         // 起完再拒，用户已经等了几分钟，而且磁盘上多了一份没人管的 compose
         forbid(ComposeFile.render(declared, projectRoot), "生成的 compose 内容");
-        declared.init().forEach(command -> forbid(command, "init 命令"));
-        declared.reset().forEach(command -> forbid(command, "reset 命令"));
+        forbidCommands(declared);
 
         Path file = ComposeFile.write(projectRoot, ComposeFile.newRunId(), declared);
         // 旧的那一份 compose 文件不再是指挥部了，新的这一份才是。留着旧目录只会让
         // 「打开项目收残局」分不清哪份是活的
         cleanOldDirectories(file.getParent());
-
         List<String> upCommand = compose(file, "up", "-d", "--wait");
         CommandRunner.Result up = run(upCommand, UP_TIMEOUT_SECONDS);
         if (!up.ok()) {
@@ -336,6 +334,10 @@ public final class TestEnvironment {
         EnvConfig declared = requireDeclared();
         requireDocker();
         Path file = requireComposeFile();
+        // 闸门也在这里判一遍：init 走过的那一道，reset 自己走一遍才算数。
+        // 少了这一句，`specflow env reset`（以及收场时的「清环境数据」）就成了一条
+        // 不设防的执行入口——而闸门的意义正是「交给引擎执行的命令必须过一遍」
+        forbidCommands(declared);
         List<String> ran = new ArrayList<>();
         for (String command : declared.reset()) {
             ran.add(command);
@@ -822,6 +824,34 @@ public final class TestEnvironment {
                     what + "里有高危写法：「" + evidence + "」",
                     "测试环境只该跑测试：提权、挂宿主目录、删源码这类写法一律不接受。改 "
                             + EnvConfigLoader.relativePath() + " 里那一行再来");
+        }
+    }
+
+    /**
+     * {@code init} / {@code reset} 里那些命令过闸。
+     *
+     * <p>它们和 compose 内容用的是<b>同一张高危表</b>，但「删东西」那一条按<b>容器内</b>的
+     * 命名空间判（见 {@link TestArtifacts#forbiddenInContainer}）：清库那种正当命令
+     * （{@code rm -rf /data/*}——MySQL/Redis 容器的数据目录）不能再被误拒，
+     * 而挂载进来的项目目录一个字都不放宽。
+     *
+     * <p>{@link #up} 与 {@link #reset} <b>都要</b>调它：只在起环境时判，
+     * {@code specflow env reset} 和收场时的「清环境数据」就成了一条绕开闸门的路。
+     */
+    private void forbidCommands(EnvConfig declared) {
+        declared.init().forEach(command ->
+                forbidInContainer(command, "init 命令", declared.workdir()));
+        declared.reset().forEach(command ->
+                forbidInContainer(command, "reset 命令", declared.workdir()));
+    }
+
+    private void forbidInContainer(String content, String what, String workdir) {
+        String evidence = TestArtifacts.forbiddenInContainer(content, workdir);
+        if (evidence != null) {
+            throw new EnvProblem(EnvProblem.CHECK, evidence,
+                    what + "里有高危写法：「" + evidence + "」",
+                    "测试环境只该跑测试：提权、写块设备、挂宿主目录、删项目里的源码这类写法"
+                            + "一律不接受。改 " + EnvConfigLoader.relativePath() + " 里那一行再来");
         }
     }
 

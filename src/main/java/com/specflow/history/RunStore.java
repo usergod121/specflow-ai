@@ -3,6 +3,7 @@ package com.specflow.history;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.specflow.exception.SpecflowException;
 import com.specflow.review.PlanReview;
+import com.specflow.util.ProjectFiles;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -14,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.stream.Stream;
 
@@ -54,14 +56,20 @@ public final class RunStore {
     /**
      * 写入一份记录。
      *
+     * <p>用原子写（同目录临时文件 → rename）：留档是这套工具唯一的「事后依据」，
+     * 而它是在运行<b>收尾那一刻</b>写的——那时进程完全可能被关掉、被 kill。
+     * 直写会留下一个半截 JSON，而半截 JSON 的读法是<b>静默跳过</b>（见 {@link #read}），
+     * 于是用户看到的是「历史里少了一条」，不是「有一条坏了」。
+     *
      * @throws SpecflowException 磁盘写不进去——记录失败不该影响已经完成的运行，
      *                           所以调用方会捕获它并降级为一条警告
      */
     public void save(RunRecord record) {
+        Path file = directory.resolve(record.id() + EXTENSION);
         try {
             Files.createDirectories(directory);
-            JSON.writerWithDefaultPrettyPrinter()
-                    .writeValue(directory.resolve(record.id() + EXTENSION).toFile(), record);
+            ProjectFiles.writeAtomic(file, JSON.writerWithDefaultPrettyPrinter()
+                    .writeValueAsString(record), DEFAULT_DIR + "/" + record.id() + EXTENSION);
         } catch (IOException e) {
             throw new SpecflowException("写入运行记录失败：" + e.getMessage(), e);
         }
@@ -164,52 +172,110 @@ public final class RunStore {
     }
 
     /**
-     * 把「这几条不重要」写进留档。
+     * 把「这几条怎么判的」写进留档（十五.6 里落在用例上的那三条路）。
      *
-     * <p>为什么要落盘而不是留在界面上：这是<b>人做的判断</b>（十五.6：不重要/误报 → 标记，
-     * 接受时不阻塞）。它解释的是「为什么那几条红的最后没被当成问题」——
-     * 刷新一次就丢的话，事后翻记录的人只会看到一片红，然后以为那次是失败的。
+     * <p>为什么要落盘而不是留在界面上：这些是<b>人做的判断</b>。它们解释的是
+     * 「为什么那几条红的最后没被当成问题、为什么这次要回喂开发」——刷新一次就丢的话，
+     * 事后翻记录的人只会看到一片红，然后以为那次是失败的。
      *
      * <p>传进来的是<b>完整的一份集合</b>，不是增量：界面上的记号本来就是一个集合
      * （勾上、标记、再勾再标），发全量就不存在「两次点击乱序到达」这种要命的状态。
-     * 已经不在了的编号会从留档里去掉——那正是用户「取消标记」的意思。
+     * 已经不在这一档里的编号会从留档里去掉——那正是用户「取消这个判断」的意思。
      *
-     * @param indices 被标成已知失败的用例编号
+     * @param indices 被这样判定的用例编号
+     * @param owner   谁错了，见 {@code RunRecord.Verdict}
      * @return 写回去之后的那条记录
      * @throws SpecflowException 记录不存在或写不进去
      */
-    public RunRecord markKnownFailures(String id, List<Integer> indices) {
+    public RunRecord judge(String id, List<Integer> indices, String owner) {
         RunRecord record = load(id);
-        List<RunRecord.KnownFailure> known = mergeKnown(record.knownFailures(), indices);
-        RunRecord updated = record.withKnownFailures(known);
+        List<RunRecord.Verdict> merged = mergeVerdicts(record.verdicts(), indices, owner);
+        RunRecord updated = record.withVerdicts(merged);
         save(updated);
         return updated;
     }
 
     /**
-     * 合成新的一份「已知失败」。
+     * 收场落档（十五.8）：接受还是中断，以及那一刻还带着哪几条失败用例。
      *
-     * <p>已经标过的那几条<b>保留原来的时间</b>：那个时间记的是「哪一刻人的判断变了」，
-     * 每次重标都刷成现在，等于把最初那一刻抹掉。
+     * <p>为什么这一笔非写不可：留下来的失败清单只说明「当时红在哪几条上」，
+     * 说明不了<b>人是知道它红着还接受了</b>。过几天再看，「这次改动带着 2 条失败被接受」
+     * 和「这次改动全绿」在记录里长得一模一样——而它们是两件完全不同的事。
+     *
+     * @param choice  接受 / 中断，见 {@code RunRecord.Settlement}
+     * @param failing 收场那一刻还带着的失败用例编号
      */
-    private static List<RunRecord.KnownFailure> mergeKnown(List<RunRecord.KnownFailure> existing,
-                                                           List<Integer> indices) {
-        Map<Integer, String> before = new LinkedHashMap<>();
-        if (existing != null) {
-            existing.forEach(item -> before.put(item.index(), item.at()));
+    public RunRecord settle(String id, String choice, List<Integer> failing) {
+        RunRecord record = load(id);
+        RunRecord updated = record.withSettlement(new RunRecord.Settlement(choice,
+                LocalDateTime.now().toString(), failing));
+        save(updated);
+        return updated;
+    }
+
+    /**
+     * 记一笔「测试代码错了，重新生成到 {@code directory}」（十五.6 第二条路）。
+     *
+     * <p>这一笔里有两件事，一起写：<b>判断</b>（这几条用例被判成「测试代码错了」）和
+     * <b>产物账</b>（新开的那份 {@code tools/<时间戳>/} 在哪儿）。
+     *
+     * <p>产物账为什么非记不可：留档里原本只有这次运行跑过的那一份产物，而重新生成会新开一份——
+     * 收场时按留档删产物（十五.8），漏掉的那份就永远留在项目里，{@code tools/} 于是只增不减。
+     *
+     * <p>两次落档合成一次写：分开写就是同一个文件读两遍写两遍，而中间那一次被进程打断
+     * 就会留下「判断记了、产物账没记」的半截状态。
+     *
+     * @param failing   被判成「测试代码错了」的用例编号（他看的就是这份失败清单）
+     * @param directory 新生成的产物目录。空串只记判断，不记产物
+     */
+    public RunRecord regenerated(String id, List<Integer> failing, String directory) {
+        RunRecord record = load(id);
+        List<RunRecord.Verdict> verdicts = record.verdicts();
+        if (failing != null && !failing.isEmpty()) {
+            verdicts = mergeVerdicts(verdicts, failing, RunRecord.Verdict.TEST);
         }
+        List<String> before = record.regenerated() == null ? List.of() : record.regenerated();
+        List<String> dirs = before;
+        if (directory != null && !directory.isBlank() && !before.contains(directory)) {
+            List<String> all = new ArrayList<>(before);
+            all.add(directory);
+            dirs = List.copyOf(all);
+        }
+        RunRecord updated = record.withVerdicts(verdicts).withRegenerated(dirs);
+        save(updated);
+        return updated;
+    }
+
+    /**
+     * 合成新的「人的判断」那一栏。
+     *
+     * <p>两条规矩：<b>同一条用例只有一个判断</b>（改判就替换，它问的是「谁错了」，
+     * 不可能同时是两个答案）；<b>同一档上的老判断保留原来的时间</b>——那个时间记的是
+     * 「哪一刻人的判断变了」，每次重标都刷成现在，等于把最初那一刻抹掉。
+     */
+    private static List<RunRecord.Verdict> mergeVerdicts(List<RunRecord.Verdict> existing,
+                                                         List<Integer> indices, String owner) {
+        Map<Integer, RunRecord.Verdict> before = new LinkedHashMap<>();
+        if (existing != null) {
+            existing.forEach(item -> before.put(item.index(), item));
+        }
+        // 这一次判的是这一档：先把这一档里已经不在了的去掉（用户取消了）
+        before.entrySet().removeIf(entry -> entry.getValue().owner().equals(owner)
+                && (indices == null || !indices.contains(entry.getKey())));
         if (indices == null || indices.isEmpty()) {
-            return null;
+            return before.isEmpty() ? null : List.copyOf(before.values());
         }
         String now = LocalDateTime.now().toString();
-        List<RunRecord.KnownFailure> merged = new ArrayList<>();
+        TreeMap<Integer, RunRecord.Verdict> merged = new TreeMap<>(before);
         for (Integer index : new TreeSet<>(indices)) {
             if (index == null || index <= 0) {
                 continue;
             }
-            merged.add(new RunRecord.KnownFailure(index, before.getOrDefault(index, now)));
+            RunRecord.Verdict old = merged.get(index);
+            merged.put(index, old != null && old.owner().equals(owner)
+                    ? old : new RunRecord.Verdict(index, owner, now));
         }
-        return merged.isEmpty() ? null : List.copyOf(merged);
+        return merged.isEmpty() ? null : List.copyOf(merged.values());
     }
 
     /**

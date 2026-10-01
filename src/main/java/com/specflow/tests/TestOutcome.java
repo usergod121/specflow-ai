@@ -152,6 +152,22 @@ public record TestOutcome(
     }
 
     /**
+     * 没过的那些用例编号，升序。
+     *
+     * <p>它是「这次运行带着几条失败用例」的那份名单，收场时要照着它落档（十五.8）。
+     * 判据和 {@link CaseResult#passed()} 一样，<b>没跑到的也算没过</b>——
+     * 「没验过」不能算「过了」，否则一次「脚本一条都没跑、退出码 0」的运行会在留档里
+     * 变成一次满分（那正是 {@code CaseResult} 存在的理由）。
+     */
+    public List<Integer> failingCases() {
+        return cases.stream()
+                .filter(one -> !one.passed())
+                .map(CaseResult::index)
+                .sorted()
+                .toList();
+    }
+
+    /**
      * 这次失败是不是「再跑也没用」的那一类。
      *
      * <p>它是上层的刹车信号：环境问题要立刻停下、回滚，并把原始错误交给人——
