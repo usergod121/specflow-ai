@@ -591,7 +591,7 @@ class RealDockerEnvironmentTest {
                 new TestOutcome(root.relativize(artifacts).toString().replace('\\', '/'),
                         List.of(), 1, 1,
                         VerificationResult.failed("测试脚本", "run", "一条没过"),
-                        List.of(), List.of(new TestOutcome.CaseResult(1, false))),
+                        List.of(), List.of(new TestOutcome.CaseResult(1, false)), List.of()),
                 null, null, null, null, List.of());
     }
 

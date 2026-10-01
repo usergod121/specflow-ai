@@ -45,7 +45,7 @@ class TestAgentTest {
     void reportsAssertionFailure() throws IOException {
         // 这里刻意用 ASCII：Windows 的 .cmd 是按本机代码页读的，脚本正文里的中文可能被拆坏
         // （连 `^|` 的转义都会被吃掉，命令就废了）。四要素的解析本身在 TestReportTest 里用中文验
-        TestOutcome outcome = run(answer -> block(answer.entry(), entryScript(1,
+        TestOutcome outcome = run(answer -> block(answer.entry(), anchoredScript(1,
                 "PASS | 1", "FAIL | 2 | empty-collection | got null | code is wrong")));
 
         assertThat(outcome.passed()).isFalse();
@@ -68,7 +68,7 @@ class TestAgentTest {
     @DisplayName("脚本退出码 0 且逐条报了结论：一条失败都没有")
     void reportsPassingRun() {
         TestOutcome outcome = run(answer -> block(answer.entry(),
-                entryScript(0, "PASS | 1", "PASS | 2")));
+                anchoredScript(0, "PASS | 1", "PASS | 2")));
 
         assertThat(outcome.passed()).isTrue();
         assertThat(outcome.exit()).isZero();
@@ -76,6 +76,12 @@ class TestAgentTest {
         assertThat(outcome.verification().passed()).isTrue();
         assertThat(outcome.cases()).hasSize(2)
                 .allSatisfy(caseResult -> assertThat(caseResult.passed()).isTrue());
+        assertThat(outcome.links()).as("接上线的证据要留着：界面每个 chip 那一行靠它")
+                .hasSize(2)
+                .allSatisfy(link -> {
+                    assertThat(link.file()).endsWith(entryName());
+                    assertThat(link.line()).as("行号是锚点那一行，要能点过去").isPositive();
+                });
     }
 
     /**
@@ -87,7 +93,7 @@ class TestAgentTest {
     @DisplayName("脚本打了 FAIL 行却 exit /b 0：不算通过，日志也不许删")
     void zeroExitWithFailLinesIsNotAPass() {
         TestOutcome outcome = run(answer -> block(answer.entry(),
-                entryScript(0, "FAIL | 1 | expected-a | got-b | code is wrong")));
+                anchoredScript(0, "FAIL | 1 | expected-a | got-b | code is wrong")));
 
         assertThat(outcome.passed()).isFalse();
         assertThat(outcome.failures()).isNotEmpty();
@@ -106,7 +112,7 @@ class TestAgentTest {
     @Test
     @DisplayName("声明两条、脚本一条都没报：不算通过，并说清哪几条没验")
     void refusesWhenNoCaseWasReportedAtAll() {
-        TestOutcome outcome = run(answer -> block(answer.entry(), entryScript(0, "all passed")));
+        TestOutcome outcome = run(answer -> block(answer.entry(), anchoredScript(0, "all passed")));
 
         assertThat(outcome.passed()).isFalse();
         assertThat(outcome.cases()).extracting(TestOutcome.CaseResult::passed)
@@ -125,7 +131,7 @@ class TestAgentTest {
     void acceptsUpperCaseArtifactsDirectory() {
         TestOutcome outcome = run(answer -> block(
                 answer.dir().toUpperCase(Locale.ROOT) + "/" + entryName(),
-                entryScript(0, "PASS | 1", "PASS | 2")));
+                anchoredScript(0, "PASS | 1", "PASS | 2")));
 
         assertThat(outcome.detail()).doesNotContain("入口脚本");
         assertThat(outcome.passed()).isTrue();
@@ -137,7 +143,7 @@ class TestAgentTest {
     void acceptsUpperCaseEntryName() {
         TestOutcome outcome = run(answer -> block(
                 answer.dir() + "/" + entryName().toUpperCase(Locale.ROOT),
-                entryScript(0, "PASS | 1", "PASS | 2")));
+                anchoredScript(0, "PASS | 1", "PASS | 2")));
 
         assertThat(outcome.detail()).doesNotContain("入口脚本");
         assertThat(outcome.passed()).isTrue();
@@ -216,7 +222,7 @@ class TestAgentTest {
     @DisplayName("脚本说跑不起来（BLOCKED）：算环境问题，产物整批清掉（这次运行要回滚）")
     void clearsArtifactsOnEnvironmentFailure() throws IOException {
         TestOutcome outcome = run(answer ->
-                block(answer.entry(), entryScript(2, "BLOCKED | javac not found")));
+                block(answer.entry(), anchoredScript(2, "BLOCKED | javac not found")));
 
         assertThat(outcome.environmental()).isTrue();
         assertThat(outcome.detail()).contains("环境问题");
@@ -226,20 +232,115 @@ class TestAgentTest {
         }
     }
 
+    // ---------- 溯源连线：四条机器核对，不通过就拒绝跑 ----------
+
+    /**
+     * 清单上有、代码里没扫到锚点 = 漏实现。
+     *
+     * <p>判据是「脚本<b>一个字节都没被执行</b>」：这一批产物的结论压根不该存在。
+     * 只断言「报了错」是不够的——那样测试跑没跑还是不知道。
+     */
+    @Test
+    @DisplayName("清单里有、代码里没扫到：拒绝跑，把缺的那几条摆出来")
+    void refusesWhenACaseHasNoAnchor() {
+        // 只给第 1 条的锚点：第 2 条漏了
+        String script = EntryScripts.anchored(0, cases().subList(0, 1), "PASS | 1", "PASS | 2");
+        TestOutcome outcome = run(answer -> block(answer.entry(), script));
+
+        assertThat(outcome.exit()).as("脚本没有被执行过").isEqualTo(TestScriptVerifier.NO_EXIT_CODE);
+        assertThat(outcome.output()).as("拒绝跑 = 它自己那句结论一个字都不该出现")
+                .doesNotContain("PASS | 1");
+        assertThat(outcome.failures()).singleElement().satisfies(failure -> {
+            assertThat(failure.kind()).isEqualTo(TestOutcome.Failure.Kind.TEST_CODE);
+            assertThat(failure.testCase()).isEqualTo("2");
+            assertThat(failure.actual()).contains("没有扫到 CASE 2");
+        });
+        assertThat(outcome.detail()).contains("没有被执行").contains("重新生成");
+        assertThat(outcome.cases()).extracting(TestOutcome.CaseResult::passed)
+                .as("一条都没验过：没验不能算过了").containsExactly(false, false);
+        assertThat(outcome.links()).as("连上的那条仍然要记着——界面按它画「已连线」").hasSize(1);
+    }
+
+    /** 代码里的 expect 和清单对不上 = 偷偷改期望（哪怕只改了一个数字）。 */
+    @Test
+    @DisplayName("expect 与清单不一致：拒绝跑，两边的话都摆出来")
+    void refusesWhenTheExpectationWasChanged() {
+        String script = EntryScripts.anchored(0, cases(), "PASS | 1", "PASS | 2")
+                .replace(cases().get(0).expected(), "实际跑出来是 0.01");
+
+        TestOutcome outcome = run(answer -> block(answer.entry(), script));
+
+        assertThat(outcome.exit()).isEqualTo(TestScriptVerifier.NO_EXIT_CODE);
+        assertThat(outcome.failures()).singleElement().satisfies(failure -> {
+            assertThat(failure.testCase()).isEqualTo("1");
+            assertThat(failure.expected()).as("清单里写的是什么").isEqualTo(cases().get(0).expected());
+            assertThat(failure.actual()).as("代码里写的是什么").contains("实际跑出来是 0.01");
+        });
+    }
+
+    /**
+     * 清单外的编号（乱写）与同一个编号写两遍（重复）各报一条。
+     *
+     * <p>造法是「它写出来的锚点和我给它的清单不是一份东西」：多一条 9、第 2 条写了两遍。
+     * 这两条在真模型身上都见过——多出来的那条会让通过率的分母凭空变大，重复的那条
+     * 会让「这条到底验没验」变成一个说不清的问题。
+     */
+    @Test
+    @DisplayName("清单外乱写 + 重复实现：拒绝跑，两条差异逐条列出")
+    void refusesExtraAndDuplicateAnchors() {
+        List<PlanReview.TestCase> sloppy = List.of(
+                cases().get(0), cases().get(1), cases().get(1),
+                new PlanReview.TestCase(9, "它自己加的一条", "随手验一下",
+                        PlanReview.TestCase.Level.OPTIONAL, "无", "无"));
+        String script = EntryScripts.anchored(0, sloppy, "PASS | 1", "PASS | 2");
+
+        TestOutcome outcome = run(answer -> block(answer.entry(), script));
+
+        assertThat(outcome.exit()).isEqualTo(TestScriptVerifier.NO_EXIT_CODE);
+        assertThat(outcome.failures()).hasSize(2).allSatisfy(failure ->
+                assertThat(failure.kind()).isEqualTo(TestOutcome.Failure.Kind.TEST_CODE));
+        assertThat(outcome.failures()).anySatisfy(failure -> {
+            assertThat(failure.testCase()).isEqualTo("2");
+            assertThat(failure.actual()).contains("出现了 2 次");
+        });
+        assertThat(outcome.failures()).anySatisfy(failure -> {
+            assertThat(failure.testCase()).isEqualTo("9");
+            assertThat(failure.actual()).contains("清单里没有编号 9");
+        });
+        assertThat(outcome.detail()).contains("溯源").contains("没有被执行");
+    }
+
+    /** 生成阶段（只生成、不跑）也要报溯源结论：不然「修一轮只修掉一个症状」要等到再跑一次才发现。 */
+    @Test
+    @DisplayName("重新生成也核一遍连线：这一批没接上就直接说清")
+    void reportsTraceOnRegeneration() {
+        TestAgent.Generated generated = agent(llm(answer -> block(answer.entry(),
+                EntryScripts.anchored(0, cases().subList(0, 1), "PASS | 1"))))
+                .generate(spec(), cases());
+
+        assertThat(generated.trace().ok()).isFalse();
+        assertThat(generated.trace().summarize()).contains("漏实现");
+        assertThat(generated.sources()).isNotEmpty();
+    }
+
     @Test
     @DisplayName("发给模型的系统提示词是测试协议，用户消息里带着用例清单")
     void sendsTheCaseListToTheModel() {
-        FakeLlm llm = llm(answer -> block(answer.entry(), entryScript(0, "all passed")));
+        FakeLlm llm = llm(answer -> block(answer.entry(), anchoredScript(0, "all passed")));
 
         agent(llm).run(spec(), cases());
 
         String system = llm.system();
         assertThat(system).contains(TestProtocol.FAIL_PREFIX).contains(TestProtocol.BLOCKED_PREFIX);
         assertThat(system).as("入口脚本的名字由引擎定，不能让它自己猜").contains(entryName());
+        assertThat(system).as("锚点约定要写给它：不写它不可能知道引擎在扫什么")
+                .contains("CASE <编号>").contains("expect:");
         assertThat(llm.user())
                 .contains("用例清单")
                 .contains("按编号查订单能查到")
-                .contains("必须过");
+                .contains("必须过")
+                .as("清单后面要再点一句：编号与期望都得照抄")
+                .contains("expect");
     }
 
     // ---------- 集成测试：两个入口、环境变量（十五.5） ----------
@@ -254,7 +355,7 @@ class TestAgentTest {
     @DisplayName("勾了集成测试却只给了单元入口：拒，并说清缺的是哪个文件")
     void refusesWhenTheIntegrationEntryIsMissing() {
         TestOutcome outcome = agent(llm(answer -> block(answer.entry(),
-                entryScript(0, "PASS | 1", "PASS | 2"))))
+                anchoredScript(0, "PASS | 1", "PASS | 2"))))
                 .run(spec(), cases(), new TestSettings(true), variables());
 
         assertThat(outcome.passed()).isFalse();
@@ -273,7 +374,9 @@ class TestAgentTest {
     @DisplayName("勾了集成测试：两个入口都跑，按同一条用例「没过优先」合并")
     void runsBothEntryScripts() {
         TestOutcome outcome = agent(llm(answer -> block(answer.entry(),
-                entryScript(1, "FAIL | 1 | unit-only | unit-only | code is wrong"))
+                anchoredScript(1, "FAIL | 1 | unit-only | unit-only | code is wrong"))
+                // 集成那个入口不带锚点：两条用例都实现（并接上线）在单元那个文件里，
+                // 编号在整批产物里写两遍会被判成「重复实现」——那是引擎的规矩
                 + block(answer.integrationEntry(), entryScript(0, "PASS | 1", "PASS | 2"))))
                 .run(spec(), cases(), new TestSettings(true), variables());
 
@@ -293,7 +396,7 @@ class TestAgentTest {
     @Test
     @DisplayName("连接信息原样进模型上下文，并写明「只许读环境变量、不许硬编码」")
     void sendsTheEnvironmentToTheModel() {
-        FakeLlm llm = llm(answer -> block(answer.entry(), entryScript(0, "PASS | 1", "PASS | 2")));
+        FakeLlm llm = llm(answer -> block(answer.entry(), anchoredScript(0, "PASS | 1", "PASS | 2")));
 
         agent(llm).run(spec(), cases(), new TestSettings(false), variables());
 
@@ -308,9 +411,7 @@ class TestAgentTest {
     void injectsTheEnvironmentIntoTheScript() {
         // 脚本把变量打出来：它就是「注入到位了没有」的证据
         TestOutcome outcome = agent(llm(answer -> block(answer.entry(),
-                WINDOWS
-                        ? "@echo off\r\necho DB=%DB_HOST%\r\nexit /b 1\r\n"
-                        : "#!/bin/sh\necho DB=$DB_HOST\nexit 1\n")))
+                EntryScripts.anchored(1, cases(), "DB=" + (WINDOWS ? "%DB_HOST%" : "$DB_HOST")))))
                 .run(spec(), cases(), new TestSettings(false), variables());
 
         assertThat(outcome.passed()).isFalse();
@@ -333,6 +434,11 @@ class TestAgentTest {
         return EntryScripts.body(exit, outputs);
     }
 
+    /** 带溯源锚点的入口脚本——凡是会走到「跑测试」那一步的桩都得用它（见 {@link EntryScripts}）。 */
+    private static String anchoredScript(int exit, String... outputs) {
+        return EntryScripts.anchored(exit, cases(), outputs);
+    }
+
     private TestOutcome run(Function<Answer, String> answer) {
         return agent(llm(answer)).run(spec(), cases());
     }
@@ -349,13 +455,21 @@ class TestAgentTest {
         return TestSpecs.spec(List.of("Foo.java"));
     }
 
+    /**
+     * 这份清单的「期望什么」刻意写成 ASCII。
+     *
+     * <p>因为这一批测试把锚点写进了 <b>Windows 的 .cmd</b>（这些桩只造一个产物文件），
+     * 而引擎落盘时行尾统一是 LF、cmd 又按本机代码页读脚本：正文里一出现中文，解码就错位，
+     * 下一行的命令会被吃掉当成命令执行。真模型那边的规矩是「中文写进测试代码文件，
+     * 入口脚本只用 ASCII」（见 {@code TestProtocol}），这里照同一个规矩来。
+     * 中文锚点的解析由 {@link CaseTraceCheckTest} 直接覆盖，不依赖脚本能不能跑。
+     */
     private static List<PlanReview.TestCase> cases() {
         return List.of(
                 new PlanReview.TestCase(1, "按编号查订单能查到", "用已有编号查一次",
-                        PlanReview.TestCase.Level.MUST, "返回的那条 id 等于传入的编号",
-                        "订单能按编号查询"),
+                        PlanReview.TestCase.Level.MUST, "id == 1", "订单能按编号查询"),
                 new PlanReview.TestCase(2, "查不到的编号不抛异常", "用不存在的编号查一次",
-                        PlanReview.TestCase.Level.SHOULD, "返回空集合而不是抛异常", "无"));
+                        PlanReview.TestCase.Level.SHOULD, "empty collection", "无"));
     }
 
     private static String block(String path, String content) {

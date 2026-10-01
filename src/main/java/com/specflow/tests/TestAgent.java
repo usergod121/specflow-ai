@@ -109,10 +109,18 @@ public final class TestAgent {
         }
         try {
             List<String> written = write(response, artifacts, settings);
+            // 跑之前先机器核对「用例 ⇄ 测试代码」的连线（四条判据）：缺哪条、多哪条、
+            // 哪条期望被改了。任何一条不通过就**拒绝跑**——跑出来的结论没有意义，
+            // 而且它会看着像一份证据。产物留着给人看差异，走「重新生成」那条路补
+            CaseTraceCheck.Report trace = CaseTraceCheck.check(cases, contentsOf(written));
+            if (!trace.ok()) {
+                log.warn("溯源核对不通过，拒绝运行这批测试：{}", trace.summarize());
+                return TestReport.traceRefused(1, artifacts.relative(), written, cases, trace);
+            }
             // 跑哪一个入口，由这次勾没勾集成决定：勾了就是**两个都跑**
             // （两个都在同一个位置跑：有可用环境就是容器里，否则宿主上；见 runScripts）
             TestOutcome outcome = TestReport.coverage(
-                    runScripts(spec, artifacts, written, settings, variables), cases);
+                    runScripts(spec, artifacts, written, settings, variables), cases, trace.links());
             log.info("测试脚本跑完：退出码 {}（{}）", outcome.exit(), artifacts.relative());
             if (outcome.environmental()) {
                 // 环境问题这一次会连同产品改动一起回滚（上层收场时决定），测试产物也就没有
@@ -231,7 +239,10 @@ public final class TestAgent {
         try {
             List<String> written = write(response, artifacts, settings);
             return new Generated(artifacts.relative(), written,
-                    sources(projectRoot, artifacts.relative(), written));
+                    sources(projectRoot, artifacts.relative(), written),
+                    // 重新生成这条路也算一遍溯源：这批新代码要是还没接上线，人在这里就该看见
+                    // （实测过「修一轮只修掉一个症状」，等到再跑一次才发现是白跑一轮）
+                    CaseTraceCheck.check(cases, contentsOf(written)));
         } catch (SpecflowException e) {
             // 这条路是同步接口，说得出「为什么不行」（界面上就是一条错误提示）；和 run()
             // 那边落成 TestOutcome.rejected 是同一个理由，只是这里直接把原因交出去
@@ -241,8 +252,9 @@ public final class TestAgent {
         }
     }
 
-    /** 生成结果：产物在哪儿、写了哪些文件、每个文件长什么样。 */
-    public record Generated(String directory, List<String> files, Map<String, String> sources) {
+    /** 生成结果：产物在哪儿、写了哪些文件、每个文件长什么样、以及这批代码接上线了没有。 */
+    public record Generated(String directory, List<String> files, Map<String, String> sources,
+                            CaseTraceCheck.Report trace) {
     }
 
     /** 单个文件最多读回这么多字符：它给眼睛看，再长也不会有人在这里读完。 */
@@ -306,6 +318,29 @@ public final class TestAgent {
         }
         log.info("测试产物已写入 {}，共 {} 个文件", artifacts.relative(), written.size());
         return written;
+    }
+
+    /**
+     * 把这次写下的产物<b>完整</b>读回来，给溯源核对用。
+     *
+     * <p>为什么不复用 {@link #sources}：那一份是给人看的，单文件掐到 4000 字、最多读 8 个文件——
+     * 掐掉的那半截里可能正好有锚点，于是「其实写了」会被判成「漏实现」，而人得重新生成一次
+     * 才看得出来。这里一个字符都不许少。
+     *
+     * <p>读不出来就少一个文件、记一条警告：刚写过的文件读不回来是磁盘的事，那时真的少了锚点，
+     * 报「漏实现」也是对的（宁可拒绝跑让人看一眼，也不要放过一批对不上线的测试）。
+     */
+    private Map<String, String> contentsOf(List<String> written) {
+        SafePathResolver resolver = new SafePathResolver(projectRoot);
+        Map<String, String> contents = new LinkedHashMap<>();
+        for (String file : written) {
+            try {
+                contents.put(file, Files.readString(resolver.resolve(file), StandardCharsets.UTF_8));
+            } catch (IOException | RuntimeException e) {
+                log.warn("读不回刚写下的测试产物 {}：{}", file, e.getMessage());
+            }
+        }
+        return contents;
     }
 
     /**

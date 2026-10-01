@@ -1509,9 +1509,14 @@ class DevelopmentAgentTest {
      *
      * <p>产物路径里的目录是引擎当次给的（带时间戳），测试写不出这个值——所以这里用
      * {@code {{ENTRY}}} 占位，由假模型照系统提示词替换（真模型也是这么知道该写哪儿的）。
+     *
+     * <p>锚点（{@code CASE 编号} + {@code expect: 期望}）必须和 {@link #planWithCases}
+     * 那份清单对得上：引擎在跑之前会机器核对「用例 ⇄ 测试代码」的连线，对不上的产物
+     * 会被直接拒绝运行——那样测的就不是运行这条路，而是拒绝这条路了。
      */
     private String artifactsPatch(int exit, String failureLine) {
-        return "<<<<<<< SEARCH {{ENTRY}}\n=======\n" + EntryScripts.body(exit, failureLine)
+        return "<<<<<<< SEARCH {{ENTRY}}\n=======\n"
+                + EntryScripts.anchored(exit, planWithCases().cases(), failureLine)
                 + ">>>>>>> REPLACE\n";
     }
 
@@ -1520,11 +1525,17 @@ class DevelopmentAgentTest {
      *
      * <p>只给单元那个的话，产物会因为「没有集成入口」被拒——而那是这批测试自己的错，
      * 不是被测代码的错。真模型拿到的是同一份协议（「这一次要两个」），所以照做。
+     *
+     * <p>锚点只写在单元那个入口上：这一次只有一条用例、它验的是单元那条路。
+     * 同一条用例的编号在整批产物里写两遍，引擎会判成「重复实现」并拒绝运行
+     * （见 {@code CaseTraceCheck}）——那是一条真规矩，不是这个桩能随便绕的。
      */
     private String integrationArtifactsPatch(int exit, String failureLine) {
-        return "<<<<<<< SEARCH {{ENTRY}}\n=======\n" + EntryScripts.body(exit, failureLine)
+        return "<<<<<<< SEARCH {{ENTRY}}\n=======\n"
+                + EntryScripts.anchored(exit, planWithCases().cases(), failureLine)
                 + ">>>>>>> REPLACE\n"
-                + "<<<<<<< SEARCH {{ITENTRY}}\n=======\n" + EntryScripts.body(exit, failureLine)
+                + "<<<<<<< SEARCH {{ITENTRY}}\n=======\n"
+                + EntryScripts.body(exit, failureLine)
                 + ">>>>>>> REPLACE\n";
     }
 

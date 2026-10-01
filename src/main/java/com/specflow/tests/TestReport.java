@@ -92,6 +92,9 @@ public final class TestReport {
     /** 摘给用户看的原话长度上限：够看清是什么，又不至于把整段日志糊上去。 */
     private static final int MAX_QUOTE = 200;
 
+    /** 溯源失败最多列几行：模型写歪时可能一次报几十条，全铺上去会把界面淹掉。 */
+    private static final int MAX_TRACE_ROWS = 20;
+
     private TestReport() {
     }
 
@@ -108,7 +111,63 @@ public final class TestReport {
         VerificationResult result = run.verification();
         String output = result.output() == null ? "" : result.output();
         return new TestOutcome(directory, files, calls, run.exit(), result,
-                classify(result, output), reported(output));
+                classify(result, output), reported(output), List.of());
+    }
+
+    /**
+     * <b>拒绝跑</b>：溯源核对没过（见 {@link CaseTraceCheck}），这批测试一个字节都不执行。
+     *
+     * <p>为什么是「拒绝跑」而不是「跑完记一笔」：四条判据每一条都意味着<b>清单和代码不是同一份东西</b>——
+     * 少写一条、多写一条、写重了、或者把期望改成了实际值。这种产物跑出来的结论没有任何意义，
+     * 它只会产出一份「看着像证据」的东西，而人还要花时间去分辨哪几条是真的（十五.9 那条：
+     * 绝不用「跑过了」冒充「验过了」）。所以引擎在这一步就停，把差异摆出来，
+     * 让人走「测试代码错了 → 重新生成」那条路。
+     *
+     * <p>产物<b>留在磁盘上</b>：那正是要给人看的东西（哪一段没接线、期望被改成什么样），
+     * 而且重新生成之后收场时按留档一起删（十五.8）。
+     *
+     * @param cases 冻结的那份清单：一条都没验过，所以每条都记成<b>没过</b>——
+     *              「没验」不能算「过了」，这也是界面上那条通过率的分母
+     */
+    public static TestOutcome traceRefused(int calls, String directory, List<String> files,
+                                           List<PlanReview.TestCase> cases,
+                                           CaseTraceCheck.Report trace) {
+        List<TestOutcome.Failure> failures = new ArrayList<>();
+        for (CaseTraceCheck.Finding finding : trace.findings()) {
+            if (failures.size() >= MAX_TRACE_ROWS) {
+                // 不静默截断：剩下的有多少条要说出来（模型写歪时可能一次报几十条）
+                failures.add(new TestOutcome.Failure(TestOutcome.Failure.Kind.TEST_CODE, "", "",
+                        "还有 " + (trace.findings().size() - MAX_TRACE_ROWS)
+                                + " 处差异没有列出来（一共 " + trace.findings().size() + " 处）", ""));
+                break;
+            }
+            failures.add(new TestOutcome.Failure(TestOutcome.Failure.Kind.TEST_CODE,
+                    String.valueOf(finding.index()), expectedOf(cases, finding.index()),
+                    // 把判据名摆在最前面：界面那一行只有「哪条 / 期望 / 实际」三栏，
+                    // 不说清是四条里的哪一条，人看到的只是一句「测试代码有问题」
+                    finding.kind().label() + "：" + finding.detail() + where(finding), ""));
+        }
+        List<TestOutcome.CaseResult> results = new ArrayList<>(cases.size());
+        for (PlanReview.TestCase testCase : cases) {
+            results.add(new TestOutcome.CaseResult(testCase.index(), false));
+        }
+        return new TestOutcome(directory, files, calls, TestScriptVerifier.NO_EXIT_CODE,
+                VerificationResult.skipped(TestScriptVerifier.NAME,
+                        "溯源核对不通过，这批测试没有被执行：" + trace.summarize()),
+                failures, results, trace.links());
+    }
+
+    /** 溯源失败那一行里「期望」那一栏：清单上这条写的是什么（对不上时人一眼就能看出差异）。 */
+    private static String expectedOf(List<PlanReview.TestCase> cases, int index) {
+        return cases.stream()
+                .filter(testCase -> testCase.index() == index)
+                .map(PlanReview.TestCase::expected)
+                .findFirst()
+                .orElse("");
+    }
+
+    private static String where(CaseTraceCheck.Finding finding) {
+        return finding.where().isEmpty() ? "" : "（" + finding.where() + "）";
     }
 
     /**
@@ -121,9 +180,16 @@ public final class TestReport {
      * <p>没报出来的用例<b>算没过</b>，并且单独出一条「测试代码问题」：它不是断言上失败，
      * 而是压根没验（清单上有、脚本没做），那多半是生成的测试代码漏了。
      *
+     * <p><b>清单外的编号也一样要报出来。</b>脚本打了 {@code PASS | 9}，而清单只有 1~8 时，
+     * 旧实现把它<b>静默丢掉</b>了（真模型实测：集成脚本自造了 9、10 两条，全过，
+     * 界面上和留档里一个字都没有）。丢掉等于让脚本自己给自己加用例、自己给自己算通过率，
+     * 所以现在把它单独报成一条失败——它既不算通过也不算没过，只是「清单对不上」这个事实。
+     *
      * @param declared 检查阶段定下来、用户确认过的那份清单（没有它就没有分母）
+     * @param links    溯源连线（见 {@link CaseTraceCheck}）：界面上「已连线 / 未连线」那一栏
      */
-    public static TestOutcome coverage(TestOutcome outcome, List<PlanReview.TestCase> declared) {
+    public static TestOutcome coverage(TestOutcome outcome, List<PlanReview.TestCase> declared,
+                                       List<CaseTraceCheck.Link> links) {
         if (declared == null || declared.isEmpty()) {
             return outcome;
         }
@@ -141,6 +207,19 @@ public final class TestReport {
             cases.add(new TestOutcome.CaseResult(testCase.index(), Boolean.TRUE.equals(passed)));
         }
         List<TestOutcome.Failure> failures = outcome.failures();
+        List<Integer> outside = ran.keySet().stream()
+                .filter(index -> declared.stream().noneMatch(one -> one.index() == index))
+                .sorted()
+                .toList();
+        if (!outside.isEmpty()) {
+            failures = new ArrayList<>(failures);
+            failures.add(new TestOutcome.Failure(TestOutcome.Failure.Kind.TEST_CODE,
+                    join(outside), "",
+                    "脚本报出来的编号 " + join(outside) + " 不在用例清单里（清单是第 "
+                            + join(declared.stream().map(PlanReview.TestCase::index).toList())
+                            + " 条）：这些结论对不回任何一条用例，既不算通过也不算没过",
+                    ""));
+        }
         // 脚本压根没跑起来（环境问题）或没跑完（超时）时，不再补那条「哪几条没报」：
         // 那两种情况下一条都没报是当然的，再列一遍只是噪声，还会把真正的原因挤到后面
         boolean explain = !notRan.isEmpty() && !outcome.environmental()
@@ -150,11 +229,19 @@ public final class TestReport {
             failures.add(new TestOutcome.Failure(TestOutcome.Failure.Kind.TEST_CODE, "", "",
                     "清单上共 " + declared.size() + " 条用例，脚本只报了 "
                             + (declared.size() - notRan.size()) + " 条；没报的是第 "
-                            + String.join("、", notRan.stream().map(String::valueOf).toList())
-                            + " 条——没验不等于验过了", ""));
+                            + join(notRan) + " 条——没验不等于验过了", ""));
         }
         return new TestOutcome(outcome.directory(), outcome.files(), outcome.calls(), outcome.exit(),
-                outcome.verification(), failures, cases);
+                outcome.verification(), failures, cases, links);
+    }
+
+    /** 一串编号写成「1、2、3」。 */
+    private static String join(List<Integer> indexes) {
+        StringBuilder out = new StringBuilder();
+        for (Integer index : indexes) {
+            out.append(out.length() == 0 ? "" : "、").append(index);
+        }
+        return out.toString();
     }
 
     /**
@@ -172,7 +259,7 @@ public final class TestReport {
                 VerificationResult.skipped(TestScriptVerifier.NAME, "测试产物没能落地：" + reason),
                 List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.TEST_CODE,
                         "", "", reason, "")),
-                List.of());
+                List.of(), List.of());
     }
 
     /**
@@ -192,7 +279,7 @@ public final class TestReport {
                         VerificationResult.Kind.ENVIRONMENT),
                 List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.ENVIRONMENT,
                         "", "", reason, "")),
-                List.of());
+                List.of(), List.of());
     }
 
     /**
@@ -260,7 +347,7 @@ public final class TestReport {
                 .map(entry -> new TestOutcome.CaseResult(entry.getKey(), entry.getValue()))
                 .toList();
         return new TestOutcome(outcomes.get(0).directory(), outcomes.get(0).files(), calls, exit,
-                combined, failures, merged);
+                combined, failures, merged, outcomes.get(0).links());
     }
 
     /** 「哪几个脚本」——合并之后的那一栏要能看出它不止一个。 */
@@ -283,7 +370,7 @@ public final class TestReport {
      */
     public static TestOutcome cleared(TestOutcome outcome) {
         return new TestOutcome("", List.of(), outcome.calls(), outcome.exit(),
-                outcome.verification(), outcome.failures(), outcome.cases());
+                outcome.verification(), outcome.failures(), outcome.cases(), outcome.links());
     }
 
     // ---------- 分档 ----------

@@ -286,7 +286,7 @@ class RunServiceTest {
         TestOutcome tests = new TestOutcome(root.relativize(artifacts).toString().replace('\\', '/'),
                 List.of(), 1, 1, VerificationResult.failed("测试脚本", "run", "一条没过"),
                 List.of(), List.of(new TestOutcome.CaseResult(1, true),
-                        new TestOutcome.CaseResult(2, false)));
+                        new TestOutcome.CaseResult(2, false)), List.of());
         AgentListener recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
                 null, AgentListener.NOOP);
         ((RunRecorder) recorder).testsFinished(tests);
@@ -298,7 +298,7 @@ class RunServiceTest {
         RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
         TestOutcome tests = new TestOutcome(root.relativize(artifacts).toString().replace('\\', '/'),
                 List.of(), 1, 0, VerificationResult.passed("测试脚本", "run", "PASS"),
-                List.of(), List.of());
+                List.of(), List.of(), List.of());
         AgentListener recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
                 null, AgentListener.NOOP);
         ((RunRecorder) recorder).testsFinished(tests);

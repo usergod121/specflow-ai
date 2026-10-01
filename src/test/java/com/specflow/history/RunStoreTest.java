@@ -11,6 +11,7 @@ import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
 import com.specflow.spec.Spec;
+import com.specflow.tests.CaseTraceCheck;
 import com.specflow.tests.TestOutcome;
 import com.specflow.verify.VerificationResult;
 import org.junit.jupiter.api.DisplayName;
@@ -563,6 +564,7 @@ class RunStoreTest {
         assertThat(record.tests().failures()).singleElement()
                 .satisfies(failure -> assertThat(failure.testCase()).isEqualTo("1"));
         assertThat(record.tests().cases()).as("缺字段就是一个空表，不是读取失败").isEmpty();
+        assertThat(record.tests().links()).as("老记录没有溯源连线：空表，不是读取失败").isEmpty();
     }
 
     /**
@@ -852,6 +854,8 @@ class RunStoreTest {
         assertThat(first.regenerated()).containsExactly("tools/20260930-130000");
         assertThat(first.verdicts()).extracting(RunRecord.Verdict::owner)
                 .containsOnly(RunRecord.Verdict.TEST);
+        // 重建记录时溯源连线要原样带着：漏一个字段，历史详情里每个 chip 就都变成「未连线」
+        assertThat(first.tests().links()).extracting(CaseTraceCheck.Link::line).containsExactly(137);
 
         // 同一个目录点两次「放行」不会记两笔；换一个目录就是多了一份要收的产物
         RunRecord twice = store.regenerated(id, List.of(1, 2), "tools/20260930-130000");
@@ -985,7 +989,9 @@ class RunStoreTest {
                 // 三档都要有：过的、没过的、压根没跑到的（没跑到的也算没过）
                 List.of(new TestOutcome.CaseResult(1, true),
                         new TestOutcome.CaseResult(2, false),
-                        new TestOutcome.CaseResult(3, false))));
+                        new TestOutcome.CaseResult(3, false)),
+                // 溯源连线也过一遍留档的读写：读不回来，界面那一栏就没得画
+                List.of(new CaseTraceCheck.Link(1, "tools/20260930-120000/UnitTests.java", 137))));
         recorder.finished(AgentResult.testsFailed(1, List.of(), List.of(), "两条没过"));
     }
 

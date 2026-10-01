@@ -948,14 +948,15 @@ check(!!historyTable.STATUS_LABEL.PENDING_DECISION,
 // 而它们错了的表现很安静：通过率分母虚高、空档整块不显示，看着都像「正常」。
 console.log('用例分档：');
 const caseApi = load('index.html', [
-  'CASE_LEVELS', 'CASE_OUTCOME_MARKS', 'CASE_OUTCOME_TEXT', 'FAILURE_KINDS',
-  'VERDICT', 'VERDICT_LABELS',
+  'CASE_LEVELS', 'CASE_OUTCOME_MARKS', 'CASE_OUTCOME_TEXT', 'FAILURE_KINDS', 'TRACE_KINDS',
+  'UNWIRED_HINT', 'VERDICT', 'VERDICT_LABELS',
   'caseLevel', 'caseLevelMeta', 'caseTiers', 'caseByIndex', 'caseOutcome', 'tierRate',
   'casePassRate', 'caseChipText', 'numbersIn', 'failureOf', 'failureKind', 'testsReport',
   'testsSummaryText', 'failPairHtml', 'guessHtml', 'failRowHtml', 'testActionPath', 'startsRun',
   'refeedText', 'putRefeedContext', 'caseCodeHtml', 'caseDetailHtml', 'caseItemHtml',
   'casesPanelHtml', 'casesFootHtml', 'hasCases', 'caseSignature', 'targetSignature',
   'planSignature', 'staleFreeze', 'needsConfirm', 'confirmCases', 'regenBlockHtml',
+  'regenTraceHtml', 'traceRateHtml', 'caseTrace', 'caseAcceptance',
   'testsActionsHtml', 'testsPanelHtml', 'rateOfAll', 'caseListForTests',
   'verdictLabel', 'verdictsOf', 'settlementText', 'judgementPayload',
 ], '// ---------- 用例与测试结果 ----------', 'async function refreshPending');
@@ -965,7 +966,8 @@ const {
   caseChipText, numbersIn, failureOf, failureKind, testsReport, testsSummaryText, failRowHtml,
   testActionPath, startsRun, refeedText, caseDetailHtml, casesPanelHtml, casesFootHtml,
   hasCases, caseSignature, targetSignature, planSignature, staleFreeze, needsConfirm,
-  confirmCases, regenBlockHtml, testsActionsHtml, testsPanelHtml, rateOfAll,
+  confirmCases, regenBlockHtml, regenTraceHtml, traceRateHtml, caseTrace, caseAcceptance,
+  testsActionsHtml, testsPanelHtml, rateOfAll,
   VERDICT, verdictLabel, verdictsOf, settlementText,
 } = caseApi;
 
@@ -1210,6 +1212,29 @@ check(regenText.includes('还没有跑') || regenText.includes('没有被执行'
 check(regenText.includes('data-act="release"'), '等人点「放行」');
 check(regenBlockHtml({ ...regen, released: true }).includes('已放行'), '放行之后这一块不再是按钮');
 
+// 重新生成那批代码接上线了没有：没接上就在这里说清，别等到「下一轮」才被引擎拒绝（白烧一轮）
+console.log('重新生成的代码接上线了没有：');
+const regenWired = regenBlockHtml({ ...regen,
+  trace: { links: [{ index: 1, file: 'tools/20260930-121500/T.java', line: 12 }], findings: [] } });
+check(regenWired.includes('溯源核对通过') && regenWired.includes('1 条用例都接上了'),
+    '接上了就明说：' + JSON.stringify(regenWired.match(/溯源核对通过[^<]*/)));
+const regenTrace = regenBlockHtml({ ...regen, trace: {
+  links: [],
+  findings: [
+    { kind: 'MISSING', index: 2, where: '', detail: '测试代码里没有扫到 CASE 2 这一段' },
+    { kind: 'CHANGED', index: 1, where: 'tools/20260930-121500/T.java:9',
+      detail: '清单里写的是「a == 2」，代码里写的是「a == 1」' },
+  ],
+} });
+check(regenTrace.includes('溯源核对没通过（2 处）') && regenTrace.includes('会被引擎拒绝执行'),
+    '没接上就说清后果：' + JSON.stringify(regenTrace.match(/溯源核对没通过[^<]*/)));
+check(regenTrace.includes('漏实现') && regenTrace.includes('偷偷改期望')
+    && regenTrace.includes('用例 2：测试代码里没有扫到 CASE 2 这一段'),
+    '四处差异按判据名逐条摆出来（不是一句「没通过」）');
+check(regenTrace.includes('tools/20260930-121500/T.java:9'), '差异里带着位置');
+check(!regenBlockHtml({ ...regen, trace: null }).includes('溯源'),
+    '没拿到核对结果时不编一句话出来');
+
 console.log('回喂给开发的那段话（十五.7 的固定模板）：');
 const refeed = refeedText([2], caseSample, report, ['src/main/java/com/demo/Foo.java']);
 check(refeed.includes('用例 2') && refeed.includes('查不到时返回 404'), '带用例的语义描述');
@@ -1283,6 +1308,46 @@ check(casesFootHtml(caseSample, { confirm: true, frozen: true, stale: false })
 check(casesFootHtml(caseSample, { confirm: true, frozen: true, stale: true }).includes('data-act="confirm"'),
     '冻过但内容变了：再给一次「确认」');
 check(casesPanelHtml([], report, {}) === '', '一条用例都没有时整块不画');
+
+// ---------- 溯源连线：已连线 / 未连线 / 还没生成 ----------
+// 这一批新增的那条判据在界面上的落点。三档分开说，因为它们的下一步完全不同：
+// 接上了点得过去、没接上要标红（引擎会拒绝运行整批测试）、还没跑过时它不是错。
+console.log('溯源连线：');
+const linkedReport = testsReport({
+  cases: [{ index: 1, passed: true }, { index: 2, passed: false }],
+  failures: [],
+  links: [{ index: 1, file: 'tools/20260930-120000/UnitTests.java', line: 137 }],
+});
+check(caseTrace(linkedReport, 1).state === 'wired'
+    && caseTrace(linkedReport, 1).where === 'tools/20260930-120000/UnitTests.java:137',
+    '连上的那一条给得出文件:行：' + JSON.stringify(caseTrace(linkedReport, 1)));
+check(caseTrace(linkedReport, 2).state === 'unwired',
+    '有测试代码但这条没接上：未连线（要标红）');
+check(caseTrace(null, 1).state === 'unknown',
+    '还没跑过测试时是「还没生成测试代码」，不是「未连线」——那一档全标红就成了狼来了');
+
+const tracedHtml = casesPanelHtml(caseSample, linkedReport, { detail: null, confirm: false });
+check(tracedHtml.includes('data-trace="wired"') && tracedHtml.includes('data-trace="unwired"'),
+    'chip 上带着连线的状态（样式按它上色）');
+check(tracedHtml.includes('✅ 已连线') && tracedHtml.includes('❌ 未连线'),
+    '两种状态都写在 chip 上');
+check(tracedHtml.includes('tools/20260930-120000/UnitTests.java:137'),
+    '已连线的那条把测试代码的位置也写出来（点得过去）');
+check(tracedHtml.includes('验收：R-1') && tracedHtml.includes('验收：没写'),
+    'chip 上带着「对应哪条验收标准」，没写就明说');
+check(tracedHtml.includes('溯源 <b>1/4</b>') && tracedHtml.includes('3 条未连线'),
+    '溯源那一枚写着几条接上了、几条没接：' + tracedHtml.match(/溯源 <b>[^<]*<\/b>（?[^<）]*）?/));
+check(tracedHtml.includes('rate trace bad'), '有未连线时那一枚按错误色画');
+check(tracedHtml.includes('没接上测试代码'), '并且说清后果：这批测试会被拒绝运行');
+const allWired = testsReport({
+  cases: [], failures: [],
+  links: caseSample.map(one => ({ index: one.index, file: 'tools/x/T.java', line: 7 })),
+});
+const wiredHtml = casesPanelHtml(caseSample, allWired, { detail: null, confirm: false });
+check(wiredHtml.includes('溯源 <b>4/4</b>') && !wiredHtml.includes('rate trace bad'),
+    '全都接上时那一枚是 4/4 且不是错误色');
+check(caseDetailHtml(caseSample[0], linkedReport).includes('已连线：tools/20260930-120000/UnitTests.java:137'),
+    '点开之后那栏也写着连到哪儿了');
 
 console.log('用例细节里的测试代码：');
 const caseDetailText = caseDetailHtml(caseSample[1], testsReport(report));

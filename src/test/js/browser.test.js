@@ -74,6 +74,11 @@ let interfaceProject = null;
  */
 let envProject = null;
 /**
+ * 链 28 临时造出来的「带假模型的项目」（溯源连线那一链）。
+ * 收尾规矩和上面几个一样：目录跟着 TEMP_PATHS 删，「最近打开」里那条记录单独去接口上删。
+ */
+let traceProject = null;
+/**
  * 链 23 起的本机假模型服务。跑完必须关掉——它是一个真在监听的端口，
  * 留着它下一次跑测试会多一个没人认领的进程。
  */
@@ -92,6 +97,14 @@ let ws;
 let nextId = 1;
 const pending = new Map();
 const browserErrors = [];
+/**
+ * 主框架导航代数：每换一份文档（{@code location.reload()}、换项目）就 +1。
+ *
+ * <p>为什么要有它：界面上「点了按钮之后整页刷新」的地方很多，而刷新<b>没发生</b>
+ * 和刷新<b>发生了但慢</b>这两件事，以前在测试里长得一模一样——都是等一个页面条件等超时。
+ * 分开它们之后，「这次刷新到底走没走」就成了一个可以直接看的事实（见 waitForReload）。
+ */
+let navGeneration = 0;
 
 function send(method, params) {
   const id = nextId++;
@@ -218,16 +231,89 @@ function startScriptedModel(answers) {
  *
  * <p>换项目是刻意用整页刷新做的（状态一定干净），而导航期间页面上下文会短暂消失，
  * 这时候求值会抛错——那不是失败，是在等，所以这里吞掉它继续轮询。
+ *
+ * <p><b>为什么不能只是一直轮询到超时</b>（原来就是这个写法，然后它红过几次
+ * 「等待超时：回到欢迎页」，而现场什么都没留下）：刷新<b>根本没发生</b>
+ * （比如关项目那条 POST 失败了，页面原地不动）和刷新<b>发生了、只是这台机器上慢</b>，
+ * 在只看一个页面条件的轮询里是同一件事。所以这里改成认两件事：
+ * <ul>
+ *   <li><b>刷新真的走了没有</b>：主框架换文档会让 {@link navGeneration} +1；
+ *       刚换过的文档还很年轻（`performance.now()` 很小），导航进行中时求值会抛错——
+ *       这三样都是「刷新在路上」的直接证据。</li>
+ *   <li><b>原来那个条件</b>：一个都没改，条件成立才算过。</li>
+ * </ul>
+ * 于是：没有刷新、也没在加载 → 到点就报错（这是真问题，而且报得比原来早、还带现场）；
+ * 刷新在路上但页面还没就绪 → 允许在「有进展」的前提下多用一段预算（上限 +10 秒），
+ * 因为冷启动/内存吃紧的机器上，一次刷新比平时慢一个量级是真会发生的。
+ *
+ * <p>超时那一刻会把现场摆出来（现在是哪个项目、欢迎页显示没有、提示栏说了什么、
+ * 刷新走了几次），下次再红就不用靠猜了。
  */
 async function waitForReload(expression, message, timeoutMs = 15000) {
+  const startedNav = navGeneration;
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const hardDeadline = deadline + 10000;
+  let extended = false;
+  while (Date.now() < hardDeadline) {
     try {
       if (await evaluate(expression)) return true;
-    } catch (e) { /* 正在导航，下一轮再来 */ }
+    } catch (e) {
+      // 正在导航，下一轮再来。这本身就是「刷新在路上」的证据（见下）
+      if (Date.now() >= deadline) extended = true;
+    }
+    if (Date.now() >= deadline) {
+      const navigating = navGeneration !== startedNav || await pageLooksFresh();
+      if (!navigating) {
+        break;   // 没刷新、也没在加载：原地卡住了，立刻按原预算报错
+      }
+      if (!extended) {
+        // 只说一次：这条日志是「这一次等得比平时久」的唯一痕迹，别让它变成噪音
+        console.log('  [等刷新] ' + message + '：刷新已经在路上，但页面还没就绪，'
+            + '再多给 ' + Math.round((hardDeadline - deadline) / 1000) + ' 秒（机器慢不是失败）');
+        extended = true;
+      }
+    }
     await sleep(120);
   }
-  throw new Error('等待超时：' + message);
+  throw new Error('等待超时：' + message + '（' + await describeStuckPage(startedNav) + '）');
+}
+
+/**
+ * 当前这份文档是不是「刚换上的」。
+ *
+ * <p>判据是它自己的年龄：`performance.now()` 从文档的导航开始算，刚刷出来的页面必然很小。
+ * 用它来兜住一种情况：刷新在 {@link waitForReload} 进来之前就已经提交完了，
+ * 那时候 {@link navGeneration} 还没来得及对比——不能因此把「在加载」误判成「卡住了」。
+ */
+async function pageLooksFresh() {
+  try {
+    return await evaluate(`performance.now() < 10000`);
+  } catch (e) {
+    return true;   // 求值都抛错了，说明文档正在被换掉
+  }
+}
+
+/** 超时那一刻的现场：只读，不改任何东西。用它替代原来那句干巴巴的超时。 */
+async function describeStuckPage(startedNav) {
+  let state = '现场取不到';
+  try {
+    state = JSON.stringify(await evaluate(`(() => ({
+      当前文档: location.href,
+      加载到: document.readyState,
+      文档年龄毫秒: Math.round(performance.now()),
+      顶栏项目: document.getElementById('projectname')
+          ? document.getElementById('projectname').textContent : null,
+      欢迎页显示: document.getElementById('welcome')
+          ? !document.getElementById('welcome').hidden : '元素都不在',
+      工作区显示: document.getElementById('workspace')
+          ? !document.getElementById('workspace').hidden : '元素都不在',
+      提示栏: document.getElementById('notice')
+          ? document.getElementById('notice').textContent.trim().slice(0, 200) : null,
+    }))()`));
+  } catch (e) {
+    state = '现场取不到（' + e.message + '）';
+  }
+  return '这一轮主框架刷新了 ' + (navGeneration - startedNav) + ' 次；' + state;
 }
 
 // ---------- 页面动作 ----------
@@ -374,6 +460,11 @@ async function main() {
         pending.delete(msg.id);
         msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result);
         return;
+      }
+      if (msg.method === 'Page.frameNavigated' && msg.params.frame && !msg.params.frame.parentId) {
+        // 主框架（不是 iframe）换了一份文档：换项目、关项目、location.reload() 都会走到这里。
+        // 只数个数，不看内容——它唯一的用途是回答「这次刷新到底走了没有」
+        navGeneration++;
       }
       if (msg.method === 'Runtime.exceptionThrown') {
         const d = msg.params.exceptionDetails;
@@ -2866,9 +2957,14 @@ async function main() {
       ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
        '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
       // ③ 生成测试产物：入口脚本打印一条失败并非 0 退出。
-      // 正文只用 ASCII——.cmd 是按本机代码页读的，中文会把 `^|` 的转义吃掉（引擎的提示词里也写了这条）
+      // 锚点（REM CASE / REM expect）必须和上面那份清单逐字对得上——引擎在跑之前会机器核对，
+      // 对不上的产物会被直接拒绝运行（链 28 验的就是那条路）。
+      // 正文只用 ASCII——.cmd 是按本机代码页读的，引擎落盘又把行尾统一成 LF，
+      // 正文里有中文时解码会错位，后面的行会被当成命令执行（引擎提示词里也写了这条）
       ['<<<<<<< SEARCH {{ENTRY}}', '=======',
        '@echo off',
+       'REM CASE 1',
+       'REM expect: a == 2',
        'echo FAIL ^| 1 ^| a == 2 ^| a == 1 ^| code is wrong',
        'exit /b 1',
        '>>>>>>> REPLACE', ''].join('\n'),
@@ -2952,6 +3048,10 @@ async function main() {
             && detail25.tests.failures[0].expected === 'a == 2'
             && detail25.tests.failures[0].actual === 'a == 1',
         '失败清单四要素都在：' + JSON.stringify(detail25.tests && detail25.tests.failures));
+    check(detail25.tests.links && detail25.tests.links.length === 1
+            && detail25.tests.links[0].file.endsWith('/run.cmd'),
+        '溯源连线也进了留档（翻记录时 chip 上写着「已连线」和文件:行）：'
+            + JSON.stringify(detail25.tests && detail25.tests.links));
 
     // 历史列表里那一行也要读得懂（这张表少一行就是红底 + 英文枚举名）
     await clickButton('historylink');
@@ -3007,8 +3107,17 @@ async function main() {
       ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
        '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
       // ③ 生成测试产物：一条过、一条不过，退出码 1。
-      // 正文只用 ASCII——.cmd 按本机代码页读，中文会把 `^|` 的转义吃掉（引擎提示词里也写了这条）
-      ['<<<<<<< SEARCH {{ENTRY}}', '=======',
+      // 锚点（CASE 编号 + expect: 清单里那句期望）写在**测试代码文件**里，入口脚本只用 ASCII——
+      // 这是协议要求的写法：引擎落盘时行尾统一是 LF，而 .cmd 是按本机代码页读的，
+      // 正文里一出现中文，后面几行的命令就会被解码错位吃掉（实测过）。
+      // 入口脚本正文只用 ASCII——同样是因为 .cmd 按本机代码页读（引擎提示词里也写了这条）
+      ['<<<<<<< SEARCH {{DIR}}/UnitTests.java', '=======',
+       '// CASE 1',
+       '// expect: a == 2',
+       '// CASE 2',
+       '// expect: 编译通过',
+       '>>>>>>> REPLACE', '',
+       '<<<<<<< SEARCH {{ENTRY}}', '=======',
        '@echo off',
        'echo PASS ^| 1',
        'echo FAIL ^| 2 ^| compiled ^| not compiled ^| the code is wrong',
@@ -3125,6 +3234,35 @@ async function main() {
     check(code26.includes('run.cmd') && code26.includes('FAIL'),
         '点开 chip 能看见测试代码与它的 tools/<时间戳>/… 路径：'
             + JSON.stringify(code26.slice(0, 120)));
+
+    // 溯源连线：chip 上要看得见「接上了哪一段代码、在第几行」
+    // （清单里那两条期望一条是 ASCII、一条是中文，两条都接上了才说明比对与语言无关）
+    const wired26 = await evaluate(`(() => {
+      const one = document.querySelector('#cases .case-item[data-case="1"]');
+      const two = document.querySelector('#cases .case-item[data-case="2"]');
+      const pick = (item, selector) => {
+        const found = item.querySelector(selector);
+        return found ? found.textContent : '';
+      };
+      return {
+        trace1: one.dataset.trace, trace2: two.dataset.trace,
+        where1: pick(one, '.wire .where'), where2: pick(two, '.wire .where'),
+        state1: pick(one, '.wire .state'), acc1: pick(one, '.wire .acc'),
+        rate: pick(document, '#cases .rate.trace'),
+        links: (state.tests.links || []).length,
+      };
+    })()`);
+    check(wired26.trace1 === 'wired' && wired26.trace2 === 'wired'
+            && wired26.state1.includes('已连线') && wired26.links === 2,
+        '两条用例都标着「已连线」（含中文期望那条）：' + JSON.stringify(wired26));
+    check(/UnitTests\.java:1$/.test(wired26.where1) && /UnitTests\.java:3$/.test(wired26.where2),
+        '并且写着测试代码落在哪一行（点得过去）：' + wired26.where1 + ' / ' + wired26.where2);
+    check(wired26.acc1 === '验收：没写',
+        'chip 上带着「对应哪条验收标准」，这条清单里写的是「无」就明说：'
+            + JSON.stringify(wired26.acc1));
+    check(wired26.rate.includes('溯源') && wired26.rate.includes('2/2')
+            && !wired26.rate.includes('未连线'),
+        '溯源那一枚是 2/2：' + JSON.stringify(wired26.rate));
 
     // 跑测试那一段：可预期的提示 + 那一段停不下来
     const running26 = await evaluate(`[...document.querySelectorAll('#log .line')]
@@ -3481,6 +3619,152 @@ async function main() {
     await waitForReload(`document.getElementById('projectname')
         .textContent.includes(${JSON.stringify(path.basename(PROJECT_ROOT))})`, '换回原项目');
 
+    // ---------- 链 28：溯源连线（代码里的锚点 ⇄ 冻结的那份用例清单） ----------
+    // 这一批新增的四条机器判据里，界面这一侧要看得见的是两件事：
+    //   ① 每个用例 chip 上写着「对应哪条验收标准 + 测试代码落在哪一行 + 连上了没有」；
+    //   ② 没连上的那几条**直接标红**，而且说清后果（这批测试会被拒绝运行）。
+    // 桩里生成的入口脚本**故意不写锚点**：这正是真模型实测里那种「清单和代码不是一份东西」
+    // 的样子，用它才能验到「拒绝运行」这条路——脚本真跑起来是 0 退出、一条都不失败，
+    // 所以结果里但凡出现失败，就只可能是引擎在跑之前拦下来的。
+    console.log('\n链 28　溯源连线：已连线/未连线、未连线标红、没接上就拒绝运行：');
+
+    traceProject = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-trace-'));
+    TEMP_PATHS.push(traceProject);
+    fs.mkdirSync(path.join(traceProject, '.specflow'), { recursive: true });
+    fs.mkdirSync(path.join(traceProject, 'src', 'main', 'java', 'com', 'demo'), { recursive: true });
+    fs.writeFileSync(path.join(traceProject, 'pom.xml'), '<project/>\n');
+    const fooPath28 = path.join(traceProject, 'src', 'main', 'java', 'com', 'demo', 'Foo.java');
+    fs.writeFileSync(fooPath28, 'class Foo {\n    int a = 1;\n}\n');
+    stubModel = await startScriptedModel([
+      // ① 检查：一条用例、一条验收标准（chip 上要显示它）
+      ['<<<<<<< SUMMARY', '给 Foo 加一个方法。', '>>>>>>> SUMMARY', '',
+       '<<<<<<< FLOW', 'flowchart TD', '    A[入口] --> B[出口]', '>>>>>>> FLOW', '',
+       '<<<<<<< CASES',
+       '1 | a 能变成 2 | 读 Foo.java 里的 a | 必须过 | a == 2 | R-1 加完之后 a 等于 2',
+       '>>>>>>> CASES', '',
+       '<<<<<<< STEPS',
+       '1 | 给 Foo 加一个方法 | src/main/java/com/demo/Foo.java | 能编译 | 自洽',
+       '>>>>>>> STEPS', ''].join('\n'),
+      // ② 开发那一轮：把 a 改成 2
+      ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
+       '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
+      // ③ 生成测试产物：**没有 CASE / expect 锚点**（真跑起来是满分，引擎必须拦住它）
+      ['<<<<<<< SEARCH {{ENTRY}}', '=======',
+       '@echo off',
+       'echo PASS ^| 1',
+       'exit /b 0',
+       '>>>>>>> REPLACE', ''].join('\n'),
+    ]);
+    fs.writeFileSync(path.join(traceProject, '.specflow', 'project.yaml'),
+        'llm:\n  base-url: http://127.0.0.1:' + stubModel.port + '\n  model: stub\n'
+        + '  api-key-env: SPECFLOW_TEST_KEY\n');
+    fs.writeFileSync(path.join(traceProject, '.specflow', 'local.env'), 'SPECFLOW_TEST_KEY=sk-test\n');
+
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: traceProject }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(traceProject))})`, '页面切到这一链的项目');
+
+    await setField('demand', '给 Foo 加一个方法，让 a 变成 2');
+    await evaluate(`(() => {
+      state.selected = new Set(['src/main/java/com/demo/Foo.java']);
+      updatePicked();
+      return 'ok';
+    })()`);
+    await clickButton('review');
+    await waitFor(`state.plan && state.plan.cases && state.plan.cases.length === 1`,
+        '用例清单回来了', 20000);
+
+    // ① 还没跑过：这一档不是「未连线」，是「还没有测试代码」——全标红就成了狼来了
+    const before28 = await evaluate(`(() => {
+      const item = document.querySelector('#cases .case-item[data-case="1"]');
+      return { trace: item.dataset.trace, text: item.querySelector('.wire .state').textContent };
+    })()`);
+    check(before28.trace === 'unknown' && before28.text.includes('还没生成测试代码'),
+        '还没跑过测试时说「还没生成测试代码」，不当成错误：' + JSON.stringify(before28));
+
+    await evaluate(`document.querySelector('#cases [data-act="confirm"]').click(); 'ok'`);
+    await waitFor(`document.getElementById('run').disabled === false`, '确认之后「运行」放开');
+    await clickButton('run');
+    await waitFor(`state.running === false && document.querySelector('#result .status') !== null`,
+        '这一次真运行跑到收场', 60000);
+
+    // ② 锚点没写 = 拒绝运行：脚本是 0 退出的「满分」，所以这里出现失败只可能是引擎拦下来的
+    check((await evaluate(`document.getElementById('result').textContent`)).includes('测试没全过'),
+        '结果那一行说的是「测试没全过」');
+    const fail28 = await evaluate(`document.querySelector('#result .fail')
+        ? document.querySelector('#result .fail').textContent : ''`);
+    check(fail28.includes('漏实现'),
+        '失败清单里点名是「漏实现」（四条判据里的哪一条）：' + JSON.stringify(fail28.slice(0, 80)));
+    check(fail28.includes('没有扫到 CASE 1'),
+        '并且说清缺的是哪一条用例的锚点：' + JSON.stringify(fail28));
+    check((await evaluate(`document.getElementById('result').textContent`)).includes('没有被执行'),
+        '整段结论说清这批测试压根没被运行过（不是跑了没过）');
+    check((await evaluate(`document.getElementById('result').textContent`)).includes('重新生成'),
+        '并且给出路：走「测试代码错了 → 重新生成」');
+
+    // ③ chip 上：未连线 + 标红
+    const chip28 = await evaluate(`(() => {
+      const item = document.querySelector('#cases .case-item[data-case="1"]');
+      const mark = item.querySelector('.wire .state');
+      // 用探针把 token 解析成真实的颜色：写死一个十六进制就不是在验「它用的是错误色」了
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--error-text)';
+      document.body.appendChild(probe);
+      const red = getComputedStyle(probe).color;
+      probe.remove();
+      return {
+        trace: item.dataset.trace,
+        text: mark.textContent,
+        color: getComputedStyle(mark).color,
+        red,
+        acc: item.querySelector('.wire .acc').textContent,
+        rate: document.querySelector('#cases .rate.trace').textContent,
+      };
+    })()`);
+    check(chip28.trace === 'unwired' && chip28.text.includes('未连线'),
+        '这条 chip 上是「未连线」：' + JSON.stringify(chip28.text));
+    check(chip28.color === chip28.red,
+        '未连线的那一行<b>真的按错误色画</b>（错误色 token 与它算出来的颜色一致）：'
+            + JSON.stringify(chip28.color) + ' vs ' + JSON.stringify(chip28.red));
+    check(chip28.acc.includes('R-1'),
+        'chip 上带着对应哪条验收标准：' + JSON.stringify(chip28.acc));
+    check(chip28.rate.includes('溯源') && chip28.rate.includes('0/1') && chip28.rate.includes('未连线'),
+        '溯源那一枚写着「几条接上了」：' + JSON.stringify(chip28.rate));
+
+    // ④ 产物留在磁盘上：人要看着差异才知道该怎么重新生成
+    const dirs28 = fs.readdirSync(path.join(traceProject, 'tools'));
+    check(dirs28.length === 1
+            && fs.existsSync(path.join(traceProject, 'tools', dirs28[0], 'run.cmd')),
+        '产物留着（引擎没删它）：人要看的就是「它写成什么样」');
+    const runs28 = await (await fetch(BASE + 'api/runs')).json();
+    const detail28 = await (await fetch(BASE + 'api/run-detail?id='
+        + encodeURIComponent(runs28.runs[0].id))).json();
+    check(detail28.tests && detail28.tests.failures.length === 1
+            && detail28.tests.failures[0].kind === 'TEST_CODE'
+            && detail28.tests.failures[0].actual.includes('漏实现'),
+        '留档里也记着这一条（事后翻记录的人查得到）：'
+            + JSON.stringify(detail28.tests && detail28.tests.failures));
+    check(detail28.tests && (detail28.tests.links || []).length === 0,
+        '留档里没有连线（这一条确实没接上）：'
+            + JSON.stringify(detail28.tests && detail28.tests.links));
+
+    // 换回原项目：这一链改的是服务的「当前项目」
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: PROJECT_ROOT }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(PROJECT_ROOT))})`, '换回原项目');
+    stubModel.close();
+    stubModel = null;
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,
@@ -3542,6 +3826,12 @@ async function main() {
       // 这里删的是「最近打开」里那条
       try {
         await fetch(BASE + 'api/recent?path=' + encodeURIComponent(envProject), { method: 'DELETE' });
+      } catch (e) { /* 清理尽力而为 */ }
+    }
+    if (traceProject) {
+      // 链 28 的临时项目：目录跟着 TEMP_PATHS，这里删「最近打开」里那条
+      try {
+        await fetch(BASE + 'api/recent?path=' + encodeURIComponent(traceProject), { method: 'DELETE' });
       } catch (e) { /* 清理尽力而为 */ }
     }
     try { ws && ws.close(); } catch (e) { /* ignore */ }

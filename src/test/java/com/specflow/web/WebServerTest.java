@@ -1144,7 +1144,7 @@ class WebServerTest {
                 new com.specflow.tests.TestOutcome(directory, List.of(directory + "/run.cmd"), 1, 1,
                         com.specflow.verify.VerificationResult.failed("测试脚本", "run", "一条没过"),
                         List.of(),
-                        List.of(new com.specflow.tests.TestOutcome.CaseResult(1, false))),
+                        List.of(new com.specflow.tests.TestOutcome.CaseResult(1, false)), List.of()),
                 null, null, null, null, List.of());
     }
 

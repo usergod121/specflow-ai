@@ -31,6 +31,10 @@ import java.util.List;
  * @param cases        每条用例这次是什么下场，见 {@link CaseResult}。它有分母的作用：
  *                     只看 {@code failures} 的话，「声明 3 条、脚本一条都没跑、退出码 0」
  *                     会显示成一次满分
+ * @param links        溯源连线：每条用例的测试代码落在哪个文件的第几行
+ *                     （见 {@link CaseTraceCheck}）。界面上每个用例 chip 那一行
+ *                     「✅ 已连线 + 文件:行」就是它；清单上有、这里没有的那几条，
+ *                     就是界面要标红的「未连线」。老记录里没有这一项，读出来是 {@code null}
  */
 public record TestOutcome(
         String directory,
@@ -39,7 +43,8 @@ public record TestOutcome(
         int exit,
         VerificationResult verification,
         List<Failure> failures,
-        List<CaseResult> cases
+        List<CaseResult> cases,
+        List<CaseTraceCheck.Link> links
 ) {
 
     /**
@@ -139,6 +144,7 @@ public record TestOutcome(
         files = files == null ? List.of() : List.copyOf(files);
         failures = failures == null ? List.of() : List.copyOf(failures);
         cases = cases == null ? List.of() : List.copyOf(cases);
+        links = links == null ? List.of() : List.copyOf(links);
     }
 
     /** 脚本的原始输出（失败时是掐过头的，完整的那份在 {@code .specflow/logs/} 里）。 */
@@ -215,7 +221,8 @@ public record TestOutcome(
             // 事后翻留档的人要一眼看出「那次根本没跑完」，而不是以为断言失败了
             out.append("测试超时：脚本没在时限内结束，已经被强制终止（整棵进程树一起收掉了）。");
         } else if (exit < 0) {
-            out.append("测试阶段没能跑起来。");
+            // 脚本压根没被执行：生成阶段就被拒了，或者溯源核对没过（都是「没跑」，不是「跑了没过」）
+            out.append("这一次测试脚本没有被执行。");
         } else {
             out.append("测试脚本退出码 ").append(exit).append("。");
             if (!directory.isEmpty()) {
@@ -244,8 +251,9 @@ public record TestOutcome(
                     .append("磁盘上的改动我们没回滚——先看看它卡在哪儿，再决定重跑还是改测试。");
         } else if (worst == Failure.Kind.TEST_CODE) {
             out.append(System.lineSeparator())
-                    .append("坏的是测试代码本身（编译不过、引用了不存在的 API、没跑出结论），")
-                    .append("不是产品代码——两者要分开看。");
+                    .append("坏的是测试代码本身（编译不过、引用了不存在的 API、没跑出结论，")
+                    .append("或者溯源核对没过——它和用例清单没接上线），不是产品代码——两者要分开看。")
+                    .append("修它走「测试代码错了 → 重新生成」，别去改产品代码。");
         } else {
             out.append(System.lineSeparator())
                     .append("这几条是断言没过：可能是产品代码错了，也可能是用例写错了，")

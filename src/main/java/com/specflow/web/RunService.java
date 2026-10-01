@@ -578,6 +578,9 @@ public final class RunService implements AgentListener {
         payload.put("files", generated.files());
         // 正文一并回去：界面要把它摊开给人 review——这就是这条路存在的全部意义
         payload.put("sources", generated.sources());
+        // 这批新代码接上线了没有（四条判据的结果）：没接上就先别点「放行」，
+        // 因为拿去跑也是被拒绝运行——等再跑一次才发现，就白花一轮
+        payload.put("trace", generated.trace());
         return payload;
     }
 
@@ -601,6 +604,9 @@ public final class RunService implements AgentListener {
         payload.put("cases", outcome.cases());
         payload.put("failures", outcome.failures());
         payload.put("output", outcome.output());
+        // 溯源连线（哪条用例的测试代码在哪个文件第几行）：界面上每个 chip 那一行
+        // 「✅ 已连线 / ❌ 未连线」靠它，缺的几条就是未连线——那是要标红的东西
+        payload.put("links", outcome.links());
         // 测试代码正文：界面上「这条用例由哪段代码验」靠它，路径只是一个索引
         payload.put("sources", TestAgent.sources(projectRoot, outcome.directory(), outcome.files()));
         return payload;

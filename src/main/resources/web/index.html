@@ -937,10 +937,32 @@
   .case-chip:hover:not(:disabled) { background: var(--hover); filter: none; }
   .case-chip:active:not(:disabled) { transform: none; }
   .case-chip .num { flex: none; color: var(--muted); font-size: 12px; }
-  .case-chip .say { flex: 1; min-width: 0; }
+  /* chip 上分两行：第一行是「要测什么 + 怎么测」，第二行是溯源。
+     分层是为了让人一眼分得清两件事——这条用例验什么，和它到底接没接上线 */
+  .case-chip .say { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .case-chip .say-main { min-width: 0; }
+  .case-chip .wire {
+    display: flex; align-items: baseline; gap: 8px; font-size: 11px; color: var(--muted-weak);
+  }
+  /* 验收标准与测试代码路径都可能很长：一律省略号，全文放在 title 里，别把 chip 撑破 */
+  .case-chip .wire .acc, .case-chip .wire .where {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .case-chip .wire .acc { flex: 0 1 auto; max-width: 45%; }
+  .case-chip .wire .where { flex: 1 1 auto; }
+  .case-chip .wire .state { flex: none; }
   .case-chip .mark { flex: none; font-size: 12px; color: var(--muted); }
   .case-item[data-state=passed] .case-chip .mark { color: var(--ok-text); }
   .case-item[data-state=failed] .case-chip .mark { color: var(--error-text); }
+  .case-item[data-trace=wired] .case-chip .wire .state { color: var(--ok-text); }
+  /* 未连线要红：引擎碰到它会拒绝运行整批测试，它不是一条「待办」，是一个拦路的错 */
+  .case-item[data-trace=unwired] { border-color: var(--error-line); }
+  .case-item[data-trace=unwired] .case-chip .wire .state {
+    color: var(--error-text); font-weight: 600;
+  }
+  .rate.trace { border-style: dashed; }
+  .rate.trace.bad { background: var(--error); border-color: var(--error-line); color: var(--error-text); }
+  .rate.trace.bad b { color: var(--error-text); }
 
   .case-detail { padding: 2px 10px 10px; }
   /* 细节里每一行都是「标签 + 内容」：标签定宽，几行才对得齐 */
@@ -954,6 +976,8 @@
   .cases-foot { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .cases-foot .state { font-size: 12px; color: var(--muted); }
   .cases-foot .state.frozen { color: var(--accent); }
+  /* 未连线那一句话用错误色 —— 它是拦路的错，不是一条提示 */
+  .wire-bad-note { color: var(--error-text); }
 
   /* ---------- 失败清单（结果面板里的那一块） ---------- */
   /* 它复用的是 .pending 那套外框（面板、收起按钮、动作行），差别只在内容：
@@ -1589,11 +1613,34 @@ const state = {
 const $ = id => document.getElementById(id);
 
 // ---------- 启动 ----------
+/**
+ * 问一次「现在什么状态」，抖了就重来。
+ *
+ * <p>为什么启动这一问要重试：整页刷新之后界面只有这一次机会——它失败，
+ * 页面就停在「加载失败」上不动了（欢迎页不会出现、工作区也不会出现），
+ * 而用户刚点的是「切换项目」，他要的结果就在这一问后面。
+ * 本机服务抖一下（连接被掐、响应读了一半）不该让整个刷新白跑一趟。
+ */
+async function readSession(attempts = 3) {
+  let last;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await getJson('/api/state');
+    } catch (e) {
+      last = e;
+      if (attempt < attempts) {
+        await sleep(150 * attempt);
+      }
+    }
+  }
+  throw last;
+}
+
 async function boot() {
   try {
     // 先问一句现在什么状态：没打开项目就进欢迎页，打开了才去拉项目里的东西。
     // 这两条路差别很大，早期分岔比后面到处判断「有没有项目」干净得多。
-    const session = await getJson('/api/state');
+    const session = await readSession();
     renderHeader(session);
     if (!session.open) {
       renderWelcome(session.recent || []);
@@ -1698,7 +1745,8 @@ async function forgetRecent(path) {
  * 刷新一次几百毫秒，换的是「状态一定干净」。
  */
 async function openProject(path) {
-  const result = await sendJson('POST', '/api/open', JSON.stringify({ path }));
+  // 走重试版：这一步失败就等于「点了没反应」——页面既不换、也不说为什么
+  const result = await sendJsonRetry('POST', '/api/open', JSON.stringify({ path }));
   if (!result.ok) {
     return false;
   }
@@ -1793,8 +1841,16 @@ function restoreOpenButton() {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * 关掉当前项目，回到欢迎页。
+ *
+ * <p>失败时**不能什么都不做**：这一条后面跟着整页刷新，一次请求抖掉、页面就会
+ * 停在原来那个项目上，用户看到的是「点了切换项目没反应」。所以走重试版
+ * （见 {@link sendJsonRetry}），而且服务端明确拒绝（比如有任务正在运行）时
+ * 提示栏里一定有一句话。
+ */
 async function closeProject() {
-  const result = await sendJson('POST', '/api/close', '');
+  const result = await sendJsonRetry('POST', '/api/close', '');
   if (!result.ok) {
     return;
   }
@@ -4313,8 +4369,16 @@ async function afterTemplateChange(select) {
   fillTemplatePicker(select || (state.templates[0] && state.templates[0].name));
 }
 
-/** 统一的写接口收口：失败时把后端的说明摆出来，不吞掉。 */
-async function sendJson(method, path, body) {
+/**
+ * 发一次写请求，并且**保证不往外抛**。
+ *
+ * <p>为什么要把「响应读不出来」也收在这里：`response.text()` 和 `JSON.parse` 原来
+ * 是裸着写的，它们一抛，调用方那一句 `await sendJson(...)` 就变成一个未处理的 rejection——
+ * 页面不刷新、不留提示、什么都不做。关项目那条路正是这样：点了「切换项目」，
+ * 界面停在原地，用户眼里只有「点了没反应」，而服务端那边一切正常
+ * （实测过：手工点、手工调接口都是 200）。现在它变成一句明确的失败 + 可重试。
+ */
+async function requestJson(method, path, body) {
   // 没有请求体时就不要带 body：fetch 对 GET 只要求「不能有 body」，
   // 而空字符串也算 body——带上它就抛异常，调用方会误以为这次请求失败了。
   // 实测过：轮询 /api/pick-folder 的 GET 因为这一条整个失败，
@@ -4328,17 +4392,63 @@ async function sendJson(method, path, body) {
       body: hasBody ? body : undefined,
     });
   } catch (e) {
-    notice('error', '请求失败：' + e.message);
-    return { ok: false };
+    // 连响应都没拿到（连接被掐、服务刚好在收尾）：算「抖了一下」
+    return { ok: false, transport: e.message };
   }
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  let payload;
+  try {
+    const text = await response.text();
+    payload = text ? JSON.parse(text) : {};
+  } catch (e) {
+    // 读了一半断掉、或者回来的不是 JSON：同样算「抖了一下」。
+    // 这一条以前是抛出去的，也就是上面说的那种「一声不响」。
+    return { ok: false, transport: '响应读不出来：' + e.message };
+  }
   if (!response.ok) {
     notice(response.status === 409 ? 'warn' : 'error',
         (payload.problems || [payload.error || ('HTTP ' + response.status)]).join('\n'));
     return { ok: false, payload };
   }
   return { ok: true, payload };
+}
+
+/** 统一的写接口收口：失败时把后端的说明摆出来，不吞掉。 */
+async function sendJson(method, path, body) {
+  const result = await requestJson(method, path, body);
+  if (!result.ok && result.transport) {
+    notice('error', '请求失败：' + result.transport);
+  }
+  return result;
+}
+
+/**
+ * 同上，但「抖了一下」会重试几次。
+ *
+ * <p>为什么这几条路要重试：它们后面紧跟整页刷新，一次失败在用户眼里就是「点了没反应」——
+ * 页面停在原地，而他要的是「换项目」这件事本身。挑目录那条路早就是这么做的
+ * （见 {@link followPicking}：网络抖一下不该把这次挑目录整个丢掉），这几条漏了。
+ *
+ * <p>只重试「没拿到响应 / 响应读不出来」，不重试 4xx/5xx：那是服务端明确表了态
+ * （比如「有任务正在运行」），重试只会把同一件事再问一遍、把同一句提示刷两遍。
+ *
+ * <p>重试是安全的：这几个接口都幂等——关一个已经关掉的项目、打开一个已经打开的项目，
+ * 第二次的结果和第一次一样（服务端那边这两个动作都以「已经是目标状态」收尾）。
+ */
+async function sendJsonRetry(method, path, body, attempts = 3) {
+  let result;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    result = await requestJson(method, path, body);
+    if (result.ok || !result.transport) {
+      break;
+    }
+    if (attempt < attempts) {
+      await sleep(150 * attempt);
+    }
+  }
+  if (!result.ok && result.transport) {
+    notice('error', '请求失败：' + result.transport);
+  }
+  return result;
 }
 
 // ---------- 任务草稿 ----------
@@ -5619,6 +5729,9 @@ function testsReport(raw) {
     passed: typeof raw.passed === 'boolean' ? raw.passed : raw.exit === 0 && !failures.length,
     cases: raw.cases || [],
     failures,
+    // 溯源连线：哪条用例的测试代码落在哪个文件第几行（引擎那一侧核出来的）。
+    // 缺的几条就是未连线——界面上要标红的正是它们
+    links: raw.links || [],
     output: raw.output !== undefined ? raw.output : (verification.output || ''),
   };
 }
@@ -5813,6 +5926,7 @@ function caseCodeHtml(report, directory) {
 function caseDetailHtml(one, report) {
   const outcome = caseOutcome(report, one.index);
   const failure = failureOf(report, one.index);
+  const trace = caseTrace(report, one.index);
   const line = (k, v) => '<div class="case-line"><span class="k">' + k + '</span>'
       + '<span class="v">' + escapeHtml(v) + '</span></div>';
   let html = '<div class="case-detail" data-detail="' + Number(one.index) + '">'
@@ -5820,6 +5934,7 @@ function caseDetailHtml(one, report) {
       + line('怎么测', one.how || '（这条没写怎么测）')
       + line('期望', one.expected || '（这条没写期望值）')
       + line('对应验收', one.acceptance || '（没写）')
+      + line('连线', trace.state === 'wired' ? '✅ 已连线：' + trace.where : trace.text)
       + line('上一次', CASE_OUTCOME_TEXT[outcome] || '');
   if (failure) {
     html += line('失败原因', failureKind(failure.kind)[1]);
@@ -5828,16 +5943,70 @@ function caseDetailHtml(one, report) {
   return html + '</div>';
 }
 
-/** 一条用例：一个 chip + （点开时）它的细节。 */
+/**
+ * 一条用例的<b>溯源连线</b>：它接上了哪一段测试代码。
+ *
+ * <p>三档分开说，因为它们的下一步完全不同：{@code wired} 接上了（文件:行点得过去）；
+ * {@code unwired} 有测试代码但这一条没接上——<b>这一档要标红</b>，因为引擎碰到它会
+ * 直接拒绝运行整批测试；{@code unknown} 是还没跑过、还没有测试代码，那时它不是错，
+ * 只是「还没有」（全标红会让人以为用例写坏了）。
+ *
+ * <p>为什么不在这里自己扫代码找锚点：锚点只有引擎那一处解释权
+ * （<code>CaseTraceCheck</code>）。两边各扫一遍，迟早出现「界面说连上了、引擎说没连上」——
+ * 而那是这套核对最不该有的分歧（用户看到绿的就以为能跑）。
+ */
+function caseTrace(report, index) {
+  const links = (report && report.links) || [];
+  const found = links.find(item => Number(item.index) === Number(index));
+  if (found) {
+    return { state: 'wired', where: found.file + ':' + found.line, text: '✅ 已连线' };
+  }
+  if (!report) {
+    return { state: 'unknown', where: '', text: '还没生成测试代码' };
+  }
+  return { state: 'unwired', where: '', text: '❌ 未连线' };
+}
+
+/** 溯源那一行左边那栏：对应哪条验收标准。没写就明说，不留空白让人以为漏显示了。 */
+function caseAcceptance(one) {
+  const text = String((one && one.acceptance) || '').trim();
+  return !text || text === '无' ? '验收：没写' : '验收：' + text;
+}
+
+/** 未连线那一档的解释：它为什么是红的（点开之前就得看得见）。 */
+const UNWIRED_HINT = '这条用例没接上测试代码：引擎会拒绝运行整批测试，'
+    + '走「测试代码错了 → 重新生成」把锚点补上';
+
+/**
+ * 一条用例：一个 chip + （点开时）它的细节。
+ *
+ * <p>chip 上是三件事：口语化的「要测什么 + 怎么测」（第一行）、对应哪条验收标准与
+ * 测试代码落在哪一行、以及连上了没有（第二行），加右边那个这次跑出来的记号。
+ */
 function caseItemHtml(one, report, detailAt) {
   const index = Number(one.index);
   const outcome = caseOutcome(report, index);
+  const trace = caseTrace(report, index);
+  const acceptance = caseAcceptance(one);
   const expanded = detailAt !== null && detailAt !== undefined && Number(detailAt) === index;
-  return '<div class="case-item" data-case="' + index + '" data-state="' + outcome + '">'
+  return '<div class="case-item" data-case="' + index + '" data-state="' + outcome
+      + '" data-trace="' + trace.state + '">'
       + '<button type="button" class="case-chip" data-case="' + index + '"'
       + ' aria-expanded="' + (expanded ? 'true' : 'false') + '">'
       + '<span class="num">' + index + '</span>'
-      + '<span class="say">' + escapeHtml(caseChipText(one)) + '</span>'
+      + '<span class="say">'
+      + '<span class="say-main">' + escapeHtml(caseChipText(one)) + '</span>'
+      + '<span class="wire">'
+      + '<span class="acc" title="' + escapeHtml(acceptance) + '">'
+      + escapeHtml(acceptance) + '</span>'
+      + (trace.where
+          ? '<span class="where" title="' + escapeHtml('测试代码：' + trace.where) + '">'
+              + escapeHtml(trace.where) + '</span>'
+          : '')
+      + '<span class="state" title="'
+      + escapeHtml(trace.state === 'unwired' ? UNWIRED_HINT : trace.text) + '">'
+      + escapeHtml(trace.text) + '</span>'
+      + '</span></span>'
       + '<span class="mark">' + escapeHtml(CASE_OUTCOME_MARKS[outcome]) + '</span>'
       + '</button>'
       + (expanded ? caseDetailHtml(one, report) : '')
@@ -5862,12 +6031,13 @@ function casesPanelHtml(cases, report, opts = {}) {
   }
   const detailAt = opts.detail === undefined ? null : opts.detail;
   const tiers = caseTiers(list);
+  const unwired = list.filter(one => caseTrace(report, one.index).state === 'unwired').length;
 
   const rates = tiers.map(tier => {
     const rate = tierRate(tier, report);
     return '<span class="rate ' + tier.cls + (tier.items.length ? '' : ' empty') + '">'
         + escapeHtml(tier.label) + ' <b>' + rate.passed + '/' + rate.total + '</b></span>';
-  }).join('');
+  }).join('') + traceRateHtml(list, report);
 
   let body = '';
   for (const tier of tiers) {
@@ -5891,9 +6061,32 @@ function casesPanelHtml(cases, report, opts = {}) {
       + '<span class="hint">分级只影响标色与先后，不拦人：哪一档没过都只是给你看的</span></div>'
       + '<div class="rate-row">' + rates + '</div>'
       + '<div class="hint">' + escapeHtml(status) + '</div>'
+      + (unwired ? '<div class="hint wire-bad-note">有 ' + unwired
+          + ' 条用例没接上测试代码：这批测试会被引擎拒绝运行，'
+          + '点「测试代码错了」重新生成，把锚点补上。</div>' : '')
       + body
       + casesFootHtml(list, opts)
       + '</div>';
+}
+
+/**
+ * 溯源那一枚：几条用例真的接上了测试代码。
+ *
+ * <p>它是这一批新增的那条判据在界面上的落点——「验了几条」和「几条真的接到了代码上」
+ * 是两个不同的问题，只给通过率的话，一批一条都没接上的测试看起来也是满分。
+ */
+function traceRateHtml(cases, report) {
+  if (!report) {
+    return '';
+  }
+  const wired = cases.filter(one => caseTrace(report, one.index).state === 'wired').length;
+  const unwired = cases.length - wired;
+  return '<span class="rate trace' + (unwired ? ' bad' : '') + '" title="'
+      + escapeHtml(unwired
+          ? '未连线的用例意味着这批测试不会被运行：引擎在跑之前会核对锚点'
+          : '每条用例的测试代码都带上了 CASE 编号与 expect，核对通过')
+      + '">溯源 <b>' + wired + '/' + cases.length + '</b>'
+      + (unwired ? '（' + unwired + ' 条未连线）' : '') + '</span>';
 }
 
 /**
@@ -6040,6 +6233,19 @@ function confirmCases() {
 
 // ---------- 失败清单那一块（跑完之后） ----------
 
+/**
+ * 溯源核对的四条判据名。
+ *
+ * <p>名字和引擎的 {@code CaseTraceCheck.Kind} 一一对应——界面只负责把它翻成中文，
+ * 「算不算通过」全在引擎那一侧判（两边各判一套，迟早出现「界面说连上了、引擎说没连上」）。
+ */
+const TRACE_KINDS = {
+  MISSING: '漏实现',
+  EXTRA: '清单外乱写',
+  DUPLICATE: '重复实现',
+  CHANGED: '偷偷改期望',
+};
+
 /** 重新生成出来、等着放行的那批测试代码。 */
 function regenBlockHtml(regen) {
   if (!regen) {
@@ -6057,6 +6263,7 @@ function regenBlockHtml(regen) {
       + '<span class="regen-path">' + escapeHtml(regen.directory || '') + '/</span></div>'
       + '<div class="tests-note">它只被生成、没有被执行：在你点「放行」之前不会自动重跑，'
       + '产品代码也一个字节都没动。</div>'
+      + regenTraceHtml(regen.trace)
       + body
       + '<div class="regen-actions">'
       + (regen.released
@@ -6064,6 +6271,31 @@ function regenBlockHtml(regen) {
           : '<button type="button" data-act="release">放行这批测试代码</button>'
               + '<span class="hint">放行之后才能点「下一轮」把失败回喂给开发。</span>')
       + '</div></div>';
+}
+
+/**
+ * 重新生成的那批代码<b>接上线了没有</b>。
+ *
+ * <p>为什么这块里要说它：实测过「重新生成一轮只修掉一个症状」。而人看过之后点「放行」、
+ * 再点「下一轮」才真的跑——要是这批还没接上线，那一轮跑到测试阶段会被引擎直接拒绝，
+ * 白烧一次开发调用。差异在这里先摆出来，人就不用等到那时候才发现。
+ */
+function regenTraceHtml(trace) {
+  if (!trace) {
+    return '';
+  }
+  const findings = trace.findings || [];
+  if (!findings.length) {
+    return '<div class="tests-note">溯源核对通过：' + ((trace.links || []).length)
+        + ' 条用例都接上了这批代码。</div>';
+  }
+  return '<div class="tests-note wire-bad-note">溯源核对没通过（' + findings.length
+      + ' 处）：这批代码拿去跑会被引擎拒绝执行——先把下面这几处对上线，再点「放行」。</div>'
+      + findings.map(finding => '<div class="case-line"><span class="k">'
+          + escapeHtml(TRACE_KINDS[finding.kind] || finding.kind) + '</span>'
+          + '<span class="v">用例 ' + Number(finding.index) + '：' + escapeHtml(finding.detail)
+          + (finding.where ? '（' + escapeHtml(finding.where) + '）' : '') + '</span></div>')
+          .join('');
 }
 
 /**
@@ -6342,6 +6574,8 @@ async function regenerateTests() {
       directory: data.directory || '',
       files: data.files || [],
       sources: data.sources || {},
+      // 这批新代码接上线了没有：没接上就在这一块里标出来（拿去跑会被拒绝执行）
+      trace: data.trace || null,
       released: false,
     };
     state.actionBusy = '';

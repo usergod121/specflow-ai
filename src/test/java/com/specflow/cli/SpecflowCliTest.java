@@ -289,7 +289,7 @@ class SpecflowCliTest {
         recorder.testsFinished(new TestOutcome(root.relativize(artifacts).toString().replace('\\', '/'),
                 List.of(), 1, 1, VerificationResult.failed("测试脚本", "run", "一条没过"),
                 List.of(), List.of(new TestOutcome.CaseResult(1, true),
-                        new TestOutcome.CaseResult(2, false))));
+                        new TestOutcome.CaseResult(2, false)), List.of()));
         recorder.finished(AgentResult.testsFailed(1, List.of(), List.of(), "一条没过"));
     }
 

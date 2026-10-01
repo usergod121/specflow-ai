@@ -245,7 +245,7 @@ class TestReportTest {
     @Test
     @DisplayName("声明 3 条、脚本只报 1 条：不算通过，没跑的两条也进账")
     void coverageCountsTheCasesThatNeverRan() {
-        TestOutcome outcome = TestReport.coverage(conclude(0, "all passed\n"), declared(3));
+        TestOutcome outcome = TestReport.coverage(conclude(0, "all passed\n"), declared(3), List.of());
 
         assertThat(outcome.passed()).isFalse();
         assertThat(outcome.cases()).extracting(TestOutcome.CaseResult::index)
@@ -264,7 +264,7 @@ class TestReportTest {
     @DisplayName("脚本逐条报了结论：声明数与实跑数对上就是通过，逐条下场也留着")
     void coverageKeepsPerCaseOutcome() {
         TestOutcome outcome = TestReport.coverage(
-                conclude(0, "PASS | 1\nPASS | 2\nPASS | 3\n"), declared(3));
+                conclude(0, "PASS | 1\nPASS | 2\nPASS | 3\n"), declared(3), List.of());
 
         assertThat(outcome.passed()).isTrue();
         assertThat(outcome.cases()).hasSize(3)
@@ -275,7 +275,7 @@ class TestReportTest {
     @DisplayName("报了一半：过了的算过，没报的算没过，账要分开记")
     void coverageMarksOnlyWhatTheScriptReported() {
         TestOutcome outcome = TestReport.coverage(
-                conclude(1, "PASS | 1\nFAIL | 2 | 期望 | 实际 | 代码错了\n"), declared(3));
+                conclude(1, "PASS | 1\nFAIL | 2 | 期望 | 实际 | 代码错了\n"), declared(3), List.of());
 
         assertThat(outcome.cases()).extracting(TestOutcome.CaseResult::passed)
                 .containsExactly(true, false, false);
@@ -286,11 +286,73 @@ class TestReportTest {
     @DisplayName("同一条既报 PASS 又报 FAIL：按没过算（宁可让人来看一眼）")
     void coverageDoesNotLetAPassLineHideAFailure() {
         TestOutcome outcome = TestReport.coverage(
-                conclude(0, "PASS | 1\nFAIL | 1 | 期望 | 实际 | 代码错了\n"), declared(1));
+                conclude(0, "PASS | 1\nFAIL | 1 | 期望 | 实际 | 代码错了\n"), declared(1), List.of());
 
         assertThat(outcome.passed()).isFalse();
         assertThat(outcome.cases()).singleElement()
                 .satisfies(caseResult -> assertThat(caseResult.passed()).isFalse());
+    }
+
+    /**
+     * 脚本报出来的编号必须在清单里。
+     *
+     * <p>旧实现把它<b>静默丢掉</b>了：真模型实测那次，集成脚本自己加了用例 9、10 并全部通过，
+     * 而清单只有 1~8——界面上、留档里一个字都没有。丢掉等于让脚本自己给自己加用例、
+     * 自己给自己算通过率，所以现在把它单独报成一条「清单外用例」：
+     * 它既不算通过也不算没过，只是「清单对不上」这个事实。
+     */
+    @Test
+    @DisplayName("脚本报了清单外的编号：单独报一条，不许静默丢")
+    void coverageReportsCasesOutsideTheList() {
+        TestOutcome outcome = TestReport.coverage(
+                conclude(0, "PASS | 1\nPASS | 9\n"), declared(1), List.of());
+
+        assertThat(outcome.passed()).as("清单对不上就不算通过（人要先看一眼）").isFalse();
+        assertThat(outcome.cases()).as("清单外的编号不进通过率的分母")
+                .extracting(TestOutcome.CaseResult::index).containsExactly(1);
+        assertThat(outcome.failures()).anySatisfy(failure -> {
+            assertThat(failure.kind()).isEqualTo(TestOutcome.Failure.Kind.TEST_CODE);
+            assertThat(failure.testCase()).isEqualTo("9");
+            assertThat(failure.actual()).contains("不在用例清单里");
+        });
+    }
+
+    /** 清单外的编号同样不许把「没报的那几条」挤掉：两件事一起说。 */
+    @Test
+    @DisplayName("清单外用例与没报的用例同时出现：两条都报")
+    void coverageKeepsBothOutsideAndMissing() {
+        TestOutcome outcome = TestReport.coverage(
+                conclude(0, "PASS | 9\n"), declared(2), List.of());
+
+        assertThat(outcome.cases()).extracting(TestOutcome.CaseResult::passed)
+                .containsExactly(false, false);
+        assertThat(outcome.failures()).hasSize(2);
+        assertThat(outcome.detail()).contains("不在用例清单里").contains("没验不等于验过了");
+    }
+
+    /**
+     * 溯源差异最多列 20 条（模型写歪时一次可能报几十条），但<b>不许静默截断</b>：
+     * 剩下的有几条必须说出来——「没列出来」和「不存在」是两件事。
+     */
+    @Test
+    @DisplayName("溯源差异超过上限：只列前 20 条，剩下多少条明说")
+    void traceRefusedCapsTheRowsButSaysHowManyAreLeft() {
+        List<CaseTraceCheck.Finding> many = new java.util.ArrayList<>();
+        for (int index = 1; index <= 25; index++) {
+            many.add(new CaseTraceCheck.Finding(CaseTraceCheck.Kind.MISSING, index, "",
+                    "测试代码里没有扫到 CASE " + index + " 这一段"));
+        }
+        TestOutcome outcome = TestReport.traceRefused(1, "tools/20260930-120000",
+                List.of("tools/20260930-120000/run.cmd"), declared(25),
+                new CaseTraceCheck.Report(List.of(), many));
+
+        assertThat(outcome.failures()).hasSize(21);
+        assertThat(outcome.failures().get(20).actual())
+                .contains("还有 5 处差异没有列出来").contains("一共 25 处");
+        assertThat(outcome.cases()).hasSize(25)
+                .allSatisfy(caseResult -> assertThat(caseResult.passed()).isFalse());
+        assertThat(outcome.verification().skipped()).as("脚本没跑：不许记成通过或失败").isTrue();
+        assertThat(outcome.directory()).as("产物留着给人看差异，收场时才删").isEqualTo("tools/20260930-120000");
     }
 
     @Test
@@ -303,7 +365,7 @@ class TestReportTest {
         assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.TEST_CODE);
         assertThat(outcome.directory()).as("产物已经清掉了，别再指向一个不存在的地方").isEmpty();
         assertThat(outcome.verification().skipped()).as("脚本没跑，不能记成通过或失败").isTrue();
-        assertThat(outcome.detail()).contains("没能跑起来");
+        assertThat(outcome.detail()).contains("没有被执行");
     }
 
     @Test

@@ -297,7 +297,7 @@ class TeardownTest {
                 List.of(), List.of(new TestOutcome.CaseResult(1, true),
                         new TestOutcome.CaseResult(2, false),
                         // 压根没跑到的那一条：它也算法「没过的」——没验不能算过
-                        new TestOutcome.CaseResult(3, false))));
+                        new TestOutcome.CaseResult(3, false)), List.of()));
         recorder.finished(AgentResult.testsFailed(1, List.of(), List.of(), "两条没过"));
     }
 
