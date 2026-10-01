@@ -26,6 +26,17 @@ public final class EntryScripts {
         return WINDOWS ? "run.cmd" : "run.sh";
     }
 
+    /**
+     * 集成入口脚本的文件名（十五.4 的 {@code run-it}）——和引擎按平台取的那一个一致。
+     *
+     * <p>假模型也得知道它：勾了集成测试时，协议里写的是「这一次要两个入口脚本」，
+     * 而它写出来的名字必须和引擎要找的那个一致，否则整批产物会因为「没有集成入口」
+     * 被拒——那是测试自己的错，不是被测代码的。
+     */
+    public static String integrationName() {
+        return WINDOWS ? "run-it.cmd" : "run-it.sh";
+    }
+
     /** 每行都是一个 {@code echo}，最后按给定退出码退出。 */
     public static String body(int exit, String... outputs) {
         String newline = WINDOWS ? "\r\n" : "\n";

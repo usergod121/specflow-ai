@@ -28,6 +28,9 @@ import java.util.Map;
  *
  * @param approvedPlan 检查阶段确认过的实现方案。它只影响发给模型的提示词，
  *                     <b>不参与任何校验</b>——引擎该做的判断不会因为「方案已确认」而放宽
+ * @param integration  这次要不要跑集成测试。它默认是 {@code false}：**没勾就完全不碰环境**，
+ *                     连 docker 都不探一下——「这批之前的行为一个字节都没变」就落在这里。
+ *                     勾上之后才要求环境已初始化，也才会多生成一个集成入口脚本（十五.5）
  * @param maxRounds    整次运行允许调用模型几次；不填（或 0）= 按施工单步数自动算，
  *                     见 {@link VerifySpec#roundBudget}
  */
@@ -44,7 +47,8 @@ public record RunRequest(
         PlanReview approvedPlan,
         Boolean verifyCompile,
         Integer maxRetry,
-        Integer maxRounds
+        Integer maxRounds,
+        Boolean integration
 ) {
 
     private static final int DEFAULT_MAX_RETRY = VerifySpec.DEFAULT_MAX_RETRY;
@@ -62,7 +66,8 @@ public record RunRequest(
             @JsonProperty("approvedPlan") PlanReview approvedPlan,
             @JsonProperty("verifyCompile") Boolean verifyCompile,
             @JsonProperty("maxRetry") Integer maxRetry,
-            @JsonProperty("maxRounds") Integer maxRounds
+            @JsonProperty("maxRounds") Integer maxRounds,
+            @JsonProperty("integration") Boolean integration
     ) {
         return new RunRequest(
                 blankToNull(template),
@@ -76,7 +81,13 @@ public record RunRequest(
                 approvedPlan,
                 verifyCompile,
                 maxRetry,
-                maxRounds);
+                maxRounds,
+                integration);
+    }
+
+    /** 勾没勾集成测试；不填就是没勾。 */
+    public boolean runsIntegration() {
+        return Boolean.TRUE.equals(integration);
     }
 
     /**
@@ -110,7 +121,7 @@ public record RunRequest(
     public static RunRequest from(Spec spec) {
         return new RunRequest(spec.template(), spec.prompt(), spec.acceptance(), spec.trace().requirementId(), spec.variables(),
                 spec.targets(), spec.constraints(), spec.context(), null,
-                spec.verify().compile(), spec.verify().maxRetry(), spec.verify().maxRounds());
+                spec.verify().compile(), spec.verify().maxRetry(), spec.verify().maxRounds(), null);
     }
 
     private static String blankToNull(String value) {

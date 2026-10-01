@@ -1,5 +1,6 @@
 package com.specflow.agent;
 
+import com.specflow.env.EnvRegistration;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanStep;
@@ -198,6 +199,20 @@ public interface AgentListener {
      * @param outcome 这次测试阶段的全部事实；它可能一条失败都没有（脚本退出码 0）
      */
     default void testsFinished(TestOutcome outcome) {
+    }
+
+    /**
+     * 测试环境这一摊现在是什么样（十五.5/15.8）。
+     *
+     * <p>发<b>整份登记</b>而不是一句话：调用方（界面、留档）要的是「起了哪些容器、
+     * 有哪些卷、跑了哪几条 init/reset」，而这些都不是一句话装得下的。
+     * 一次运行里它可能发好几次（起好了、重置过、坏掉了、收掉了），每次都是<b>当时的全貌</b>——
+     * 增量式的回调会逼着每个调用方自己拼状态，而拼错的那一方永远是留档。
+     *
+     * @param registration 当时的登记；环境坏掉时 {@code state} 是 {@code BROKEN}，
+     *                     原始错误在 {@code detail} 里
+     */
+    default void environmentChanged(EnvRegistration registration) {
     }
 
     /** 校验未通过，工作区已回滚到本轮开始前的状态。 */

@@ -7,9 +7,14 @@ import com.specflow.review.PlanReview;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.TreeSet;
 import java.util.stream.Stream;
 
 /**
@@ -129,6 +134,19 @@ public final class RunStore {
     }
 
     /**
+     * 最新那条记录的 id；一条都没有时是空串。
+     *
+     * <p>给「不知道是哪一次」的调用方兜底：界面把「标志成已知失败」这个动作发给谁，
+     * 靠的是它当时正在看的那次运行——而刷新过页面之后它手里只有屏幕上那份失败清单，
+     * 拿不到记录 id。那时候按「最新的那条」落，比拒绝一次人的判断要好：
+     * 屏幕上那份清单本来就是最新一次跑出来的。
+     */
+    public String latestId() {
+        List<RunRecord> records = readAll();
+        return records.isEmpty() ? "" : records.get(0).id();
+    }
+
+    /**
      * 连着几次说缺料（从最新那条往回数，遇到别的状态就停）。
      *
      * <p>数出来而不是记下来：多存一个计数器就多一处可能和历史对不上的状态。
@@ -143,6 +161,55 @@ public final class RunStore {
             count++;
         }
         return count;
+    }
+
+    /**
+     * 把「这几条不重要」写进留档。
+     *
+     * <p>为什么要落盘而不是留在界面上：这是<b>人做的判断</b>（十五.6：不重要/误报 → 标记，
+     * 接受时不阻塞）。它解释的是「为什么那几条红的最后没被当成问题」——
+     * 刷新一次就丢的话，事后翻记录的人只会看到一片红，然后以为那次是失败的。
+     *
+     * <p>传进来的是<b>完整的一份集合</b>，不是增量：界面上的记号本来就是一个集合
+     * （勾上、标记、再勾再标），发全量就不存在「两次点击乱序到达」这种要命的状态。
+     * 已经不在了的编号会从留档里去掉——那正是用户「取消标记」的意思。
+     *
+     * @param indices 被标成已知失败的用例编号
+     * @return 写回去之后的那条记录
+     * @throws SpecflowException 记录不存在或写不进去
+     */
+    public RunRecord markKnownFailures(String id, List<Integer> indices) {
+        RunRecord record = load(id);
+        List<RunRecord.KnownFailure> known = mergeKnown(record.knownFailures(), indices);
+        RunRecord updated = record.withKnownFailures(known);
+        save(updated);
+        return updated;
+    }
+
+    /**
+     * 合成新的一份「已知失败」。
+     *
+     * <p>已经标过的那几条<b>保留原来的时间</b>：那个时间记的是「哪一刻人的判断变了」，
+     * 每次重标都刷成现在，等于把最初那一刻抹掉。
+     */
+    private static List<RunRecord.KnownFailure> mergeKnown(List<RunRecord.KnownFailure> existing,
+                                                           List<Integer> indices) {
+        Map<Integer, String> before = new LinkedHashMap<>();
+        if (existing != null) {
+            existing.forEach(item -> before.put(item.index(), item.at()));
+        }
+        if (indices == null || indices.isEmpty()) {
+            return null;
+        }
+        String now = LocalDateTime.now().toString();
+        List<RunRecord.KnownFailure> merged = new ArrayList<>();
+        for (Integer index : new TreeSet<>(indices)) {
+            if (index == null || index <= 0) {
+                continue;
+            }
+            merged.add(new RunRecord.KnownFailure(index, before.getOrDefault(index, now)));
+        }
+        return merged.isEmpty() ? null : List.copyOf(merged);
     }
 
     /**

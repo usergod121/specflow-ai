@@ -3,6 +3,10 @@ package com.specflow.agent;
 import com.specflow.TestSpecs;
 import com.specflow.agent.AgentListener.StepState;
 import com.specflow.agent.AgentListener.StepsSource;
+import com.specflow.env.CommandRunner;
+import com.specflow.env.ComposeFile;
+import com.specflow.env.EnvConfigLoader;
+import com.specflow.env.TestEnvironment;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.history.RunRecord;
 import com.specflow.history.RunRecorder;
@@ -23,6 +27,7 @@ import com.specflow.spec.VerifySpec;
 import com.specflow.template.TemplateRegistry;
 import com.specflow.tests.EntryScripts;
 import com.specflow.tests.TestOutcome;
+import com.specflow.tests.TestSettings;
 import com.specflow.verify.CompileVerifier;
 import com.specflow.verify.VerificationContext;
 import com.specflow.verify.VerificationResult;
@@ -495,6 +500,104 @@ class DevelopmentAgentTest {
 
         assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
         assertThat(llm.calls()).as("只有开发那一轮").hasSize(1);
+    }
+
+    /**
+     * <b>进测试之前再查一次停止</b>。
+     *
+     * <p>测试那一段最长五分钟，进去就停不下来（生成要一次模型调用，脚本执行有自己的时限）。
+     * 用户刚按过停止却还要等五分钟，正是这一问要避免的事。它之前只有代码没有测试——
+     * 而这条路上最容易犯的错是「查了但查错了地方」：查在生成之后，就等于没查
+     * （用户要多等一次模型调用，而且产物已经落盘了）。
+     */
+    @Test
+    @DisplayName("测试开始前查一次停止：不生成测试产物、不跑脚本，直接按中断收场")
+    void stopsBeforeTheTestPhaseStarts() {
+        // 第二份回复是测试产物：真进了测试阶段，它一定会被用掉
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(0, "PASS | 1"));
+        CancelBeforeTestListener listener = new CancelBeforeTestListener();
+
+        AgentResult result = new DevelopmentAgent(root, ProjectConfig.DEFAULT,
+                TemplateRegistry.empty(), llm, List.of(new ScriptedVerifier(passed())), listener)
+                .run(TestSpecs.spec(List.of("Foo.java")), planWithCases());
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.CANCELLED);
+        assertThat(llm.patches()).as("只跑了开发那一轮：测试那一次「生成产物」的调用没有发生")
+                .hasSize(1);
+        assertThat(listener.testsStarted).as("连「测试进行中」那一行都不该发").isZero();
+        assertThat(root.resolve("tools")).as("一个字节的测试产物都不该落盘").doesNotExist();
+        assertThat(read("Foo.java")).as("中断照旧回滚到运行前").isEqualTo(ORIGINAL);
+    }
+
+    // ---------- 测试环境（十五.5） ----------
+
+    /**
+     * 勾了集成测试却没有环境声明：在<b>测试阶段</b>当场停下，而且算环境问题。
+     *
+     * <p>它不能算「测试代码写错了」——坏的不是模型写的东西，是这台机器上没有那套环境。
+     * 分错档的代价不对称：判成测试代码问题，用户会去改一份本来就对的代码。
+     */
+    @Test
+    @DisplayName("勾了集成测试但项目没声明环境：按环境问题收场，原始错误与待办都在")
+    void refusesIntegrationWithoutAnEnvironment() {
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(0, "PASS | 1"));
+
+        AgentResult result = new DevelopmentAgent(root, ProjectConfig.DEFAULT,
+                TemplateRegistry.empty(), llm, List.of(new ScriptedVerifier(passed())),
+                AgentListener.NOOP, new TestSettings(true), TestEnvironment.of(root))
+                .run(TestSpecs.spec(List.of("Foo.java")), planWithCases());
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.NEEDS_ENVIRONMENT);
+        assertThat(result.detail()).contains("环境问题").contains("env.yaml");
+        assertThat(read("Foo.java")).as("环境问题整轮回滚").isEqualTo(ORIGINAL);
+        assertThat(root.resolve("tools")).as("没进到生成那一步，产物目录一个都不该有")
+                .doesNotExist();
+    }
+
+    /**
+     * 环境就绪之后：先 reset，再把连接信息喂给测试代码，然后才跑集成入口。
+     *
+     * <p>这条链上最容易漏的是「连接信息没送进去」——那样模型只能猜，而猜出来的连接串
+     * 在换一台机器时全错（十五.5：它永远不用猜）。
+     */
+    @Test
+    @DisplayName("集成测试：先重置数据，再把连接信息交给测试代码，脚本按集成入口跑")
+    void runsIntegrationAfterResettingTheEnvironment() throws IOException {
+        // 一套假的环境：探得到 docker、已经有 compose 文件、重置命令成功
+        Path envDir = root.resolve(ComposeFile.ROOT).resolve("20260930-120000");
+        Files.createDirectories(envDir);
+        Files.writeString(envDir.resolve(ComposeFile.NAME), "services: {}\n");
+        Path declaration = root.resolve(EnvConfigLoader.relativePath());
+        Files.createDirectories(declaration.getParent());
+        Files.writeString(declaration, """
+                image: "eclipse-temurin:17"
+                env:
+                  DB_HOST: "db"
+                reset:
+                  - "python -m clean-db"
+                """);
+        FakeEnvironmentRunner runner = new FakeEnvironmentRunner("sf-" + root.getFileName() + "-app-1");
+
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                integrationArtifactsPatch(0, "PASS | 1"));
+
+        AgentResult result = new DevelopmentAgent(root, ProjectConfig.DEFAULT,
+                TemplateRegistry.empty(), llm, List.of(new ScriptedVerifier(passed())),
+                AgentListener.NOOP, new TestSettings(true),
+                new TestEnvironment(root, runner))
+                .run(TestSpecs.spec(List.of("Foo.java")), planWithCases());
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(runner.ran("exec -T app sh -c python -m clean-db"))
+                .as("每次跑之前都要重置数据，不能省").isTrue();
+        // 集成入口脚本确实被跑了（假模型按协议写了它，引擎要认那个文件）
+        assertThat(result.verifications()).anySatisfy(verification ->
+                assertThat(verification.verifier()).isEqualTo("测试脚本"));
     }
 
     /**
@@ -1412,6 +1515,19 @@ class DevelopmentAgentTest {
                 + ">>>>>>> REPLACE\n";
     }
 
+    /**
+     * 勾了集成测试时的那一次回复：<b>两个</b>入口脚本都要给（十五.4）。
+     *
+     * <p>只给单元那个的话，产物会因为「没有集成入口」被拒——而那是这批测试自己的错，
+     * 不是被测代码的错。真模型拿到的是同一份协议（「这一次要两个」），所以照做。
+     */
+    private String integrationArtifactsPatch(int exit, String failureLine) {
+        return "<<<<<<< SEARCH {{ENTRY}}\n=======\n" + EntryScripts.body(exit, failureLine)
+                + ">>>>>>> REPLACE\n"
+                + "<<<<<<< SEARCH {{ITENTRY}}\n=======\n" + EntryScripts.body(exit, failureLine)
+                + ">>>>>>> REPLACE\n";
+    }
+
     private static PlanStep step(int index, String goal, boolean intermediate, String... files) {
         return new PlanStep(index, goal, List.of(files), "能编译", intermediate);
     }
@@ -1504,7 +1620,8 @@ class DevelopmentAgentTest {
             }
             String dir = matcher.group();
             return response.replace("{{DIR}}", dir)
-                    .replace("{{ENTRY}}", dir + "/" + EntryScripts.name());
+                    .replace("{{ENTRY}}", dir + "/" + EntryScripts.name())
+                    .replace("{{ITENTRY}}", dir + "/" + EntryScripts.integrationName());
         }
 
         /** 认这次调用要的是不是「只产施工单」的那份协议。 */
@@ -1527,7 +1644,6 @@ class DevelopmentAgentTest {
 
     /** 按脚本返回校验结果的假校验器；最后一个结果会被重复使用。 */
     private static final class ScriptedVerifier implements Verifier {
-
         private final Deque<VerificationResult> results;
 
         ScriptedVerifier(VerificationResult... results) {
@@ -1600,9 +1716,66 @@ class DevelopmentAgentTest {
         }
     }
 
+    /**
+     * 在「第一轮校验跑完」之后叫停——也就是<b>正好卡在测试阶段之前</b>。
+     *
+     * <p>挑这个时刻是因为要验的正是「进测试之前那一问」：早了会停在轮与轮之间
+     * （那是另一条路，已经测过了），晚了就进了测试阶段——而那一段停不下来。
+     */
+    private static final class CancelBeforeTestListener implements AgentListener {
+
+        private int testsStarted;
+        private boolean cancelled;
+
+        @Override
+        public boolean cancelled() {
+            return cancelled;
+        }
+
+        @Override
+        public void verificationFinished(int round, List<VerificationResult> results) {
+            cancelled = true;
+        }
+
+        @Override
+        public void testsStarted(int cases) {
+            testsStarted++;
+        }
+    }
+
+    /**
+     * 一套假的环境：探得到 docker、容器在跑、exec 都成功。
+     *
+     * <p>用它是因为「真起容器」不该出现在单元测试里——但那不等于环境这一层不用测：
+     * 这一批要验的是「引擎有没有先重置、有没有把连接信息交出去」，
+     * 而那些问题和 docker 本身没关系。
+     */
+    private static final class FakeEnvironmentRunner implements CommandRunner {
+
+        private final com.specflow.env.FakeCommandRunner delegate =
+                new com.specflow.env.FakeCommandRunner();
+
+        FakeEnvironmentRunner(String container) {
+            delegate.ok("version", "fake docker 1.0")
+                    .ok("ps -a", container)
+                    .ok("volume ls", container.replace("-app-1", "_data"))
+                    .ok("network ls", container.replace("-app-1", "_default"))
+                    .ok("exec -T app", "");
+        }
+
+        boolean ran(String fragment) {
+            return delegate.ran(fragment);
+        }
+
+        @Override
+        public Result run(List<String> command, java.util.Map<String, String> environment,
+                          Path workdir, long timeoutSeconds) {
+            return delegate.run(command, environment, workdir, timeoutSeconds);
+        }
+    }
+
     /** 把回调压成字符串序列，便于用一条断言表达「按什么顺序发生了什么」。 */
     private static final class RecordingListener implements AgentListener {
-
         private final List<String> events = new ArrayList<>();
         private List<PlanStep> plan;
         private StepsSource source;

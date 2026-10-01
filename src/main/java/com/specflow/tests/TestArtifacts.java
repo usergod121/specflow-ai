@@ -26,10 +26,10 @@ import java.util.regex.Pattern;
  * 这不是洁癖：这是这套校验唯一的结构性防作弊手段（十五.6）。所以这个目录有自己的一份白名单，
  * 由本类守着，和 {@code spec.targets()} 互不相干。
  *
- * <p>它还守着第二件事：生成出来的东西<b>能不能跑</b>。宿主上直接执行脚本，
- * 唯一拦得住的就是高危命令的字面匹配（{@link #forbidden}）——它挡不住变体，
- * 真正的兜底是容器隔离，那是后面的事（十五.9）。所以这里的态度是：
- * 宁可多拦一条让人来问，也不放过一条真会删盘的。
+ * <p>它还守着第二件事：生成出来的东西<b>能不能跑</b>。它自己只拦得住高危命令的字面匹配
+ * （{@link #forbidden}）——那挡不住变体，真正的兜底是容器隔离（十五.9）。
+ * 而「这次到底有没有容器兜底」由 {@link ExecutionLocation} 一处判断，会写进结果与留档。
+ * 所以这里的态度是：宁可多拦一条让人来问，也不放过一条真会删盘的。
  *
  * <p>不实现 {@code AutoCloseable}：产物在失败时要<b>留着</b>给人看（那是失败清单的现场），
  * 什么时候删是一次显式的 {@link #delete()}，不能交给 try-with-resources 顺手做掉。
@@ -43,11 +43,21 @@ public final class TestArtifacts {
 
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
-    /** 入口脚本名——按平台取；引擎只会跑这一个名字的那个文件。 */
-    private static final String ENTRY_WINDOWS = "run.cmd";
-    private static final String ENTRY_POSIX = "run.sh";
+    /**
+     * 集成入口脚本（十五.4）。
+     *
+     * <p>为什么要两个入口：单元测试不需要任何外部服务，而集成测试要连库、要连中间件——
+     * 那些服务只在<b>容器网络里</b>有名有姓（十五.5：默认不暴露宿主端口，容器间用服务名互连）。
+     * 所以「跑单元」和「跑集成」是两条真的不一样的路，而引擎只会执行<b>一个</b>文件：
+     * 让一个脚本按环境变量自己分叉，等于把「这次跑的是哪条路」藏进脚本内部，
+     * 而留档里必须一眼看得出跑的是哪一条。
+     *
+     * <p><b>两个名字都从 {@link ExecutionLocation} 来</b>，不在这里按平台取：
+     * 脚本的名字取决于它在哪儿跑——进了容器就是 Linux，宿主上那套 {@code .cmd} 在那儿
+     * 一个字都跑不了。名字与命令分在两处判，得到的就是「给了脚本却说没给」。
+     */
 
-    /** 本机是不是 Windows。它决定入口脚本叫什么，也决定路径比对要不要把大小写放平。 */
+    /** 本机是不是 Windows。它决定路径比对要不要把大小写放平。 */
     private static final boolean WINDOWS = System.getProperty("os.name", "")
             .toLowerCase(Locale.ROOT).contains("win");
 
@@ -80,6 +90,14 @@ public final class TestArtifacts {
             // --mount type=bind,source=/,target=/host 这一种写法
             Pattern.compile("--mount[^,]*(,|\\s)source\\s*=\\s*[\"']?(/|[a-z]:[\\\\/]?)(?=[,\\s\"']|$)",
                     Pattern.CASE_INSENSITIVE),
+            // compose 长语法里的挂载源头：source: "/" / source: "C:/"
+            Pattern.compile("source\\s*[:=]\\s*[\"']?(/|[a-z]:[\\\\/]?)[\"']?(\\s|$)",
+                    Pattern.CASE_INSENSITIVE),
+            // 容器直接借用宿主的网络栈：--network host / --net=host / network_mode: "host"。
+            // 借了宿主网络，容器隔离就只剩个壳——里面的东西能直接连宿主的一切，
+            // 而「真正的结构性兜底是容器隔离」正是这套设计的前提（十五.9）
+            Pattern.compile("(--net|--network)[= ]+host\\b", Pattern.CASE_INSENSITIVE),
+            Pattern.compile("network_mode\\s*[:=]\\s*[\"']?host\\b", Pattern.CASE_INSENSITIVE),
             // 往块设备上写：dd 那一路之外，重定向也一样能把盘写烂
             Pattern.compile(">>?\\s*/dev/(sd|hd|nvme|vd|disk|mapper)", Pattern.CASE_INSENSITIVE),
             // 拉外网脚本直接交给 shell 执行
@@ -121,11 +139,14 @@ public final class TestArtifacts {
     private final SafePathResolver pathResolver;
     private final Path directory;
     private final String relative;
+    private final ExecutionLocation location;
 
-    private TestArtifacts(SafePathResolver pathResolver, Path directory, String relative) {
+    private TestArtifacts(SafePathResolver pathResolver, Path directory, String relative,
+                          ExecutionLocation location) {
         this.pathResolver = pathResolver;
         this.directory = directory;
         this.relative = relative;
+        this.location = location;
     }
 
     /**
@@ -135,6 +156,18 @@ public final class TestArtifacts {
      * 覆盖掉的可能正是上一次那条失败清单指向的那份测试代码。
      */
     public static TestArtifacts create(Path projectRoot) {
+        return create(projectRoot, ExecutionLocation.host());
+    }
+
+    /**
+     * 开一个本次运行的产物目录，这一次带上<b>执行位置</b>。
+     *
+     * <p>位置要在这里就定下来：入口脚本的<b>名字</b>由它决定，而名字在生成阶段
+     * 就要写进协议交给模型（写错名字的表现是「产物里没有入口脚本」，与事实不符）。
+     *
+     * @param location 这次脚本在哪儿跑，见 {@link ExecutionLocation}
+     */
+    public static TestArtifacts create(Path projectRoot, ExecutionLocation location) {
         SafePathResolver resolver = new SafePathResolver(projectRoot);
         String name = LocalDateTime.now().format(STAMP);
         Path directory = resolver.resolve(ROOT + "/" + name);
@@ -146,7 +179,8 @@ public final class TestArtifacts {
         } catch (IOException e) {
             throw new SpecflowException("建不了测试产物目录 " + directory + "：" + e.getMessage(), e);
         }
-        return new TestArtifacts(resolver, directory, resolver.relativize(directory));
+        return new TestArtifacts(resolver, directory, resolver.relativize(directory),
+                location == null ? ExecutionLocation.host() : location);
     }
 
     /** 产物目录相对项目根的路径（POSIX 风格），落档与给人看都用它。 */
@@ -154,9 +188,27 @@ public final class TestArtifacts {
         return relative;
     }
 
+    /** 这次脚本在哪儿跑。入口名字与引擎要执行的命令都由它来。 */
+    public ExecutionLocation location() {
+        return location;
+    }
+
     /** 入口脚本相对项目根的路径——引擎要执行的就是它。 */
     public String entry() {
-        return relative + "/" + entryName();
+        return relative + "/" + location.unitEntryName();
+    }
+
+    /**
+     * 集成入口脚本相对项目根的路径（十五.4 的 {@code run-it}）。
+     * 只有勾了集成测试才会去跑它。
+     */
+    public String integrationEntry() {
+        return relative + "/" + location.integrationEntryName();
+    }
+
+    /** 产物里有没有集成入口脚本。勾了集成测试却没给这个文件，就是「没东西可跑」。 */
+    public boolean hasIntegrationEntry(List<String> written) {
+        return written.stream().anyMatch(this::isIntegrationEntry);
     }
 
     /**
@@ -207,6 +259,46 @@ public final class TestArtifacts {
         }
     }
 
+    /**
+     * 删掉某一个产物目录（十五.8：接受/中断时要删测试产物）。
+     *
+     * <p>它和 {@link #delete()} 的差别是「按路径删」而不是「按这个实例删」：
+     * 接受/中断发生在运行<b>结束之后</b>，那时候手里只有留档里记的那个路径。
+     *
+     * <p>路径照样要先过白名单：它来自留档（可能被手工改过），而删东西这件事
+     * 只允许发生在 {@code tools/} 底下——一个被改坏的记录不该能删掉别的目录。
+     *
+     * @param directory 产物目录（相对项目根）；空串或不在 {@code tools/} 下就什么都不做
+     */
+    public static void delete(Path projectRoot, String directory) {
+        if (directory == null || directory.isBlank()) {
+            return;
+        }
+        SafePathResolver resolver = new SafePathResolver(projectRoot);
+        Path target;
+        try {
+            target = resolver.resolve(directory);
+        } catch (IllegalArgumentException e) {
+            log.warn("留档里的产物路径不合法，不删：{}", directory);
+            return;
+        }
+        String shown = resolver.relativize(target);
+        if (!shown.equals(ROOT) && !shown.startsWith(ROOT + "/")) {
+            // 只删产物目录，一个字符都不能越界：这条路径是留档里的字符串，
+            // 而留档是磁盘上的文件（用户可能手工改过，工具也可能被改坏）
+            log.warn("留档里的产物路径不在 {}/ 下，不删：{}", ROOT, shown);
+            return;
+        }
+        try (var paths = Files.walk(target)) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+            log.info("已清掉测试产物 {}", shown);
+        } catch (IOException e) {
+            log.warn("清理测试产物失败 {}：{}", shown, e.getMessage());
+        }
+    }
+
     // ---------- 白名单与高危 ----------
 
     /**
@@ -251,14 +343,23 @@ public final class TestArtifacts {
     }
 
     /**
-     * 这个相对路径是不是引擎要执行的那一个入口脚本。
+     * 这个相对路径是不是引擎要执行的那个<b>单元</b>入口脚本。
      *
-     * <p>比 {@link #entry()} 时同样要把大小写放平：Windows 上模型写的 {@code RUN.CMD}
+     * <p>比 {@link #entry()} 时要把大小写放平：Windows 上模型写的 {@code RUN.CMD}
      * 和 {@code run.cmd} 是<b>同一个文件</b>，字符串比不过就会又谎称一次「没给入口脚本」——
      * 和目录那段拼错时是同一种错，都在拿字符串比文件系统才懂的事。
+     *
+     * <p>它<b>不</b>认集成入口：这两个名字代表两条不同的路，而「有没有单元入口」和
+     * 「有没有集成入口」是两个各自独立的检查（见 {@link TestAgent}）。
+     * 合成一个「两个里有一个就行」，缺哪个都会看不出来。
      */
     public boolean isEntry(String path) {
         return same(entry(), path);
+    }
+
+    /** 这个相对路径是不是集成入口脚本。 */
+    public boolean isIntegrationEntry(String path) {
+        return same(integrationEntry(), path);
     }
 
     /** Windows 上按文件系统的规矩比（不认大小写），别的系统上按字节比。 */
@@ -294,10 +395,14 @@ public final class TestArtifacts {
      * <p>判据一律在<b>大小写无关 + 空白折叠</b>之后匹配：{@code SUDO}、{@code Rm -Rf}、
      * {@code --PRIVILEGED} 和小写是同一个写法，多几个空格也不该改变结论。
      *
+     * <p><b>公开给 {@code com.specflow.env}</b>：测试环境的 {@code init/reset} 命令与生成的
+     * compose 内容走的是同一道闸。两处各写一份「高危表」，迟早有一处少一条——
+     * 而少的那一条正好是能删库的那条。
+     *
      * @param content 一个补丁块的完整内容（也可以只给一行）
      * @return 命中的那段原文（给用户看凭什么拦），没有就返回 {@code null}
      */
-    static String forbidden(String content) {
+    public static String forbidden(String content) {
         if (content == null || content.isBlank()) {
             return null;
         }
@@ -386,9 +491,5 @@ public final class TestArtifacts {
 
     private static String clip(String text) {
         return text.length() <= MAX_EVIDENCE ? text : text.substring(0, MAX_EVIDENCE) + "…";
-    }
-
-    private static String entryName() {
-        return WINDOWS ? ENTRY_WINDOWS : ENTRY_POSIX;
     }
 }

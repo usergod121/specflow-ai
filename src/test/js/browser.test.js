@@ -66,6 +66,14 @@ let testsProject = null;
  */
 let interfaceProject = null;
 /**
+ * 链 27 临时造出来的「带测试环境声明的项目」。
+ *
+ * <p>收尾和别的临时项目一样：目录跟着 TEMP_PATHS 删，「最近打开」里那条单独去接口上删。
+ * 额外多一件事：它里面那份 {@code .specflow/env.yaml} 指向一个<b>假的 docker 脚本</b>——
+ * 目录删掉就一起没了，所以不会在机器上留下任何容器相关的东西。
+ */
+let envProject = null;
+/**
  * 链 23 起的本机假模型服务。跑完必须关掉——它是一个真在监听的端口，
  * 留着它下一次跑测试会多一个没人认领的进程。
  */
@@ -272,6 +280,22 @@ async function setField(id, value) {
 }
 
 const clickButton = id => evaluate(`document.getElementById(${JSON.stringify(id)}).click(); 'ok'`);
+
+/**
+ * 点「切换项目」——<b>先等工作区真的装配完</b>。
+ *
+ * <p>为什么非等不可：项目名是在 {@code renderHeader} 里就写上去的，而「切换项目」这个按钮的
+ * 处理函数要到后面的 {@code wireWorkspace} 才接上，中间隔着两次接口往返。
+ * 只等「项目名出现了」就点，点到的可能是一个<b>还没接上处理函数</b>的按钮：
+ * 点了什么都不发生，表现成「回不到欢迎页」超时——
+ * 而服务端那边 {@code /api/close} 其实好好的（实测过：手工点、手工调接口都是 200）。
+ * 这条竞态是这一批真跑浏览器时抓出来的，等的是「按钮接上了」这个确切条件。
+ */
+async function clickSwitchProject() {
+  await waitFor(`document.getElementById('switchproject') !== null
+      && document.getElementById('switchproject').onclick !== null`, '工作区装配完成（按钮接上了）');
+  await clickButton('switchproject');
+}
 
 /**
  * 元素在页面上真的占着一块地方吗。
@@ -852,7 +876,7 @@ async function main() {
         `document.getElementById('projectname').textContent.includes(${JSON.stringify(path.basename(PROJECT_ROOT))})`),
         '顶栏写着当前项目名');
 
-    await clickButton('switchproject');
+    await clickSwitchProject();
     await waitForReload(
         `document.getElementById('welcome') && !document.getElementById('welcome').hidden`,
         '回到欢迎页');
@@ -954,7 +978,7 @@ async function main() {
     check(await evaluate(`document.getElementById('welcome').hidden`), '打开之后欢迎页让位');
 
     // 回到欢迎页——后面的链要从这里继续走「手动输入路径」那条路
-    await clickButton('switchproject');
+    await clickSwitchProject();
     await waitForReload(`!document.getElementById('welcome').hidden`, '回到欢迎页');
 
     await clickButton('open-folder-manual');
@@ -1094,7 +1118,7 @@ async function main() {
         '磁盘上那份空壳真的被写上了内容');
 
     // 切回去：先关掉，再从最近列表点回去
-    await clickButton('switchproject');
+    await clickSwitchProject();
     await waitForReload(`!document.getElementById('welcome').hidden`, '又回到欢迎页');
     await evaluate(`
       [...document.querySelectorAll('#recent-list .open-row .hit')]
@@ -3264,6 +3288,176 @@ async function main() {
     stubModel.close();
     stubModel = null;
 
+    // ---------- 链 27：测试环境（问一次要不要初始化、集成测试能不能勾） ----------
+    // 这一链验的是界面这一侧：环境声明的三个状态各画成什么样、初始化与清空各打哪个接口。
+    // **不真的起容器**——那要拉镜像、会占机器上的资源，而且慢得没法当测试跑。
+    // 所以「docker」是一个脚本：`env.yaml` 里的 docker.command 指向它。
+    // 这也顺带钉住了「用户手填的命令优先」——这台机器上 PATH 里就有真的 docker，
+    // 而这一链从头到尾走的都是那个脚本。
+    console.log('\n链 27　测试环境：没声明 / 声明写错 / 初始化 / 清空：');
+
+    envProject = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-env-'));
+    TEMP_PATHS.push(envProject);
+    fs.mkdirSync(path.join(envProject, '.specflow'), { recursive: true });
+    fs.writeFileSync(path.join(envProject, 'README.md'), '# env demo\n');
+
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: envProject }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(envProject))})`, '页面切到环境那一链的项目');
+
+    // ① 没写 env.yaml：说清只能跑单元测试，而且集成那个勾选框是灰的
+    await waitFor(`document.getElementById('env').textContent.length > 0`, '环境面板画出来了');
+    const envText27a = await evaluate(`document.getElementById('env').textContent`);
+    check(envText27a.includes('env.yaml'),
+        '没声明时说清缺的是哪份文件：' + JSON.stringify(envText27a.slice(0, 80)));
+    check(await evaluate(`document.getElementById('integration').disabled`),
+        '没声明环境时「集成测试」是勾不动的（十五.5）');
+    check(String(await evaluate(`document.getElementById('integ-hint').textContent`))
+        .includes('env.yaml'), '勾不动的原因也写在旁边，不是让人去猜');
+
+    // ② env.yaml 写错了：面板把后端那几条（带行号）原样摆出来
+    fs.writeFileSync(path.join(envProject, '.specflow', 'env.yaml'),
+        'image: "alpine:3"\nworkdir: "work"\n');
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('env').textContent.includes('第 2 行')
+        || document.getElementById('env').textContent.includes('绝对路径')`,
+        '写错的那一行被报出来了');
+    const envText27b = await evaluate(`document.getElementById('env').textContent`);
+    check(envText27b.includes('第 2 行'), '报的是行号（用户一眼就知道改哪儿）：' + JSON.stringify(envText27b.slice(0, 120)));
+    check(envText27b.includes('绝对路径'), '而且说清了为什么不行');
+    check(await evaluate(`document.getElementById('integration').disabled`),
+        '声明有问题时也不许勾集成测试');
+
+    // ③ 改成一份能用的声明（docker 指向一个脚本）：面板给出「初始化测试环境」
+    // 项目名要**照着引擎的算法**算：sf-<目录名>-<绝对路径短哈希>。
+    // 脚本里报出来的容器/卷名必须和它对得上，否则「名字像不像自己项目」这一道
+    // 会把它们判成别人的东西（那正是安全口径，只是这里就看不到效果了）
+    const envProjectRoot = path.resolve(envProject);
+    const envSlug = path.basename(envProjectRoot).toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-').replace(/-+$/, '') || 'project';
+    const envFingerprint = require('crypto')
+        .createHash('sha256').update(envProjectRoot.replace(/\\/g, '/').toLowerCase()).digest('hex')
+        .slice(0, 6);
+    const envProjectName = 'sf-' + envSlug + '-' + envFingerprint;
+    const envDocker = path.join(envProject, 'fake-docker.cmd');
+    const envLog = path.join(envProject, 'docker-calls.log');
+    fs.writeFileSync(envLog, '');
+    fs.writeFileSync(envDocker, [
+      '@echo off',
+      '>>"' + envLog + '" echo %*',
+      'echo %* | findstr /C:"version" >nul && ( echo fake docker 1.0 & exit /b 0 )',
+      'echo %* | findstr /C:"up -d --wait" >nul && ( echo started & exit /b 0 )',
+      'echo %* | findstr /C:"exec -T" >nul && exit /b 0',
+      'echo %* | findstr /C:"ps -a" >nul && ( echo ' + envProjectName + '-app-1'
+        + ' & echo ' + envProjectName + '-app-2'
+        + ' & echo ' + envProjectName + '-app-3'
+        + ' & echo ' + envProjectName + '-app-4'
+        + ' & echo ' + envProjectName + '-app-5'
+        + ' & echo ' + envProjectName + '-app-6'
+        + ' & echo someone-elses-container & exit /b 0 )',
+      'echo %* | findstr /C:"volume ls" >nul && ( echo ' + envProjectName + '_data & exit /b 0 )',
+      'echo %* | findstr /C:"network ls" >nul && exit /b 0',
+      'echo %* | findstr /C:"down" >nul && exit /b 0',
+      'exit /b 1',
+      '',
+    ].join('\r\n'));
+    fs.writeFileSync(path.join(envProject, '.specflow', 'env.yaml'), [
+      'docker:',
+      '  command: "' + envDocker.replace(/\\/g, '/') + '"',
+      'image: "alpine:3"',
+      'workdir: "/work"',
+      'env:',
+      '  DB_HOST: "db"',
+      'init:',
+      '  - "python -m build-db"',
+      'reset:',
+      '  - "python -m clean-db"',
+      '',
+    ].join('\n'));
+
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.querySelector('#env [data-act="env-init"]') !== null`,
+        '「初始化测试环境」那一枚按钮出来了');
+    check(String(await evaluate(`document.getElementById('integ-hint').textContent`))
+        .includes('还没初始化'), '这时勾不动的原因变成了「还没初始化」');
+
+    // ④ 点初始化：真的走一次（docker 是脚本），回来后集成测试就能勾了
+    await evaluate(`document.querySelector('#env [data-act="env-init"]').click(); 'ok'`);
+    await waitFor(`document.getElementById('integration').disabled === false`,
+        '初始化完成之后「集成测试」放开了', 30000);
+    check(fs.existsSync(path.join(envProject, '.specflow', 'env')),
+        'compose 落在引擎自己的目录里');
+    const envDirs = fs.readdirSync(path.join(envProject, '.specflow', 'env'));
+    check(envDirs.length === 1 && fs.existsSync(
+        path.join(envProject, '.specflow', 'env', envDirs[0], 'compose.yaml')),
+        '一份 compose.yaml，落在 .specflow/env/<时间戳>/ 里：' + JSON.stringify(envDirs));
+    const envCompose = fs.readFileSync(
+        path.join(envProject, '.specflow', 'env', envDirs[0], 'compose.yaml'), 'utf8');
+    check(envCompose.includes('sleep') && envCompose.includes('infinity'),
+        '那个容器是常驻的（sleep infinity），不是一个跑完就退的一次性容器');
+    check(envCompose.includes('DB_HOST') && !envCompose.includes('ports:'),
+        '连接信息进了 compose，宿主端口一个都不暴露');
+    const dockerCalls = fs.readFileSync(envLog, 'utf8');
+    check(dockerCalls.includes('up -d --wait') && dockerCalls.includes('--wait'),
+        '起环境用的是 up -d --wait（等健康检查，不是 sleep 等）：'
+            + JSON.stringify(dockerCalls.split('\n').filter(Boolean).slice(0, 4)));
+    check(!/^\s*timeout\s/m.test(dockerCalls) && dockerCalls.includes('build-db'),
+        'init 命令在容器里跑过了（docker compose exec）');
+    check(await evaluate(`document.getElementById('integration').disabled === false
+        && document.getElementById('integ-hint').textContent.includes('集成测试')`),
+        '勾选框和那句解释同时改了口径（两处一个判据）');
+
+    // 勾上它：请求体里才会带 integration（服务端还要再拦一道，见 Java 测试）
+    await evaluate(`(() => {
+      const box = document.getElementById('integration');
+      box.checked = true; return 'ok';
+    })()`);
+
+    // ⑤ 清空测试环境：down -v，卷一起删，之后又回到「还没初始化」
+    check(await evaluate(`document.querySelector('#env [data-act="env-clear"]') !== null`),
+        '「清空测试环境」这个手动入口在（十五.8）');
+    await evaluate(`document.querySelector('#env [data-act="env-clear"]').click(); 'ok'`);
+    await waitFor(`document.getElementById('integration').disabled === true`,
+        '清空之后「集成测试」又勾不动了', 30000);
+    check(fs.readFileSync(envLog, 'utf8').includes('down -v --remove-orphans'),
+        '清空打的是 down -v --remove-orphans（连卷一起，不留旧数据）');
+    check(fs.readdirSync(path.join(envProject, '.specflow', 'env')).length === 0,
+        '那份 compose 目录也一起收了（它已经不再是把手）');
+    const envText27c = await evaluate(`document.getElementById('env').textContent`);
+    check(envText27c.includes('初始化') || envText27c.includes('env.yaml'),
+        '面板回到「可以再初始化一次」的样子：' + JSON.stringify(envText27c.slice(0, 80)));
+
+    // ⑥ 残留：脚本报出来 6 个容器（名字像这个项目的），其中一个不属于它
+    //    ——那一件不许认（宁可不收也不能删错），其余算残留，而且件数超阈值要告警
+    await evaluate(`location.reload(); 'ok'`).catch(() => {});
+    await waitForReload(`document.getElementById('env').textContent.includes('件上一轮留下')
+        || document.getElementById('env').textContent.includes('残留')`,
+        '残留那一行画出来了', 20000);
+    const envText27d = await evaluate(`document.getElementById('env').textContent`);
+    check(envText27d.includes('发现 7 件上一轮留下的东西'),
+        '残留件数一件不差：6 个容器（+1 个卷），但不属于这个项目的那一件不算：'
+            + JSON.stringify(envText27d.slice(-130)));
+    check(!envText27d.includes('someone-elses'),
+        '名字不像这个项目的那一件不算残留（宁可不收，也不能删错别人的东西）');
+    check(envText27d.includes('收尾没做成'),
+        '件数超过阈值时说的是「这套环境一直在漏」，而不是干巴巴一个数字：'
+            + JSON.stringify(envText27d.slice(-120)));
+
+    // 换回原项目：这一链改的是服务的「当前项目」
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: PROJECT_ROOT }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(PROJECT_ROOT))})`, '换回原项目');
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,
@@ -3318,6 +3512,13 @@ async function main() {
       // 链 26 的临时项目：同样的收尾（目录跟着 TEMP_PATHS，这里删「最近打开」里那条）
       try {
         await fetch(BASE + 'api/recent?path=' + encodeURIComponent(interfaceProject), { method: 'DELETE' });
+      } catch (e) { /* 清理尽力而为 */ }
+    }
+    if (envProject) {
+      // 链 27 的临时项目同理：目录（含那份假的 docker 脚本）由 TEMP_PATHS 删，
+      // 这里删的是「最近打开」里那条
+      try {
+        await fetch(BASE + 'api/recent?path=' + encodeURIComponent(envProject), { method: 'DELETE' });
       } catch (e) { /* 清理尽力而为 */ }
     }
     try { ws && ws.close(); } catch (e) { /* ignore */ }

@@ -97,4 +97,27 @@ public final class Payloads {
             return new OpenProject(path);
         }
     }
+
+    /**
+     * 「这几条不重要」——把界面上勾中的那些用例标成已知失败。
+     *
+     * <p>{@code cases} 是<b>完整的一份集合</b>，不是「这一次新加的几条」：界面上的记号本来
+     * 就是一个集合，发全量就不存在「两次点击乱序到达」这种要命的状态——而它的后果是
+     * 人的一个判断被静默吞掉（见 {@code RunStore.markKnownFailures}）。
+     *
+     * @param id    哪一次运行。空着表示「界面上正看着的那一次」，服务端按最新那条记录落；
+     *              刷新过页面之后界面手里只有屏幕上那份失败清单，拿不到记录 id
+     * @param cases 标成已知失败的用例编号
+     */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    public record KnownFailures(
+            String id,
+            List<Integer> cases
+    ) {
+        @JsonCreator
+        public static KnownFailures of(@JsonProperty("id") String id,
+                                       @JsonProperty("cases") List<Integer> cases) {
+            return new KnownFailures(id, cases == null ? List.of() : cases);
+        }
+    }
 }

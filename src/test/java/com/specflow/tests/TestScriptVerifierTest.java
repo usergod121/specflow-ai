@@ -30,14 +30,16 @@ class TestScriptVerifierTest {
     Path root;
 
     @Test
-    @DisplayName("退出码 0 就是通过，命令那一栏是本机分隔符的那条路径")
+    @DisplayName("退出码 0 就是通过，命令那一栏先写执行位置、再是本机分隔符的那条路径")
     void passesOnZeroExitCode() {
         String entry = script(0, "all-passed");
 
         VerificationResult result = verifier(entry).verify(context());
 
         assertThat(result.passed()).isTrue();
-        assertThat(result.command()).isEqualTo(Path.of(entry).toString());
+        assertThat(result.command())
+                .as("没有环境时在宿主上跑：这句话要进留档，用户得知道这次没用容器")
+                .isEqualTo("在宿主执行（未用容器）：" + Path.of(entry).toString());
         assertThat(result.output()).contains("all-passed");
     }
 

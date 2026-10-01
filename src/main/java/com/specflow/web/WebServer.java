@@ -1,5 +1,6 @@
 package com.specflow.web;
 
+import com.specflow.env.EnvRegistration;
 import com.specflow.exception.SpecValidationException;
 import com.specflow.exception.SpecflowException;
 import com.specflow.project.ProjectInitializer;
@@ -209,6 +210,12 @@ public final class WebServer implements AutoCloseable {
                 case "/api/run" -> startRun(now, exchange);
                 // 「测试代码错了」那条路：只重新生成测试产物，不跑、不改产品代码（十五.6）
                 case "/api/tests/regenerate" -> regenerateTests(now, exchange);
+                // 「不重要 / 误报」：把人的判断写进运行留档（刷新之后不能丢）
+                case "/api/tests/known" -> markKnownFailures(now, exchange);
+                // 测试环境：现在什么状态 / 初始化 / 清空（十五.5、§15.8 的手动入口）
+                case "/api/env" -> Http.sendJson(exchange, 200, environmentOf(now, exchange));
+                case "/api/env/init" -> initEnvironment(now, exchange);
+                case "/api/env/clear" -> clearEnvironment(now, exchange);
                 case "/api/events" -> Http.sendJson(exchange, 200, events(now, exchange));
                 case "/api/runs" ->
                         Http.sendJson(exchange, 200, Map.of(
@@ -565,6 +572,70 @@ public final class WebServer implements AutoCloseable {
         }
         project.requireOpen();
         Http.sendJson(exchange, 200, project.runs().regenerateTests(request));
+    }
+
+    /**
+     * 「这几条不重要」——把它写进那一次运行的留档（十五.6）。
+     *
+     * <p>它的请求体是 {@code {"id":"...","cases":[1,2]}}，{@code id} 空着表示
+     * 「界面上正看着的那一次」（见 {@code RunService.markKnownFailures}）。
+     */
+    private void markKnownFailures(OpenProject project, HttpExchange exchange) throws IOException {
+        if (!Http.requirePost(exchange)) {
+            return;
+        }
+        Payloads.KnownFailures request = Http.readJson(exchange, Payloads.KnownFailures.class);
+        if (request == null) {
+            return;
+        }
+        project.requireOpen();
+        project.runs().markKnownFailures(request.id(), request.cases());
+        Http.sendJson(exchange, 200, Map.of("done", true));
+    }
+
+    /**
+     * 测试环境现在什么状态。
+     *
+     * <p>{@code refresh=1} 表示无视缓存重探一次 docker：用户点「我已经把 Docker 开好了」
+     * 时走这条。平时带缓存——每次问都要起进程，而界面一进项目就会问。
+     */
+    private Map<String, Object> environmentOf(OpenProject project, HttpExchange exchange) {
+        Map<String, Object> payload = new LinkedHashMap<>(
+                project.runs().environmentStatus("1".equals(Http.query(exchange, "refresh", ""))));
+        // 打开项目时收掉的残局：这件事在背后发生过，得说一句（见 OpenProject.cleanup）
+        EnvRegistration cleanup = project.cleanup();
+        if (cleanup != null && !cleanup.containers().isEmpty()) {
+            payload.put("cleanup", cleanup.summarize());
+        }
+        return payload;
+    }
+
+    /**
+     * 初始化测试环境（十五.5：导入项目时问一次，问的就是它）。
+     *
+     * <p>同步等它起完：这一步可能要拉镜像，几十秒到几分钟。做成异步就得再搭一条进度通道，
+     * 而它的语义就是「点一下，等它好」——界面给一个忙碌状态、把原始错误原样显出来，
+     * 比一条半成品的进度流有用得多。
+     */
+    private void initEnvironment(OpenProject project, HttpExchange exchange) throws IOException {
+        if (!Http.requirePost(exchange)) {
+            return;
+        }
+        synchronized (this) {
+            project.requireOpen();
+            Http.sendJson(exchange, 200, project.runs().initializeEnvironment());
+        }
+    }
+
+    /** 「清空测试环境」：用户手动收环境的入口（十五.8）。 */
+    private void clearEnvironment(OpenProject project, HttpExchange exchange) throws IOException {
+        if (!Http.requirePost(exchange)) {
+            return;
+        }
+        synchronized (this) {
+            project.requireOpen();
+            Http.sendJson(exchange, 200, project.runs().clearEnvironment());
+        }
     }
 
     private void startRun(OpenProject project, HttpExchange exchange) throws IOException {

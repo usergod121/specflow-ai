@@ -3,6 +3,7 @@ package com.specflow.history;
 import com.specflow.agent.AgentListener;
 import com.specflow.agent.AgentResult;
 import com.specflow.agent.ProgressMessages;
+import com.specflow.env.EnvRegistration;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanReview;
@@ -102,6 +103,17 @@ public final class RunRecorder implements AgentListener {
      * 留档里于是没有这一项——而不是写一个空壳，那会变成「跑过但没失败」的另一种说法。
      */
     private TestOutcome tests;
+
+    /**
+     * 测试环境这一次的登记（十五.8 的第一件）。
+     *
+     * <p>它记的是<b>当时的事实</b>：起了哪些容器、有哪些卷、跑了哪几条 init/reset、
+     * 环境是好是坏。清理靠它（按登记逆序清），事后翻记录的人也靠它——
+     * 「那次测试是在一个什么环境里跑的」这个问题，只有它答得出来。
+     *
+     * <p>没声明环境、或者这次只跑了单元测试时它是 {@code null}，留档里于是没有这一项。
+     */
+    private EnvRegistration environment;
 
     private RunRecorder(RunStore store, AgentListener delegate, Spec spec, PlanReview approved) {
         this.store = store;
@@ -229,6 +241,22 @@ public final class RunRecorder implements AgentListener {
         delegate.testsFinished(outcome);
     }
 
+    /**
+     * 测试环境变了（起好了 / 重置过 / 坏掉了 / 收掉了）。
+     *
+     * <p>每次都覆盖那一份：登记说的是<b>当时的全貌</b>，而留档要回答的是「跑完那一刻环境是什么样」。
+     * 攒一串历史只会让「留档里那个 environment 是哪一次」变成要猜的事。
+     *
+     * <p>时间线上那一行照发：环境这一摊慢得看不出来在干什么，而它是这次运行的一部分。
+     */
+    @Override
+    public void environmentChanged(EnvRegistration registration) {
+        this.environment = registration;
+        record(round, ProgressMessages.levelOf(registration),
+                ProgressMessages.environmentChanged(registration));
+        delegate.environmentChanged(registration);
+    }
+
     @Override
     public void workspaceRestored(int round, String reason) {
         record(round, "warn", ProgressMessages.restored(reason));
@@ -262,7 +290,10 @@ public final class RunRecorder implements AgentListener {
                 spec.targets(), result.attempts(), result.detail(),
                 approved == null ? List.of() : approved.missing(),
                 changesOf(result.changes()), stepsOf(result), planSteps, stepsSource,
-                approved == null ? List.of() : approved.cases(), tests,
+                approved == null ? List.of() : approved.cases(), tests, environment,
+                // 已知失败是**跑完之后**人点的，落档要另写一次（见 RunStore.markKnownFailures）；
+                // 这里给 null，留档里于是没有这一项——「没人标过」和「标了一个空表」是两件事
+                null,
                 List.copyOf(timeline));
         try {
             store.save(record);

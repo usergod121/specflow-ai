@@ -242,7 +242,88 @@ class TestAgentTest {
                 .contains("必须过");
     }
 
+    // ---------- 集成测试：两个入口、环境变量（十五.5） ----------
+
+    /**
+     * 勾了集成测试却只给了单元入口：在<b>生成阶段</b>就拒。
+     *
+     * <p>不拒的话，失败会表现成「入口脚本不存在：…/run-it.cmd」——看着像环境的问题，
+     * 其实是模型没给。分错方向的代价不对称：用户会去查 docker，而那边什么都没有。
+     */
+    @Test
+    @DisplayName("勾了集成测试却只给了单元入口：拒，并说清缺的是哪个文件")
+    void refusesWhenTheIntegrationEntryIsMissing() {
+        TestOutcome outcome = agent(llm(answer -> block(answer.entry(),
+                entryScript(0, "PASS | 1", "PASS | 2"))))
+                .run(spec(), cases(), new TestSettings(true), variables());
+
+        assertThat(outcome.passed()).isFalse();
+        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.TEST_CODE);
+        assertThat(outcome.detail()).contains(EntryScripts.integrationName());
+    }
+
+    /**
+     * 勾了集成测试、两个入口都给：<b>两个都要跑</b>（十五.5「单元 + 集成都在容器里跑」）。
+     *
+     * <p>只跑其中一个的话，另一条路上的用例会被对账逻辑判成「没验」——而清单是一份、
+     * 分母是整个清单，于是每次勾集成都会收到一份假的失败清单。所以这里两个脚本给出
+     * 互补的结果：单元那个报用例 1 没过、集成那个报用例 1、2 都过，合起来才盖住清单。
+     */
+    @Test
+    @DisplayName("勾了集成测试：两个入口都跑，按同一条用例「没过优先」合并")
+    void runsBothEntryScripts() {
+        TestOutcome outcome = agent(llm(answer -> block(answer.entry(),
+                entryScript(1, "FAIL | 1 | unit-only | unit-only | code is wrong"))
+                + block(answer.integrationEntry(), entryScript(0, "PASS | 1", "PASS | 2"))))
+                .run(spec(), cases(), new TestSettings(true), variables());
+
+        // 单元那一条失败还在（它是事实），但清单上的两条都被报到了——
+        // 所以不该再冒出一条「脚本只报了 N 条」
+        assertThat(outcome.failures()).singleElement()
+                .satisfies(failure -> assertThat(failure.kind())
+                        .isEqualTo(TestOutcome.Failure.Kind.ASSERTION));
+        assertThat(outcome.cases()).hasSize(2);
+        assertThat(outcome.cases()).extracting(TestOutcome.CaseResult::passed)
+                .as("用例 1 单元那边没过、集成那边过了：按没过算").containsExactly(false, true);
+        assertThat(outcome.output())
+                .as("两个脚本的输出都在（界面上的「原始输出」要看得见全部事实）")
+                .contains(entryName()).contains(EntryScripts.integrationName());
+    }
+
+    @Test
+    @DisplayName("连接信息原样进模型上下文，并写明「只许读环境变量、不许硬编码」")
+    void sendsTheEnvironmentToTheModel() {
+        FakeLlm llm = llm(answer -> block(answer.entry(), entryScript(0, "PASS | 1", "PASS | 2")));
+
+        agent(llm).run(spec(), cases(), new TestSettings(false), variables());
+
+        String system = llm.system();
+        assertThat(system).contains("DB_HOST").contains("db");
+        assertThat(system).contains("不许硬编码");
+        assertThat(system).contains(com.specflow.env.TestEnvironment.COMPOSE_PROJECT_VAR);
+    }
+
+    @Test
+    @DisplayName("环境变量真的注入给了脚本（测试代码读得到，不用猜）")
+    void injectsTheEnvironmentIntoTheScript() {
+        // 脚本把变量打出来：它就是「注入到位了没有」的证据
+        TestOutcome outcome = agent(llm(answer -> block(answer.entry(),
+                WINDOWS
+                        ? "@echo off\r\necho DB=%DB_HOST%\r\nexit /b 1\r\n"
+                        : "#!/bin/sh\necho DB=$DB_HOST\nexit 1\n")))
+                .run(spec(), cases(), new TestSettings(false), variables());
+
+        assertThat(outcome.passed()).isFalse();
+        assertThat(outcome.failures()).anySatisfy(failure ->
+                assertThat(failure.actual()).contains("DB=db"));
+    }
+
     // ---------- 辅助 ----------
+
+    private static java.util.Map<String, String> variables() {
+        return java.util.Map.of("DB_HOST", "db", "DB_PORT", "3306",
+                com.specflow.env.TestEnvironment.COMPOSE_PROJECT_VAR, "sf-demo");
+    }
 
     private static String entryName() {
         return EntryScripts.name();
@@ -281,8 +362,8 @@ class TestAgentTest {
         return "<<<<<<< SEARCH " + path + "\n=======\n" + content + "\n>>>>>>> REPLACE\n";
     }
 
-    /** 假模型从系统提示词里读出来的东西：产物目录，以及入口脚本的完整路径。 */
-    private record Answer(String dir, String entry) {
+    /** 假模型从系统提示词里读出来的东西：产物目录，以及两个入口脚本的完整路径。 */
+    private record Answer(String dir, String entry, String integrationEntry) {
     }
 
     private static final class FakeLlm implements LlmClient {
@@ -309,7 +390,8 @@ class TestAgentTest {
                 throw new IllegalStateException("系统提示词里没有产物目录，模型没法照它写：\n" + system);
             }
             String dir = matcher.group();
-            return answer.apply(new Answer(dir, dir + "/" + entryName()));
+            return answer.apply(new Answer(dir, dir + "/" + entryName(),
+                    dir + "/" + EntryScripts.integrationName()));
         }
 
         String system() {

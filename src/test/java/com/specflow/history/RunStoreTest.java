@@ -3,6 +3,7 @@ package com.specflow.history;
 import com.specflow.TestSpecs;
 import com.specflow.agent.AgentListener;
 import com.specflow.agent.AgentResult;
+import com.specflow.env.EnvRegistration;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.exception.SpecflowException;
 import com.specflow.patch.PatchApplier;
@@ -72,7 +73,7 @@ class RunStoreTest {
     private static RunRecord record(String id, String status, String detail) {
         return new RunRecord(id, "2026-01-01T00:00", status, null, "改点东西", List.of(),
                 List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of(),
-                List.of(), null, List.of(), null, List.of());
+                List.of(), null, List.of(), null, null, null, List.of());
     }
 
     @Test
@@ -704,6 +705,140 @@ class RunStoreTest {
 
     private static PlanStep step(int index, String goal, boolean intermediate) {
         return new PlanStep(index, goal, List.of("Foo.java"), "能编译", intermediate);
+    }
+
+    // ---------- 测试环境与「已知失败」（十五.8） ----------
+
+    /**
+     * 测试环境这一次的登记要进留档：起了哪些容器、跑了哪几条命令、环境是好是坏。
+     *
+     * <p>事后翻记录的人要能回答「那次测试是在一个什么环境里跑的」——只留一句
+     * 「测试没过」，他连当时连的是哪个库都不知道。清理也靠这一份（按登记逆序清）。
+     */
+    @Test
+    @DisplayName("测试环境的登记进留档：容器、卷、目录、跑过的命令都在")
+    void keepsTheEnvironmentRegistration() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("a.txt")),
+                null, AgentListener.NOOP);
+
+        recorder.environmentChanged(new EnvRegistration(EnvRegistration.State.READY, "docker",
+                "sf-demo", ".specflow/env/20260930-120000/compose.yaml",
+                List.of("app", "db"), List.of("sf-demo-app-1"), List.of("sf-demo_default"),
+                List.of("sf-demo_data"), List.of(".specflow/env/20260930-120000"),
+                List.of("python -m clean-db"), "环境已就绪"));
+        recorder.finished(AgentResult.success(1, List.of(), List.of()));
+
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+
+        assertThat(record.environment()).isNotNull();
+        assertThat(record.environment().composeProject()).isEqualTo("sf-demo");
+        assertThat(record.environment().containers()).containsExactly("sf-demo-app-1");
+        assertThat(record.environment().volumes()).containsExactly("sf-demo_data");
+        assertThat(record.environment().commands()).containsExactly("python -m clean-db");
+        // 算出来的那一行也序列化出去（界面直接用它，不用自己拼）
+        assertThat(record.environment().summarize()).contains("已就绪").contains("sf-demo-app-1");
+        assertThat(record.timeline()).extracting(RunRecord.Line::text)
+                .anySatisfy(text -> assertThat(text).contains("测试环境"));
+    }
+
+    /** 没声明环境、只跑单元测试的运行：留档里没有这一栏（而不是写个空壳）。 */
+    @Test
+    @DisplayName("没跑过环境：留档里没有这一栏")
+    void omitsTheEnvironmentWhenThereIsNone() throws IOException {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        record(store, "什么都没跑");
+
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+
+        assertThat(record.environment()).isNull();
+        assertThat(Files.readString(store.directory().resolve(record.id() + ".json")))
+                .doesNotContain("environment");
+    }
+
+    /**
+     * 「已知失败」要落档：它是<b>人做的判断</b>，只留在界面上就是刷新一下就没了——
+     * 而事后翻记录的人正是靠它解释「为什么那几条红的最后没被当成问题」。
+     */
+    @Test
+    @DisplayName("「已知失败」写进留档：换一次读取还在，重复标记不刷新原来的时间")
+    void recordsKnownFailures() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        record(store, "测试没过");
+        String id = store.latestId();
+
+        RunRecord marked = store.markKnownFailures(id, List.of(2, 1));
+        assertThat(marked.knownFailures()).extracting(RunRecord.KnownFailure::index)
+                .as("按编号排好，界面直接画").containsExactly(1, 2);
+        String firstAt = marked.knownFailures().get(0).at();
+        assertThat(firstAt).isNotBlank();
+
+        // 再标一次（界面会把完整的一份发回来）：已经在里面的保留原时间——
+        // 那个时间记的是「哪一刻人的判断变了」，每次重标都刷掉就等于抹掉了最初那一刻
+        RunRecord again = store.markKnownFailures(id, List.of(1, 2, 3));
+        assertThat(again.knownFailures()).extracting(RunRecord.KnownFailure::index)
+                .containsExactly(1, 2, 3);
+        assertThat(again.knownFailures().get(0).at()).isEqualTo(firstAt);
+
+        // 读回来还是同一份（落盘、不是只改内存）
+        assertThat(store.load(id).knownFailures()).hasSize(3);
+
+        // 取消标记（发一份空的上来）之后这一栏就该没有——而不是留一个空数组
+        RunRecord cleared = store.markKnownFailures(id, List.of());
+        assertThat(cleared.knownFailures()).isNull();
+    }
+
+    @Test
+    @DisplayName("标一个不存在的记录：报错，而不是悄悄新建一条")
+    void refusesToMarkAnUnknownRun() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+
+        assertThatThrownBy(() -> store.markKnownFailures("nope", List.of(1)))
+                .isInstanceOf(SpecflowException.class);
+    }
+
+    @Test
+    @DisplayName("最新那条记录的 id：一条都没有时是空串（界面据此说「先跑一次」）")
+    void reportsTheLatestRecordId() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+
+        assertThat(store.latestId()).isEmpty();
+        record(store, "跑了一次");
+        assertThat(store.latestId()).isEqualTo(store.list().get(0).id());
+    }
+
+    /**
+     * 老记录里没有这两栏（测试环境登记、「已知失败」）：读出来必须是 {@code null}，
+     * 而不是让整条记录读不出来。
+     *
+     * <p>读不出来是<b>静默跳过</b>的（见 {@code RunStore.read}），所以这一类问题的表现
+     * 只是「历史里少了一条」——没有一条点名的断言，它可以在很久以后才被发现。
+     */
+    @Test
+    @DisplayName("老记录没有环境登记与已知失败：读出来是 null，不是读失败")
+    void readsLegacyRecordWithoutNewFields() throws IOException {
+        Path dir = root.resolve(RunStore.DEFAULT_DIR);
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("20260101-000000-000.json"), """
+                {
+                  "id": "20260101-000000-000",
+                  "startedAt": "2026-01-01T00:00",
+                  "status": "SUCCESS",
+                  "prompt": "老需求",
+                  "acceptance": [],
+                  "targets": ["a.txt"],
+                  "attempts": 1,
+                  "detail": "老记录"
+                }
+                """);
+
+        RunRecord record = new RunStore(dir).load("20260101-000000-000");
+
+        assertThat(record.status()).isEqualTo("SUCCESS");
+        assertThat(record.environment()).as("老记录里没有这一项").isNull();
+        assertThat(record.knownFailures()).as("老记录里也没有这一项").isNull();
     }
 
     private static PatchApplier.FileChange change(String path, String diff) {

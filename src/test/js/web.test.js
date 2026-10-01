@@ -1258,5 +1258,41 @@ check(stageText({ type: 'result' }) === '' && stageText(null) === '',
     '收场和没有事件时那句话清掉（不留一句过期的「正在…」）');
 check(stageText({ type: 'log', round: 0, text: '第 1 步：加接口' }) === '正在开工…', '没有轮次时说「正在开工」');
 
+// ---------- 测试环境：集成测试能不能勾 ----------
+// 判据只有一条「环境可用」，而它有三处消费者（勾选框、请求体、那句解释）。
+// 三处各写一遍的话，迟早出现「勾选框禁着、请求里却发了 true」这种自相矛盾——
+// 而那种矛盾的结果是一次注定失败的运行。
+console.log('集成测试勾不勾得动：');
+const { integrationAllowed, integrationHint } = load('index.html',
+    ['integrationAllowed', 'integrationHint'],
+    'function integrationAllowed', 'function updateIntegration');
+
+check(integrationAllowed(null) === false, '还没拿到环境状态时勾不了（不知道能不能跑，就不让你勾）');
+check(integrationAllowed({ usable: false, declared: false }) === false, '没声明环境：勾不了');
+check(integrationAllowed({ usable: false, declared: true, docker: 'COMMAND_NOT_FOUND' }) === false,
+    'Docker 不可用：勾不了');
+check(integrationAllowed({ usable: false, declared: true, docker: 'READY' }) === false,
+    '声明了、Docker 也在，但环境没初始化：还是勾不了（十五.5）');
+check(integrationAllowed({ usable: true }) === true, '环境可用：能勾');
+
+const hintNotDeclared = integrationHint({ declared: false, declaredFile: '.specflow/env.yaml' });
+check(hintNotDeclared.includes('env.yaml'), '勾不动时说清是「没写那份声明」：' + hintNotDeclared);
+const hintDocker = integrationHint({ declared: true, docker: 'DAEMON_DOWN',
+  dockerLabel: 'Docker 命令在，但 daemon 没起来' });
+check(hintDocker.includes('daemon'), 'Docker 的问题照原话说（不概括成一句「不可用」）：' + hintDocker);
+const hintNotInit = integrationHint({ declared: true, docker: 'READY', usable: false });
+check(hintNotInit.includes('还没初始化'), '环境没初始化时，那句话指的就是「初始化」：' + hintNotInit);
+check(integrationHint({ usable: true }).includes('集成测试'), '能勾的时候说的是勾上会发生什么');
+
+// 「已知失败」发出去的正文：完整的一份集合 + 那一次运行的 id
+const { knownPayload } = load('index.html', ['knownPayload'],
+    'function knownPayload', 'async function onTestAction');
+const known = knownPayload('20260930-120000', [2, 1]);
+check(known.id === '20260930-120000' && known.cases.join() === '2,1',
+    '带上记录 id 和勾中的那些编号：' + JSON.stringify(known));
+check(knownPayload('', [3]).id === '', '不知道是哪一次时 id 给空串（服务端按最新那条落，不丢这个判断）');
+check(JSON.stringify(knownPayload(null, [])) === '{"id":"","cases":[]}',
+    'null 也要变成空串和空表，不发一个 null 出去');
+
 console.log(failed ? '\n失败 ' + failed + ' 项' : '\n全部通过');
 process.exitCode = failed ? 1 : 0;

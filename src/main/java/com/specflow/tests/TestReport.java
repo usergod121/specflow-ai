@@ -176,6 +176,105 @@ public final class TestReport {
     }
 
     /**
+     * 测试脚本压根没跑起来：环境问题（镜像拉不到、健康检查超时、init/reset 失败、容器不在）。
+     *
+     * <p>和 {@link #rejected} 的区别就是这批里最要紧的一条分档：那个是「测试代码不能用」，
+     * 这个是「这台机器上跑不起来」。判错的代价不对称——把环境问题记成测试代码问题，
+     * 用户会去改一份本来就对的东西；反过来则会让一次真的写错的测试被当成环境的锅。
+     * 所以调用方（{@code DevelopmentAgent}）必须自己知道手里的是哪一类，engine 不猜。
+     *
+     * <p>{@code reason} 里要带<b>原始错误和待办</b>（十五.5）：只有一句「环境问题」，
+     * 用户既不知道该修哪台机器、也不知道该改哪一行。
+     */
+    public static TestOutcome environmental(int calls, String reason) {
+        return new TestOutcome("", List.of(), calls, TestScriptVerifier.NO_EXIT_CODE,
+                VerificationResult.failed(TestScriptVerifier.NAME, "", reason,
+                        VerificationResult.Kind.ENVIRONMENT),
+                List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.ENVIRONMENT,
+                        "", "", reason, "")),
+                List.of());
+    }
+
+    /**
+     * 把几次脚本执行的结果合成一份。
+     *
+     * <p>为什么会有「几次」：勾了集成测试时要跑<b>两个</b>入口脚本（单元一个、集成一个，
+     * 两个都在同一个位置跑——有可用环境就是容器里，否则都回退宿主；见
+     * {@link ExecutionLocation}），而用例清单是一份——只跑其中一个，
+     * 另一条路上的用例会被对账逻辑判成「没验」，于是每次勾集成都会收到一份假的失败清单。
+     *
+     * <p>合并规则都朝着「宁可让人来看一眼」的一边：
+     * <ul>
+     *   <li>失败清单<b>直接相加</b>：两个脚本各自报的失败都要留着；</li>
+     *   <li>同一条用例两边都报了：按<b>没过</b>算（和 {@link #reported} 里同一个口径）；</li>
+     *   <li>结论那一栏取<b>最重</b>的那一个（环境问题 &gt; 超时 &gt; 其它）：环境问题意味着
+     *       这次运行要立刻停并回滚，超时意味着后面的结论不算数——两者都不该被
+     *       「另一个脚本跑得好好的」冲淡。</li>
+     * </ul>
+     * 输出正文是两段接起来的（各自带一行「哪个脚本、退出码多少」），
+     * 所以界面上的「脚本的原始输出」看到的仍然是全部事实。
+     */
+    public static TestOutcome merge(List<TestOutcome> outcomes) {
+        if (outcomes == null || outcomes.isEmpty()) {
+            return environmental(0, "没有跑任何测试脚本");
+        }
+        if (outcomes.size() == 1) {
+            return outcomes.get(0);
+        }
+        List<TestOutcome.Failure> failures = new ArrayList<>();
+        Map<Integer, Boolean> cases = new LinkedHashMap<>();
+        StringBuilder output = new StringBuilder();
+        int calls = 0;
+        int exit = 0;
+        for (TestOutcome outcome : outcomes) {
+            failures.addAll(outcome.failures());
+            for (TestOutcome.CaseResult result : outcome.cases()) {
+                cases.merge(result.index(), result.passed(), (first, second) -> first && second);
+            }
+            if (output.length() > 0) {
+                output.append(System.lineSeparator());
+            }
+            output.append("--- ").append(outcome.verification() == null
+                            ? "（没有结论）" : outcome.verification().command())
+                    .append("：退出码 ").append(outcome.exit()).append(" ---")
+                    .append(System.lineSeparator()).append(outcome.output());
+            calls += outcome.calls();
+            if (exit == 0 && outcome.exit() != 0) {
+                exit = outcome.exit();
+            }
+        }
+        // 结论取最重的那一个；都是「跑完了」时按有没有失败收成通过/未通过
+        VerificationResult heaviest = outcomes.stream()
+                .map(TestOutcome::verification)
+                .filter(result -> result != null && (result.environmental() || result.timedOut()))
+                .findFirst()
+                .orElse(null);
+        boolean passed = failures.isEmpty() && outcomes.stream().allMatch(TestOutcome::passed);
+        VerificationResult combined = heaviest != null
+                ? failedWith(heaviest.kind(), output.toString())
+                : passed ? VerificationResult.passed(TestScriptVerifier.NAME, entriesOf(outcomes),
+                        output.toString())
+                : VerificationResult.failed(TestScriptVerifier.NAME, entriesOf(outcomes),
+                        output.toString(), VerificationResult.Kind.NONE);
+        List<TestOutcome.CaseResult> merged = cases.entrySet().stream()
+                .map(entry -> new TestOutcome.CaseResult(entry.getKey(), entry.getValue()))
+                .toList();
+        return new TestOutcome(outcomes.get(0).directory(), outcomes.get(0).files(), calls, exit,
+                combined, failures, merged);
+    }
+
+    /** 「哪几个脚本」——合并之后的那一栏要能看出它不止一个。 */
+    private static String entriesOf(List<TestOutcome> outcomes) {
+        return String.join(" + ", outcomes.stream()
+                .map(outcome -> outcome.verification() == null ? "?" : outcome.verification().command())
+                .toList());
+    }
+
+    private static VerificationResult failedWith(VerificationResult.Kind kind, String output) {
+        return VerificationResult.failed(TestScriptVerifier.NAME, "", output, kind);
+    }
+
+    /**
      * 产物已经清掉的那一版。
      *
      * <p>环境问题这条路会连同产品改动一起回滚，测试产物没有可测的代码了，

@@ -76,7 +76,7 @@ class RunRequestTest {
 
     private static RunRequest request(Integer maxRounds) {
         return RunRequest.of(null, "改点东西", null, null, null, List.of("Foo.java"),
-                null, null, null, true, 6, maxRounds);
+                null, null, null, true, 6, maxRounds, null);
     }
 
     /**

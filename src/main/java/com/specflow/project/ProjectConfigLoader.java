@@ -63,11 +63,11 @@ public final class ProjectConfigLoader {
      * 而 {@code String.trim()} 只认 ≤U+0020 的字符，全角空格、NBSP、零宽空格都会漏过去——
      * 那样一份「看着是空的」文件会被当成坏配置，项目再也打不开。
      *
-     * <p>{@link ProjectInitializer} 与 {@link ProjectScanner} 都用这个判断：
-     * 三边口径必须一致，否则会出现「加载说没配过、初始化说有文件」的死角，
+     * <p>{@link ProjectInitializer}、{@link ProjectScanner} 与 {@code EnvConfigLoader}
+     * 都用这个判断：几边口径必须一致，否则会出现「加载说没配过、初始化说有文件」的死角，
      * 用户点多少次初始化都出不来。
      */
-    static boolean hasNoContent(String source) {
+    public static boolean hasNoContent(String source) {
         String body = source.startsWith("\uFEFF") ? source.substring(1) : source;
         return body.lines().allMatch(ProjectConfigLoader::isNotContent);
     }

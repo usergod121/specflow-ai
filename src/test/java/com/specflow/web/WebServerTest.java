@@ -2,7 +2,13 @@ package com.specflow.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.specflow.TestSpecs;
+import com.specflow.agent.AgentListener;
+import com.specflow.agent.AgentResult;
+import com.specflow.env.ComposeFile;
+import com.specflow.env.FakeDocker;
 import com.specflow.history.RunRecord;
+import com.specflow.history.RunRecorder;
 import com.specflow.history.RunStore;
 import com.specflow.project.ProjectConfig;
 import com.specflow.project.RecentProjects;
@@ -1268,6 +1274,203 @@ class WebServerTest {
             Thread.sleep(20);
         }
         return false;
+    }
+
+    // ---------- 测试环境（十五.5 / 15.8） ----------
+
+    /**
+     * 没写 {@code env.yaml} 的项目：界面上只能跑单元测试，而且**一次 docker 都不探**。
+     *
+     * <p>「一个字节都没变」这条老口径就落在这儿：绝大多数项目没有那份声明，
+     * 它们不该为这个功能付出任何代价。
+     */
+    @Test
+    @DisplayName("没声明测试环境：报「只能跑单元测试」，集成测试勾不了")
+    void reportsNoEnvironmentDeclaration() throws Exception {
+        JsonNode env = body(get("/api/env"));
+
+        assertThat(env.path("declared").asBoolean()).isFalse();
+        assertThat(env.path("state").asText()).isEqualTo("NOT_DECLARED");
+        assertThat(env.path("usable").asBoolean()).isFalse();
+        assertThat(env.path("docker").asText())
+                .as("没声明就不该探 docker：这一栏空着就是「一次进程都没起」的凭据")
+                .isEmpty();
+        assertThat(env.path("dockerLabel").asText()).isEmpty();
+        assertThat(env.path("leftovers").asInt()).isZero();
+        assertThat(env.path("todo").asText()).contains("env.yaml");
+    }
+
+    /** {@code env.yaml} 写错了：把带行号的问题原样给界面（用户不必等到起容器才发现）。 */
+    @Test
+    @DisplayName("env.yaml 写错：把哪一行错了报给界面")
+    void reportsEnvironmentConfigProblems() throws Exception {
+        declare("""
+                image: "x:1"
+                workdir: "work"
+                """);
+
+        JsonNode env = body(get("/api/env"));
+
+        assertThat(env.path("declared").asBoolean()).isTrue();
+        assertThat(env.path("configError")).hasSize(1);
+        assertThat(env.path("configError").get(0).asText())
+                .contains("第 2 行").contains("绝对路径");
+    }
+
+    /**
+     * 初始化测试环境：走真的 HTTP、真的起进程——只不过「docker」是一个脚本。
+     *
+     * <p>这台机器上不能真的起容器（会拉镜像、会占资源），而这条链要验的正是
+     * 「点了初始化之后发生了什么」：compose 落盘、容器起来、状态变成可用。
+     * 把 docker 换成脚本之后这三件事全都能验，而且不留任何东西。
+     */
+    @Test
+    @DisplayName("初始化测试环境：真起进程（docker 是脚本），回来后状态变成「可跑集成」")
+    void initializesTheEnvironment() throws Exception {
+        FakeDocker fake = FakeDocker.create(root.resolve(".specflow/fake-docker"));
+        fake.respond("version", 0, "fake docker 1.0")
+                .respond("up -d --wait", 0, "started")
+                .respond("exec -T", 0)
+                .respond("ps -a", 0, project() + "-app-1")
+                .respond("volume ls", 0)
+                .respond("network ls", 0)
+                // 收环境那条命令：关不掉是要报出来的，所以桩里也得让它成功
+                .respond("down", 0);
+        declare("""
+                docker:
+                  command: "%s"
+                image: "eclipse-temurin:17"
+                env:
+                  DB_HOST: "db"
+                init:
+                  - "python -m build-db"
+                """.formatted(fake.script().toString().replace('\\', '/')));
+
+        HttpResponse<String> response = post("/api/env/init", "{}");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        assertThat(body(response).path("state").asText()).isEqualTo("READY");
+        // compose 落在引擎自己的目录里，项目自己的 compose 文件一个字都没动
+        assertThat(root.resolve(".specflow/env")).isDirectory();
+        assertThat(fake.calls()).anySatisfy(call -> assertThat(call).contains("up -d --wait"));
+        assertThat(fake.calls()).anySatisfy(call -> assertThat(call).contains("build-db"));
+
+        JsonNode env = body(get("/api/env"));
+        assertThat(env.path("usable").asBoolean()).isTrue();
+        assertThat(env.path("dockerLabel").asText()).contains("可用");
+        assertThat(env.path("registration").path("containers")).isNotEmpty();
+        assertThat(env.path("registration").path("summary").asText()).contains("已就绪");
+    }
+
+    /** 清空测试环境：用户手动收环境的入口，连卷一起。 */
+    @Test
+    @DisplayName("清空测试环境：down -v，之后状态回到「还没初始化」")
+    void clearsTheEnvironment() throws Exception {
+        FakeDocker fake = FakeDocker.create(root.resolve(".specflow/fake-docker"));
+        fake.respond("version", 0, "fake docker 1.0")
+                .respond("up -d --wait", 0)
+                .respond("ps -a", 0, project() + "-app-1")
+                .respond("volume ls", 0)
+                .respond("network ls", 0)
+                // 收环境那条命令：关不掉是要报出来的，所以桩里也得让它成功
+                .respond("down", 0);
+        declare("""
+                docker:
+                  command: "%s"
+                image: "x:1"
+                """.formatted(fake.script().toString().replace('\\', '/')));
+        post("/api/env/init", "{}");
+
+        HttpResponse<String> response = post("/api/env/clear", "{}");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        assertThat(fake.calls()).anySatisfy(call ->
+                assertThat(call).contains("down -v --remove-orphans"));
+        assertThat(root.resolve(".specflow/env")).isEmptyDirectory();
+        assertThat(body(get("/api/env")).path("usable").asBoolean()).isFalse();
+    }
+
+    /**
+     * 勾了集成测试但环境没就绪：<b>点下运行的那一刻</b>就拒（409），而不是等测试阶段才失败。
+     *
+     * <p>等那时候，用户已经烧掉一整轮开发调用，而失败看起来还像「代码写错了」。
+     */
+    @Test
+    @DisplayName("勾了集成测试但环境没就绪：提交运行时当场拒（不烧模型调用）")
+    void refusesIntegrationBeforeTheEnvironmentIsReady() throws Exception {
+        declare("""
+                image: "x:1"
+                """);
+
+        HttpResponse<String> response = post("/api/run",
+                "{\"prompt\":\"做点什么\",\"targets\":[\"README.md\"],\"integration\":true}");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(409);
+        assertThat(body(response).path("error").asText()).contains("集成测试");
+    }
+
+    /** 没声明环境却勾了集成测试：说清缺的是那份声明文件。 */
+    @Test
+    @DisplayName("没声明环境却勾了集成测试：说清先写 env.yaml")
+    void refusesIntegrationWithoutDeclaration() throws Exception {
+        HttpResponse<String> response = post("/api/run",
+                "{\"prompt\":\"做点什么\",\"targets\":[\"README.md\"],\"integration\":true}");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(409);
+        assertThat(body(response).path("error").asText()).contains("env.yaml");
+    }
+
+    /**
+     * 「不重要 / 误报」写进运行留档：接口收的是<b>完整的一份集合</b>，
+     * 存下来之后翻记录还看得见（刷新一次不该把人的判断抹掉）。
+     */
+    @Test
+    @DisplayName("「已知失败」落档：接口写进去，运行详情读得回来")
+    void recordsKnownFailuresIntoTheArchive() throws Exception {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder.start(store, TestSpecs.spec(List.of("README.md")), null, AgentListener.NOOP)
+                .finished(AgentResult.failed(1, List.of(), List.of(), "测试没过"));
+        String id = store.latestId();
+
+        HttpResponse<String> response = post("/api/tests/known",
+                "{\"id\":" + quote(id) + ",\"cases\":[2,1]}");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        JsonNode detail = body(get("/api/run-detail?id=" + encode(id)));
+        assertThat(detail.path("knownFailures")).hasSize(2);
+        assertThat(detail.path("knownFailures").get(0).path("index").asInt()).isEqualTo(1);
+
+        // 不带 id（刷新过页面之后界面手里没有它）：按最新那条落
+        assertThat(post("/api/tests/known", "{\"cases\":[3]}").statusCode()).isEqualTo(200);
+        assertThat(body(get("/api/run-detail?id=" + encode(id)))
+                .path("knownFailures")).hasSize(1);
+    }
+
+    /** 一条运行记录都没有时标「已知失败」：409 说清「先跑一次」。 */
+    @Test
+    @DisplayName("没有运行记录时标「已知失败」：409，而不是静默丢掉这个判断")
+    void refusesKnownFailuresWithoutAnyRun() throws Exception {
+        HttpResponse<String> response = post("/api/tests/known", "{\"cases\":[1]}");
+
+        assertThat(response.statusCode()).isEqualTo(409);
+        assertThat(body(response).path("error").asText()).contains("跑一次");
+    }
+
+    private void declare(String source) throws IOException {
+        Path file = root.resolve(".specflow/env.yaml");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, source, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 这个临时项目算出来的 compose 项目名。
+     *
+     * <p>直接问引擎要，不在这里自己拼：名字里还挂着一个从绝对路径算出来的短哈希，
+     * 而「名字像不像这个项目」正是守着那一堆容器/卷的判据——
+     * 拼错了，它们会被判成别人的东西（那是安全口径，只是这些断言就看不到效果了）。
+     */
+    private String project() {
+        return ComposeFile.projectName(root);
     }
 
     // ---------- 辅助 ----------

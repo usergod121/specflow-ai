@@ -5,7 +5,11 @@ import com.specflow.agent.AgentResult;
 import com.specflow.agent.DevelopmentAgent;
 import com.specflow.agent.ProgressMessages;
 import com.specflow.context.ContextAssembler;
+import com.specflow.env.EnvConfigLoader;
+import com.specflow.env.EnvRegistration;
+import com.specflow.env.TestEnvironment;
 import com.specflow.exception.PatchConflictException;
+import com.specflow.exception.SpecValidationException;
 import com.specflow.history.RunRecord;
 import com.specflow.history.RunRecorder;
 import com.specflow.history.RunStore;
@@ -23,8 +27,11 @@ import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.SpecValidator;
 import com.specflow.template.TemplateRegistry;
+import com.specflow.tests.ExecutionLocation;
 import com.specflow.tests.TestAgent;
+import com.specflow.tests.TestArtifacts;
 import com.specflow.tests.TestOutcome;
+import com.specflow.tests.TestSettings;
 import com.specflow.util.SafePathResolver;
 import com.specflow.verify.CompileVerifier;
 import com.specflow.verify.VerificationResult;
@@ -63,6 +70,15 @@ public final class RunService implements AgentListener {
     private final RunHub hub = new RunHub();
 
     /**
+     * 这个项目的测试环境（十五.5）。
+     *
+     * <p>它由 {@link OpenProject} 装配时建一次，整个「打开项目」期间共用：
+     * 探测结果要缓存（每次问都起进程，界面一进来会问好几遍），而环境本身是<b>项目级</b>
+     * 而不是运行级的东西——容器常驻复用，跨运行都活着。
+     */
+    private final TestEnvironment environment;
+
+    /**
      * 有没有人按了「停止」。
      *
      * <p>由运行线程读、HTTP 线程写，所以是 {@code volatile}。
@@ -99,9 +115,18 @@ public final class RunService implements AgentListener {
     });
 
     public RunService(Path projectRoot, ProjectConfig project, Path templatesDir) {
+        this(projectRoot, project, templatesDir, TestEnvironment.of(projectRoot));
+    }
+
+    /**
+     * 带测试环境的那一版：测试要能换一个假的 docker 跑（这台机器上没有 Docker）。
+     */
+    public RunService(Path projectRoot, ProjectConfig project, Path templatesDir,
+                      TestEnvironment environment) {
         this.projectRoot = projectRoot.toAbsolutePath().normalize();
         this.project = project;
         this.templatesDir = templatesDir;
+        this.environment = environment;
         this.store = new RunStore(this.projectRoot.resolve(RunStore.DEFAULT_DIR));
     }
 
@@ -160,11 +185,46 @@ public final class RunService implements AgentListener {
         // 上一次的测试结论同理：留着它，一次没跑测试的运行会顶着上一轮的失败清单收场
         lastTests = null;
         Spec spec = toValidSpec(request);
+        // 环境这道闸排在模型配置之前：它是「这件事现在做不了」里最靠前的一条，
+        // 而且不花钱。排在后面的话，一个没配密钥的项目会收到「密钥没配」，
+        // 而它真正的问题是没有环境
+        requireEnvironment(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
 
         String runId = hub.startRun(UUID.randomUUID().toString());
-        runner.submit(() -> execute(spec, llm, request.approvedPlan()));
+        runner.submit(() -> execute(spec, llm, request.approvedPlan(), settingsOf(request)));
         return runId;
+    }
+
+    /**
+     * 勾了集成测试但没有可用的环境：<b>立刻拒，而不是等测试阶段才失败</b>。
+     *
+     * <p>十五.5 定的是「初始化好之后集成测试才能勾选」。界面上那道闸（勾选框能不能点）
+     * 是给人看的，而这条是机器判的：界面可以旧、可以被改坏、也可以被别的调用方绕开
+     * （CLI 就是一个）。等到测试阶段才发现，用户已经烧掉一整轮开发调用了，
+     * 而失败看起来还像「代码写错了」。
+     */
+    private void requireEnvironment(RunRequest request) {
+        if (!request.runsIntegration()) {
+            return;
+        }
+        TestEnvironment.Status status = environment.status();
+        if (!status.declared()) {
+            throw new IllegalStateException("勾了集成测试，但这个项目没有 "
+                    + EnvConfigLoader.relativePath() + "：先写一份环境声明再初始化");
+        }
+        if (!status.usable()) {
+            throw new IllegalStateException("勾了集成测试，但测试环境还没就绪（"
+                    + status.state().label() + "）："
+                    + (status.todo().isEmpty() ? "" : status.todo()));
+        }
+    }
+
+    /** 这次运行按哪个测试设置走。 */
+    private static TestSettings settingsOf(RunRequest request) {
+        return request.runsIntegration()
+                ? new TestSettings(true)
+                : TestSettings.UNIT_ONLY;
     }
 
     /**
@@ -197,11 +257,13 @@ public final class RunService implements AgentListener {
         cancelRequested = false;
         lastTests = null;
         Spec spec = toValidSpec(request);
+        requireEnvironment(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
         DevelopmentAgent.Resume origin =
                 new DevelopmentAgent.Resume(suspended.detail(), force, suspended.planSteps());
         String runId = hub.startRun(UUID.randomUUID().toString());
-        runner.submit(() -> execute(spec, llm, request.approvedPlan(), origin));
+        runner.submit(() -> execute(spec, llm, request.approvedPlan(), origin,
+                settingsOf(request)));
         return runId;
     }
 
@@ -265,16 +327,68 @@ public final class RunService implements AgentListener {
      * 接受：把快照删掉，磁盘上的改动保持不动。
      *
      * <p>「接受」不需要动文件——改动早就写进去了，快照留着只是为了让人还来得及撤回。
+     *
+     * <p>顺带清环境数据（十五.8：接受 = 保留改动 + 删快照 + 删测试产物 + 清环境数据）。
+     * 代价只有一条 reset 命令，而好处是「这次验过的库」不会把下一轮的断言带偏。
+     * 清不动只记一条警告：真正的问题是清理本身，而不是这次接受。
      */
     public void accept() {
         dispose(false);
+        clearTestArtifacts();
+        resetEnvironmentData();
     }
 
     /**
-     * 撤回：按快照把文件恢复原样，然后删掉快照。
+     * 撤回：按快照把文件恢复原样，然后删掉快照，清测试产物与环境数据。
      */
     public void rollback() {
         dispose(true);
+        clearTestArtifacts();
+        resetEnvironmentData();
+    }
+
+    /**
+     * 处置完之后把这一轮的测试产物删掉（十五.8：接受/中断都要删）。
+     *
+     * <p>为什么现在删而不是留着：留档里已经存了这次验了什么、哪条没过、为什么——
+     * 而那几份脚本是<b>指向这一轮改动</b>的。改动都被接受或撤回了，留着它们只是
+     * 让 {@code tools/} 一次比一次长（前一批里它只增不减）。
+     *
+     * <p>删不掉只记一条警告：处置已经生效了，为一次清理把请求变成 500，
+     * 用户会以为自己的决定没生效。
+     */
+    private void clearTestArtifacts() {
+        try {
+            String latest = store.latestId();
+            if (latest.isEmpty()) {
+                return;
+            }
+            RunRecord record = store.load(latest);
+            TestArtifacts.delete(projectRoot,
+                    record.tests() == null ? "" : record.tests().directory());
+        } catch (RuntimeException e) {
+            log.warn("清测试产物没成功（不影响这次处置）：{}", e.getMessage());
+        }
+    }
+
+    /**
+     * 收场时把环境数据清回一个已知状态（{@code reset}），失败只警告。
+     *
+     * <p>为什么是 best-effort 而不是抛出去：这个动作发生在「用户刚做了决定」之后，
+     * 而那个决定（接受还是撤回）已经生效了、文件也处置完了。为一条清理命令把整个请求
+     * 变成 500，用户会以为自己的决定没生效——而它其实生效了。
+     *
+     * <p>只在环境真的活着时做：没声明、docker 没了、没初始化，这里一次进程都不起。
+     */
+    private void resetEnvironmentData() {
+        try {
+            if (environment.declared() && environment.docker().ready()
+                    && environment.activeComposeFile() != null) {
+                environment.reset();
+            }
+        } catch (RuntimeException e) {
+            log.warn("清环境数据没成功（不影响这次处置）：{}", e.getMessage());
+        }
     }
 
     private void dispose(boolean restore) {
@@ -302,20 +416,21 @@ public final class RunService implements AgentListener {
                 .orElse(null);
     }
 
-    private void execute(Spec spec, LlmClient llm, PlanReview approved) {
-        execute(spec, llm, approved, null);
+    private void execute(Spec spec, LlmClient llm, PlanReview approved, TestSettings settings) {
+        execute(spec, llm, approved, null, settings);
     }
 
     /**
      * @param resume 非空表示这是「接着上次跑」，见 {@link #resume(RunRequest, boolean)}
      */
-    private void execute(Spec spec, LlmClient llm, PlanReview approved, DevelopmentAgent.Resume resume) {
+    private void execute(Spec spec, LlmClient llm, PlanReview approved, DevelopmentAgent.Resume resume,
+                         TestSettings settings) {
         try {
             // 装饰器：先记进运行留档，再转发给界面推送。两件事互不知道对方存在，
             // CLI 那边套的是同一个录制器，只是转发目标换成了空实现。
             AgentListener listener = RunRecorder.start(store, spec, approved, this);
             DevelopmentAgent agent = new DevelopmentAgent(projectRoot, project, templates(),
-                    llm, List.of(new CompileVerifier()), listener);
+                    llm, List.of(new CompileVerifier()), listener, settings, environment);
             if (resume == null) {
                 agent.run(spec, approved);
             } else {
@@ -434,6 +549,19 @@ public final class RunService implements AgentListener {
                 ProgressMessages.testsFinished(outcome));
     }
 
+    /**
+     * 测试环境这一摊的变化：起好了、重置过、坏掉了、收掉了。
+     *
+     * <p>推一行给界面。它<b>不</b>推整份登记：那里面有几十个名字，实时流里塞不下，
+     * 而界面要的是「现在到哪一步了」。整份登记跟着终态事件与运行留档走
+     * （见 {@link #testPayload} 与 {@code RunRecord.environment}）。
+     */
+    @Override
+    public void environmentChanged(EnvRegistration registration) {
+        hub.publish(ProgressMessages.levelOf(registration), 0, 0, null,
+                ProgressMessages.environmentChanged(registration));
+    }
+
     @Override
     public void workspaceRestored(int round, String reason) {
         hub.publish("warn", round, currentStep, null, ProgressMessages.restored(reason));
@@ -495,8 +623,15 @@ public final class RunService implements AgentListener {
         }
         Spec spec = toValidSpec(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
+        // 重新生成也要跟着这次勾没勾集成走：只重新生成单元那一半，
+        // 「放行」之后集成那一步会因为找不到入口而失败（见 TestAgent.generate）
+        Map<String, String> variables = request.runsIntegration() && environment.status().usable()
+                ? environment.variables() : null;
+        // 入口脚本的名字由执行位置决定（容器里是 run.sh、宿主上是 run.cmd），
+        // 所以这一处必须和真正跑起来那一次问的是同一个方法（见 ExecutionLocation）
         TestAgent.Generated generated = new TestAgent(projectRoot, project, templates(), llm)
-                .generate(spec, cases);
+                .generate(spec, cases, settingsOf(request), variables,
+                        ExecutionLocation.of(environment));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("directory", generated.directory());
         payload.put("files", generated.files());
@@ -528,6 +663,133 @@ public final class RunService implements AgentListener {
         // 测试代码正文：界面上「这条用例由哪段代码验」靠它，路径只是一个索引
         payload.put("sources", TestAgent.sources(projectRoot, outcome.directory(), outcome.files()));
         return payload;
+    }
+
+    // ---------- 测试环境的界面接口 ----------
+
+    /**
+     * 现在这套测试环境是什么状态。
+     *
+     * @param refresh 用户刚把 Docker 启动起来时会用到它（见 {@code TestEnvironment.docker}）
+     */
+    public Map<String, Object> environmentStatus(boolean refresh) {
+        // 先读声明：它自己写错了的时候连 docker 都不该探——一探就抛，
+        // 而用户要的是「第几行写错了」，不是一句 400
+        List<String> problems = configError();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("declaredFile", EnvConfigLoader.relativePath());
+        payload.put("configError", problems);
+        if (!problems.isEmpty()) {
+            payload.put("declared", EnvConfigLoader.exists(projectRoot));
+            payload.put("state", EnvRegistration.State.NOT_READY.name());
+            payload.put("usable", false);
+            payload.put("docker", "");
+            payload.put("dockerLabel", "");
+            payload.put("todo", "先改掉上面那几处（每一条都带着行号），改完再来初始化");
+            payload.put("leftovers", 0);
+            payload.put("leftoverWarn", false);
+            return payload;
+        }
+        if (!environment.declared()) {
+            // 没写这份声明的项目（绝大多数）**一次进程都不起**：连 docker 都不探。
+            // 界面打开一次就要问一次环境状态，而「你到底装没装 Docker」这个问题，
+            // 对一个只能跑单元测试的项目来说没有任何意义
+            TestEnvironment.Status status = environment.status();
+            payload.put("declared", false);
+            payload.put("state", status.state().name());
+            payload.put("usable", false);
+            payload.put("docker", "");
+            payload.put("dockerLabel", "");
+            payload.put("todo", status.todo());
+            payload.put("leftovers", 0);
+            payload.put("leftoverWarn", false);
+            payload.put("registration", status.registration());
+            return payload;
+        }
+
+        environment.docker(refresh);
+        TestEnvironment.Status status = environment.status();
+        payload.put("declared", status.declared());
+        payload.put("state", status.state().name());
+        payload.put("usable", status.usable());
+        payload.put("docker", status.dockerState());
+        payload.put("dockerLabel", status.dockerLabel());
+        payload.put("todo", status.todo());
+        payload.put("leftovers", status.leftovers());
+        payload.put("leftoverWarn", TestEnvironment.shouldWarnAboutLeftovers(status.leftovers()));
+        payload.put("registration", status.registration());
+        return payload;
+    }
+
+    /**
+     * {@code env.yaml} 自身的问题（结构、字段、缺项），一个字段一项；没问题时是空表。
+     *
+     * <p>为什么要单独问一遍：它是<b>用户写的文件</b>，而写错的代价是「容器起不来」。
+     * 在点初始化之前就把「第几行写错了」摆出来，用户改一轮就能改完；
+     * 等到 docker 报一句语法错误，他只会以为是 docker 的问题。
+     */
+    private List<String> configError() {
+        try {
+            environment.config();
+            return List.of();
+        } catch (SpecValidationException e) {
+            return e.problems();
+        }
+    }
+
+    /**
+     * 初始化测试环境（十五.5：导入项目时问一次，问的就是这件事）。
+     *
+     * <p>它是<b>同步</b>的：起容器要拉镜像，可能几分钟。做成异步就得再搭一条进度通道，
+     * 而这一步的语义是「点一下，等它好」——界面上给一个忙碌状态就够了。
+     */
+    public EnvRegistration initializeEnvironment() {
+        requireIdle("初始化测试环境");
+        return environment.up();
+    }
+
+    /**
+     * 收环境：用户手动点的「清空测试环境」（十五.8 那一个手动入口）。
+     *
+     * <p>连卷一起删（{@code down -v}）：用户点它的场景就是「这套环境不对劲，
+     * 我要一个干净的」，留着卷只是把旧数据带进下一轮。
+     */
+    public EnvRegistration clearEnvironment() {
+        requireIdle("清空测试环境");
+        return environment.down(true);
+    }
+
+    /** 有任务在跑的时候不许动环境：容器正被这次运行用着，删掉就等于把测试腰斩。 */
+    private void requireIdle(String what) {
+        if (hub.running()) {
+            throw new IllegalStateException("有任务正在运行，等它结束再" + what);
+        }
+    }
+
+    // ---------- 「已知失败」落档 ----------
+
+    /**
+     * 把「这几条不重要」写进运行留档（十五.6 的第三条路）。
+     *
+     * <p>它为什么要有接口：这是<b>人做的判断</b>，而留档是它唯一的去处。
+     * 只留在界面上，刷新一次就没了——事后翻记录的人只会看到一片红，
+     * 然后以为那次运行是失败的。
+     *
+     * @param id     哪一次运行；空串表示「界面上正看着的那一次」，按最新那条落（见下面注释）
+     * @param cases  标成已知失败的用例编号（<b>完整的一份集合</b>，不是增量）
+     */
+    public RunRecord markKnownFailures(String id, List<Integer> cases) {
+        String target = id == null ? "" : id.strip();
+        if (target.isEmpty()) {
+            // 刷新过页面之后，界面手里只有屏幕上那份失败清单，拿不到记录 id。
+            // 屏幕上那份清单本来就是「最新一次跑出来的」，所以按最新那条落比拒绝一次
+            // 人的判断要好——而拒绝的代价是这条判断又丢了
+            target = store.latestId();
+        }
+        if (target.isEmpty()) {
+            throw new IllegalStateException("一条运行记录都没有：先跑一次测试，才有可标记的失败清单");
+        }
+        return store.markKnownFailures(target, cases);
     }
 
     // ---------- 内部 ----------

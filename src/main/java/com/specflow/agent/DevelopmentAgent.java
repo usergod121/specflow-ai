@@ -4,6 +4,9 @@ import com.specflow.agent.AgentListener.StepState;
 import com.specflow.agent.AgentListener.StepsSource;
 import com.specflow.context.ContextAssembler;
 import com.specflow.context.PatchProtocol;
+import com.specflow.env.EnvProblem;
+import com.specflow.env.EnvRegistration;
+import com.specflow.env.TestEnvironment;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.llm.ChatMessage;
 import com.specflow.llm.LlmClient;
@@ -22,8 +25,11 @@ import com.specflow.review.StepsProtocol;
 import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.template.TemplateRegistry;
+import com.specflow.tests.ExecutionLocation;
 import com.specflow.tests.TestAgent;
 import com.specflow.tests.TestOutcome;
+import com.specflow.tests.TestReport;
+import com.specflow.tests.TestSettings;
 import com.specflow.util.ProjectFiles;
 import com.specflow.util.SafePathResolver;
 import com.specflow.verify.CompileFailure;
@@ -120,6 +126,18 @@ public final class DevelopmentAgent {
     private final List<Verifier> verifiers;
     private final AgentListener listener;
 
+    /** 这一次测试怎么跑（只单元 / 单元+集成）。见 {@link TestSettings}。 */
+    private final TestSettings settings;
+
+    /**
+     * 测试环境；{@code null} = 这个项目没声明（没有 {@code .specflow/env.yaml}）。
+     *
+     * <p>没声明时它一直是 {@code null}，而「勾了集成测试」这件事会被当场拒绝并说清原因——
+     * 不加这一层兜底的话，界面上的一个勾选框就能让一次运行在测试阶段才失败，
+     * 而那时产品代码已经改完了。
+     */
+    private final TestEnvironment environment;
+
     private final ContextAssembler assembler;
     private final PatchParser parser = new PatchParser();
     private final PlanParser planParser = new PlanParser();
@@ -133,6 +151,21 @@ public final class DevelopmentAgent {
 
     public DevelopmentAgent(Path projectRoot, ProjectConfig project, TemplateRegistry templates,
                             LlmClient llm, List<Verifier> verifiers, AgentListener listener) {
+        this(projectRoot, project, templates, llm, verifiers, listener, TestSettings.UNIT_ONLY,
+                null);
+    }
+
+    /**
+     * 带测试环境的那一版。
+     *
+     * @param settings    跑单元还是单元+集成。默认是「只跑单元」——这批之前的行为，
+     *                    一个字节都没变：没勾集成就完全不碰环境，连探测都不探
+     * @param environment 测试环境；{@code null} = 这个项目没声明环境（{@code env.yaml} 不在）。
+     *                    勾了集成却没有它，会在测试阶段当场停下并说清原因
+     */
+    public DevelopmentAgent(Path projectRoot, ProjectConfig project, TemplateRegistry templates,
+                            LlmClient llm, List<Verifier> verifiers, AgentListener listener,
+                            TestSettings settings, TestEnvironment environment) {
         this.projectRoot = projectRoot.toAbsolutePath().normalize();
         this.pathResolver = new SafePathResolver(this.projectRoot);
         this.project = project;
@@ -140,6 +173,8 @@ public final class DevelopmentAgent {
         this.llm = llm;
         this.verifiers = List.copyOf(verifiers);
         this.listener = listener;
+        this.settings = settings == null ? TestSettings.UNIT_ONLY : settings;
+        this.environment = environment;
         this.assembler = new ContextAssembler(this.pathResolver);
         this.applier = new PatchApplier(this.pathResolver);
     }
@@ -451,7 +486,16 @@ public final class DevelopmentAgent {
             closeRun(snapshot, true, rounds, "人工中断");
             return AgentResult.cancelled(rounds, lastChanges, lastResults);
         }
-        TestOutcome tests = testPhase(spec, approved);
+        TestOutcome tests;
+        try {
+            tests = testPhase(spec, approved);
+        } catch (EnvProblem problem) {
+            // 环境起不来：这就是十五.5 里那一档「立刻停 + 原始错误 + 待办」。
+            // 落成环境问题的测试结论，下面那段通用的收场会照着它回滚并把原因交给人——
+            // 绝不把它当成「测试代码写错了」
+            log.warn("测试环境没弄成：{}", problem.detail());
+            tests = TestReport.environmental(0, problem.detail());
+        }
         if (tests != null && tests.environmental()) {
             log.warn("测试跑不起来（环境问题）：{}", tests.detail());
             closeRun(snapshot, true, rounds, "测试跑不起来（环境问题）");
@@ -483,6 +527,11 @@ public final class DevelopmentAgent {
      * <p>它<b>不改产品代码、不重试、不回喂</b>。失败清单交给人：谁错了机器判不了，
      * 硬判就会逼出「为了过一条写错的用例，把正确代码改成错的」（十四.3 那条教训）。
      *
+     * <p><b>环境在这一段里管</b>（十五.5）：进测试之前先确认环境活着，勾了集成测试就先跑一次
+     * reset，把连接信息喂给测试代码；环境起不来就落成「环境问题」，立刻停 + 原始错误 + 待办。
+     * <b>测试脚本跑在哪</b>也在这一段定：环境活着 → 单元与集成都进容器，否则都回退宿主
+     * （十五.5，执行位置只由 {@link ExecutionLocation} 一处判）。
+     *
      * @return 这次测试阶段的结论；没有用例清单时返回 {@code null}（= 没跑）
      */
     private TestOutcome testPhase(Spec spec, PlanReview approved) {
@@ -492,10 +541,76 @@ public final class DevelopmentAgent {
         // 先说起点再动手：这一段里界面拿不到任何进度（只有一次模型调用加一次脚本执行），
         // 「开始了、大概要多久、中途停不下来」这三件事只能由引擎在这一刻告诉界面
         listener.testsStarted(approved.cases().size());
-        TestOutcome outcome = new TestAgent(projectRoot, project, templates, llm)
-                .run(spec, approved.cases());
+        Map<String, String> variables = null;
+        EnvRegistration registration = null;
+        try {
+            if (settings.integration()) {
+                // 环境问题在这一步就会现形：没声明、没初始化、容器不在、reset 跑挂了。
+                // 一条都不该由模型负责，所以不往下走，直接按环境问题收场
+                registration = environment == null ? null : environment.reset();
+                if (environment != null) {
+                    variables = environment.variables();
+                    listener.environmentChanged(registration);
+                }
+            }
+        } catch (EnvProblem problem) {
+            // 记一笔再抛：留档里要看得见「它当时卡在哪条命令上」，
+            // 而这次运行没有走到测试脚本那一步
+            listener.environmentChanged(brokenEnvironment(problem));
+            throw problem;
+        }
+        TestOutcome outcome;
+        try {
+            // 这一次在哪儿跑（容器 / 宿主）只在这一处问：环境活着就进容器，
+            // 用不了（没 Docker、没初始化、容器关了）就回退宿主——回退这件事会写进结果与留档
+            outcome = new TestAgent(projectRoot, project, templates, llm)
+                    .run(spec, approved.cases(), settings, variables,
+                            ExecutionLocation.of(environment));
+        } catch (EnvProblem problem) {
+            // 环境问题是这一段的刹车信号：它和「测试代码写错了」是两码事，
+            // 混在一起用户就会去改一份本来就对的东西
+            listener.environmentChanged(brokenEnvironment(problem));
+            throw problem;
+        } finally {
+            // 登记逆序清理（十五.8）：环境坏掉时就地收干净，好的时候原样留着复用。
+            // 放在 finally 里，是因为无论成败这一笔账都得结——留着没人认领的容器，
+            // 下一次 up 会去复用一个来历不明的半成品
+            finishEnvironment(registration);
+        }
         listener.testsFinished(outcome);
         return outcome;
+    }
+
+    /**
+     * 这一轮跑完之后，环境是留还是收。
+     *
+     * <p>判据只有一条：<b>它还能用就留着</b>（十五.5：容器常驻复用，每次跑前只 reset）。
+     * 「还能用」= 探测说可用、compose 文件还在、容器还在跑。任何一条不成立就 {@code down -v}：
+     * 半死不活的环境比没有环境糟——下一轮会拿它去跑，然后失败在一个和代码毫无关系的地方。
+     *
+     * <p>清理本身失败只记一条警告：真正的问题（这次运行的结果）比收拾残局要紧，
+     * 而收不掉的东西会在「打开项目收残局」那一步被捡走。
+     */
+    private void finishEnvironment(EnvRegistration registration) {
+        if (environment == null || registration == null || !settings.integration()) {
+            return;
+        }
+        try {
+            if (environment.activeComposeFile() != null
+                    && environment.docker().ready()
+                    && !environment.status().usable()) {
+                log.warn("测试环境已经不可用，收掉它：{}", registration.summarize());
+                listener.environmentChanged(environment.down(true));
+            }
+        } catch (RuntimeException e) {
+            log.warn("收测试环境时出错（不影响这次运行的结果）：{}", e.getMessage());
+        }
+    }
+
+    /** 一条失败的环境登记：留档里要看得出卡在哪、原始错误是什么。 */
+    private static EnvRegistration brokenEnvironment(EnvProblem problem) {
+        return new EnvRegistration(EnvRegistration.State.BROKEN, "", "", "", List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), problem.detail());
     }
 
     /**

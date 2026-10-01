@@ -48,6 +48,11 @@ public final class InitCommand implements Callable<Integer> {
                 Console.detail("build.compile 按项目扫出来填的是：%s", compileCommand);
             }
             Console.detail("下一步：编辑 spec.yaml，然后运行 specflow validate");
+            // 「导入项目时问一次要不要初始化环境」在命令行上的落点：命令行没有交互式提问
+            // （CI 里会挂住），所以这里是「告诉他有这一步、以及怎么开始」——
+            // 而 init 本身不自动起容器：拉镜像要几分钟，不该在没人点头时发生
+            Console.detail("要跑集成测试就写 .specflow/env.yaml（测试镜像、依赖、连接信息），"
+                    + "然后运行 specflow env init 起环境；之后 specflow run --integration");
             Console.detail("调用模型前先准备 SPECFLOW_API_KEY："
                     + "设成环境变量，或写进 .specflow/local.env");
         }

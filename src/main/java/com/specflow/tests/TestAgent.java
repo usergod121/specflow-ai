@@ -19,9 +19,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 测试 Agent：把「用例清单」变成一份能跑的测试产物，跑一遍，然后如实报出结果。
@@ -70,10 +72,35 @@ public final class TestAgent {
      * @param cases 检查阶段定下来的用例清单；为空表示这次不测（调用方不该调到这里来）
      */
     public TestOutcome run(Spec spec, List<PlanReview.TestCase> cases) {
-        TestArtifacts artifacts = TestArtifacts.create(projectRoot);
+        return run(spec, cases, TestSettings.UNIT_ONLY, null, ExecutionLocation.host());
+    }
+
+    /**
+     * 跑一轮测试阶段，这一次带环境。
+     *
+     * @param settings  跑单元还是单元+集成
+     * @param variables 测试环境那组变量（连接信息 + 引擎那三个把手）；没有环境时是 {@code null}
+     */
+    public TestOutcome run(Spec spec, List<PlanReview.TestCase> cases, TestSettings settings,
+                           Map<String, String> variables) {
+        return run(spec, cases, settings, variables, ExecutionLocation.host());
+    }
+
+    /**
+     * 跑一轮测试阶段，位置由调用方给。
+     *
+     * @param settings  跑单元还是单元+集成
+     * @param variables 测试环境那组变量（连接信息 + 引擎那三个把手）；没有环境时是 {@code null}
+     * @param location  这次脚本在哪儿跑（容器 / 宿主）。它决定入口脚本叫什么、引擎执行什么命令，
+     *                  也决定留档里那句执行位置——三件事必须来自<b>同一个</b>判断
+     */
+    public TestOutcome run(Spec spec, List<PlanReview.TestCase> cases, TestSettings settings,
+                           Map<String, String> variables, ExecutionLocation location) {
+        TestArtifacts artifacts = TestArtifacts.create(projectRoot,
+                location == null ? ExecutionLocation.host() : location);
         String response;
         try {
-            response = ask(spec, cases, artifacts);
+            response = ask(spec, cases, artifacts, settings, variables);
         } catch (RuntimeException e) {
             // 模型调用没回来 = 这一轮一个字节都没生成。刚建的那个空 tools/<时间戳>/ 要收掉：
             // 留着它会攒成一串空目录，看上去像「跑过好几次测试」，而实际什么都没跑
@@ -81,14 +108,12 @@ public final class TestAgent {
             throw e;
         }
         try {
-            List<String> written = write(response, artifacts);
-            TestScriptVerifier.ScriptResult result = new TestScriptVerifier(projectRoot, artifacts.entry())
-                    .run(new VerificationContext(projectRoot, spec, project));
-            log.info("测试脚本退出码 {}（{}）", result.exit(), artifacts.relative());
-            // 两层结论：先按输出定这一档是哪一类失败，再拿检查阶段的清单对账，
-            // 把「验了几条」补上——少了后一步，一条都没跑的运行会显示成全绿
+            List<String> written = write(response, artifacts, settings);
+            // 跑哪一个入口，由这次勾没勾集成决定：勾了就是**两个都跑**
+            // （两个都在同一个位置跑：有可用环境就是容器里，否则宿主上；见 runScripts）
             TestOutcome outcome = TestReport.coverage(
-                    TestReport.conclude(result, artifacts.relative(), written, 1), cases);
+                    runScripts(spec, artifacts, written, settings, variables), cases);
+            log.info("测试脚本跑完：退出码 {}（{}）", outcome.exit(), artifacts.relative());
             if (outcome.environmental()) {
                 // 环境问题这一次会连同产品改动一起回滚（上层收场时决定），测试产物也就没有
                 // 可测的代码了：整批删掉，别让一个指向已回滚代码的脚本留在项目里。
@@ -108,6 +133,55 @@ public final class TestAgent {
     }
 
     /**
+     * 跑这次该跑的入口脚本，把它们的结果合成一份（十五.4/15.5）。
+     *
+     * <p><b>勾了集成测试就跑两个</b>：单元那个和集成那个。两个都在<b>同一个位置</b>跑——
+     * 有可用环境就是容器里（引擎把命令包成 {@code docker compose exec}），否则都回退宿主。
+     * 只跑其中一个的话，另一条路上的用例会被 {@link TestReport#coverage} 对成「没验」——
+     * 而清单是一份、分母是整个清单，于是**每次勾集成都会收到一份假的失败清单**。
+     *
+     * <p>两次执行共用<b>同一份时限</b>：界面上那句「测试进行中（最长 N 分钟）」是按一个
+     * 时限说的，各给一份就等于把那句话变成谎话（用户等的是 N 分钟，实际最长 2N）。
+     *
+     * <p>单元那一个跑不起来（环境问题）就不往下跑了：那是「立刻停」的信号，
+     * 再进容器跑一遍只是白等——而且它同样会以环境问题收场。
+     */
+    private TestOutcome runScripts(Spec spec, TestArtifacts artifacts, List<String> written,
+                                   TestSettings settings, Map<String, String> variables) {
+        VerificationContext context = new VerificationContext(projectRoot, spec, project);
+        long deadline = System.nanoTime()
+                + TimeUnit.SECONDS.toNanos(TestScriptVerifier.DEFAULT_TIMEOUT_SECONDS);
+        List<String> entries = settings.integration()
+                ? List.of(artifacts.entry(), artifacts.integrationEntry())
+                : List.of(artifacts.entry());
+
+        List<TestOutcome> outcomes = new ArrayList<>(entries.size());
+        for (int index = 0; index < entries.size(); index++) {
+            TestScriptVerifier.ScriptResult result = new TestScriptVerifier(projectRoot,
+                    entries.get(index), remainingSeconds(deadline), variables, artifacts.location())
+                    .run(context);
+            outcomes.add(TestReport.conclude(result, artifacts.relative(), written,
+                    // 生成测试代码只花了一次模型调用：算在第一个脚本那一笔上
+                    index == 0 ? 1 : 0));
+            if (result.verification().environmental()) {
+                break;
+            }
+        }
+        return TestReport.merge(outcomes);
+    }
+
+    /**
+     * 从共用时限里还剩多少秒。
+     *
+     * <p>至少给 1 秒：{@code waitFor(0)} 会让最后一个脚本一启动就被判超时——
+     * 那会把「时间用完了」说成「脚本有问题」。
+     */
+    private static long remainingSeconds(long deadlineNanos) {
+        long left = TimeUnit.NANOSECONDS.toSeconds(deadlineNanos - System.nanoTime());
+        return Math.max(1, left);
+    }
+
+    /**
      * <b>只生成、不跑</b>：十五.6 里「测试代码错了」那条路要的东西。
      *
      * <p>它和 {@link #run} 只差最后一步——不执行入口脚本。差这一步正是这条路的意义：
@@ -121,16 +195,41 @@ public final class TestAgent {
      *                           模型调用本身失败也会冒泡出去。两种情况下产物一个字节都不留
      */
     public Generated generate(Spec spec, List<PlanReview.TestCase> cases) {
-        TestArtifacts artifacts = TestArtifacts.create(projectRoot);
+        return generate(spec, cases, TestSettings.UNIT_ONLY, null, ExecutionLocation.host());
+    }
+
+    /**
+     * 只生成、不跑，这一次带环境。
+     *
+     * <p>重新生成也要跟着这次勾没勾集成走：勾了集成却只重新生成了一个单元入口，
+     * 「放行」之后跑集成那一步会因为找不到入口而失败——而人要的是「换一版测试代码」，
+     * 不是「少一个文件」。
+     */
+    public Generated generate(Spec spec, List<PlanReview.TestCase> cases, TestSettings settings,
+                              Map<String, String> variables) {
+        return generate(spec, cases, settings, variables, ExecutionLocation.host());
+    }
+
+    /**
+     * 只生成、不跑，位置由调用方给。
+     *
+     * <p>位置必须和真正跑起来那一次<b>是同一个</b>：名字（{@code run.sh} 还是 {@code run.cmd}）
+     * 由它决定，而「放行」之后引擎会照着同一个位置去执行。两次判断不一致的结果是
+     * 「产物有了、入口找不到」。
+     */
+    public Generated generate(Spec spec, List<PlanReview.TestCase> cases, TestSettings settings,
+                              Map<String, String> variables, ExecutionLocation location) {
+        TestArtifacts artifacts = TestArtifacts.create(projectRoot,
+                location == null ? ExecutionLocation.host() : location);
         String response;
         try {
-            response = ask(spec, cases, artifacts);
+            response = ask(spec, cases, artifacts, settings, variables);
         } catch (RuntimeException e) {
             artifacts.delete();
             throw e;
         }
         try {
-            List<String> written = write(response, artifacts);
+            List<String> written = write(response, artifacts, settings);
             return new Generated(artifacts.relative(), written,
                     sources(projectRoot, artifacts.relative(), written));
         } catch (SpecflowException e) {
@@ -160,12 +259,21 @@ public final class TestAgent {
      * 前者的异常一路冒泡，后者落成 {@code TestOutcome.rejected}。合成一个方法的话，
      * 两种失败分不开——而它们的收场方式完全不同。
      */
-    private String ask(Spec spec, List<PlanReview.TestCase> cases, TestArtifacts artifacts) {
+    private String ask(Spec spec, List<PlanReview.TestCase> cases, TestArtifacts artifacts,
+                       TestSettings settings, Map<String, String> variables) {
         return llm.complete(List.of(
                 ChatMessage.system(assembler.systemMessage(spec, templates,
-                        TestProtocol.instructions(artifacts.relative(), artifacts.entry()))),
+                        TestProtocol.instructions(artifacts.relative(),
+                                entriesOf(artifacts, settings), variables))),
                 ChatMessage.user(assembler.userMessage(spec, templates)
                         + "\n" + TestProtocol.caseList(cases))));
+    }
+
+    /** 这一次要哪几个入口脚本：单元那个永远要；集成那个只有勾了集成测试才要。 */
+    private static TestProtocol.Entries entriesOf(TestArtifacts artifacts, TestSettings settings) {
+        return new TestProtocol.Entries(artifacts.entry(),
+                settings.integration() ? artifacts.integrationEntry() : null,
+                artifacts.location().inContainer());
     }
 
     /**
@@ -177,7 +285,7 @@ public final class TestAgent {
      *
      * @throws SpecflowException 路径越界、给了锚点、内容为空、命中高危命令、没有入口脚本
      */
-    private List<String> write(String response, TestArtifacts artifacts) {
+    private List<String> write(String response, TestArtifacts artifacts, TestSettings settings) {
         List<PatchBlock> blocks = parser.parse(response);
         List<String> written = artifacts.write(blocks);
         // 没有入口脚本等于没东西可跑。这一条必须机器查：模型漏了它，脚本跑不起来的原因
@@ -187,6 +295,14 @@ public final class TestAgent {
         if (written.stream().noneMatch(artifacts::isEntry)) {
             throw new SpecflowException("产物里没有入口脚本 " + artifacts.entry()
                     + "；引擎只会执行这一个文件");
+        }
+        // 勾了集成测试却只给了单元入口：那一条路根本跑不起来，而它的表现会是
+        // 「入口脚本不存在：…/run-it.cmd」——看着像环境的问题，其实是它没给。
+        // 在<b>生成阶段</b>就拦下，用户收到的才是「它没给这个文件」
+        if (settings.integration() && !artifacts.hasIntegrationEntry(written)) {
+            throw new SpecflowException("这次勾了集成测试，但产物里没有集成入口脚本 "
+                    + artifacts.integrationEntry() + "：集成的那几条用例没地方跑。"
+                    + "重新生成一次，或者先只跑单元测试");
         }
         log.info("测试产物已写入 {}，共 {} 个文件", artifacts.relative(), written.size());
         return written;

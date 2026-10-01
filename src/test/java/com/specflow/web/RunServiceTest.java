@@ -1,11 +1,20 @@
 package com.specflow.web;
 
+import com.specflow.TestSpecs;
 import com.specflow.agent.AgentListener;
+import com.specflow.agent.AgentResult;
+import com.specflow.history.RunRecorder;
+import com.specflow.history.RunStore;
 import com.specflow.project.LlmConfig;
 import com.specflow.project.ProjectConfig;
+import com.specflow.project.SnapshotConfig;
 import com.specflow.review.PlanStep;
 import com.specflow.review.ReviewOutcome;
 import com.specflow.review.StepAudit;
+import com.specflow.snapshot.WorkspaceSnapshot;
+import com.specflow.tests.TestOutcome;
+import com.specflow.util.SafePathResolver;
+import com.specflow.verify.VerificationResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -129,6 +138,93 @@ class RunServiceTest {
         service.shutdown();
     }
 
+    // ---------- 处置时的清理（十五.8） ----------
+
+    /**
+     * 接受/中断都要把这一轮的<b>测试产物删掉</b>（十五.8）。
+     *
+     * <p>为什么必须删：那几份脚本是照着<b>这一轮改动</b>写的，而改动刚被人接受或撤回了。
+     * 留着它们只让 {@code tools/} 一次比一次长——留档里已经把「验了什么、哪条没过、
+     * 为什么」都记下了，产物本身没有第二次用处。
+     *
+     * <p>判据用留档里记的那个路径，所以这里先造一条运行记录 + 一个待处置的快照，
+     * 走的是真接口（{@code accept()}）。
+     */
+    @Test
+    @DisplayName("接受之后：留档里记的那份测试产物被删掉")
+    void acceptClearsTestArtifacts() throws Exception {
+        Path artifacts = root.resolve("tools/20260930-120000");
+        Files.createDirectories(artifacts);
+        Files.writeString(artifacts.resolve("run.cmd"), "echo PASS\n");
+        Files.writeString(root.resolve("Foo.java"), "old");
+        markPendingSnapshot(root.resolve("Foo.java"));
+        recordTestRun(artifacts);
+
+        RunService service = service();
+        service.accept();
+        service.shutdown();
+
+        assertThat(artifacts).as("产物是照着这一轮改动写的，而改动已经处置完了").doesNotExist();
+    }
+
+    @Test
+    @DisplayName("撤回之后同样删掉测试产物（两条路的收尾是同一件事）")
+    void rollbackClearsTestArtifacts() throws Exception {
+        Path artifacts = root.resolve("tools/20260930-121500");
+        Files.createDirectories(artifacts);
+        Files.writeString(artifacts.resolve("run.cmd"), "echo PASS\n");
+        Files.writeString(root.resolve("Foo.java"), "old");
+        markPendingSnapshot(root.resolve("Foo.java"));
+        recordTestRun(artifacts);
+
+        RunService service = service();
+        service.rollback();
+        service.shutdown();
+
+        assertThat(artifacts).doesNotExist();
+    }
+
+    /**
+     * 留档里那个路径不在 {@code tools/} 下：一个字节都不许动。
+     *
+     * <p>这条路径来自磁盘上的 JSON（用户可能手工改过，工具也可能被改坏），
+     * 而删东西这件事只允许发生在产物目录里。
+     */
+    @Test
+    @DisplayName("留档里的路径越界时：不删（这条路径是磁盘上的字符串，不能全信）")
+    void refusesToDeleteOutsideTheArtifactsRoot() throws Exception {
+        Path target = root.resolve("src/main/java/com/demo");
+        Files.createDirectories(target);
+        Files.writeString(target.resolve("Foo.java"), "class Foo {}\n");
+        Files.writeString(root.resolve("Foo.java"), "old");
+        markPendingSnapshot(root.resolve("Foo.java"));
+        recordTestRun(target);
+
+        RunService service = service();
+        service.accept();
+        service.shutdown();
+
+        assertThat(target.resolve("Foo.java")).as("越界的路径不删").exists();
+    }
+
+    /** 造一条「跑过测试」的运行记录，产物目录按参数给。 */
+    private void recordTestRun(Path artifacts) {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        TestOutcome tests = new TestOutcome(root.relativize(artifacts).toString().replace('\\', '/'),
+                List.of(), 1, 0, VerificationResult.passed("测试脚本", "run", "PASS"),
+                List.of(), List.of());
+        AgentListener recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+        ((RunRecorder) recorder).testsFinished(tests);
+        recorder.finished(AgentResult.unverified(1, List.of(), List.of(), "没配编译命令"));
+    }
+
+    private void markPendingSnapshot(Path file) {
+        WorkspaceSnapshot.capture(new SafePathResolver(root),
+                        root.resolve(SnapshotConfig.DEFAULT_DIR), List.of(file))
+                .markPending();
+    }
+
     private RunService service() {
         return new RunService(root, ProjectConfig.DEFAULT, root.resolve(".specflow/templates"));
     }
@@ -168,7 +264,8 @@ class RunServiceTest {
             RunService service = new RunService(root, project, root.resolve(".specflow/templates"));
 
             ReviewOutcome outcome = service.review(RunRequest.of(null, "加一个接口", null, null, null,
-                    List.of("src/main/java/demo/Foo.java"), null, null, null, null, null, null));
+                    List.of("src/main/java/demo/Foo.java"), null, null, null, null, null, null,
+                    null));
             service.shutdown();
 
             assertThat(outcome.plan().steps()).as("施工单解析出来了").hasSize(3);

@@ -1,8 +1,10 @@
 package com.specflow.tests;
 
+import com.specflow.env.TestEnvironment;
 import com.specflow.review.PlanReview;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 测试阶段的协议说明——会被逐字拼进系统提示词。
@@ -53,12 +55,96 @@ public final class TestProtocol {
      * 生成测试代码与入口脚本的协议。
      *
      * @param directory 产物目录（相对项目根，形如 {@code tools/20260930-120000}）
-     * @param entry     入口脚本相对项目根的路径——引擎只会执行这一个文件。
+     * @param entry     单元入口脚本相对项目根的路径——引擎只会执行这一个文件。
      *                  它的后缀就是引擎按平台定下来的那一个（见 {@link TestArtifacts}），
      *                  所以下面那句「怎么引用兄弟文件」照着它写，不再另问一次平台
      */
     public static String instructions(String directory, String entry) {
-        boolean windows = entry.endsWith(".cmd");
+        return instructions(directory, new Entries(entry, null, false), null);
+    }
+
+    /**
+     * 这一次要生成几个入口脚本、它们在哪儿跑。
+     *
+     * @param unit        单元入口（任何项目都有）
+     * @param integration 集成入口（勾了集成测试才有）；没有时是 {@code null}
+     * @param inContainer 这两个脚本在<b>容器里</b>跑吗。由 {@code ExecutionLocation} 一处判，
+     *                    协议只照着它措辞——「脚本里该不该自己去调 docker」取决于这个事实，
+     *                    说反了就是让一个已经在容器里的脚本再 exec 一次，而镜像里没有 docker
+     */
+    public record Entries(String unit, String integration, boolean inContainer) {
+
+        public Entries {
+            unit = unit == null ? "" : unit;
+            integration = integration == null || integration.isBlank() ? null : integration;
+        }
+    }
+
+    /**
+     * 把测试环境（{@code env.yaml} 里的 {@code env:} 与引擎自己那几个把手）写成给模型的一段。
+     *
+     * <p>为什么要写进提示词：这条链上最贵的一种错是「测试代码把连接串写死了」——
+     * 换台机器就全错，而错的方式看起来像功能坏了。所以十五.5 定的是
+     * <b>{@code env:} 段原样进上下文</b>，再加上一条硬规则：只许从环境变量读。
+     * 它<b>永远不用猜</b>，也就没有理由去硬编码。
+     *
+     * <p>「怎么够到那些中间件」这一段按<b>执行位置</b>分两种说法：脚本已经被引擎送进容器时，
+     * 中间件就在同一张容器网络里、用服务名直连；宿主上就只能让脚本自己去
+     * {@code docker compose exec}，那就把那条命令的拼法写给它
+     * （compose 项目名和文件路径都是引擎生成的，它自己猜必然猜错）。
+     *
+     * @param variables   连接信息 + 引擎那三个把手；{@code null} 表示这次没有环境（不写这一段）
+     * @param inContainer 脚本会不会被引擎送进容器里跑
+     */
+    private static String environment(Map<String, String> variables, boolean inContainer) {
+        if (variables == null || variables.isEmpty()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder("""
+
+                ## 测试环境（连接信息，照这里给的键读环境变量）
+                这些变量在跑测试时已经注入好了，**直接读它们，一个都不许硬编码**：
+
+                """);
+        for (Map.Entry<String, String> entry : variables.entrySet()) {
+            out.append("  ").append(entry.getKey()).append(" = ").append(entry.getValue()).append('\n');
+        }
+        out.append("""
+
+                **硬规则**：连接串、主机名、端口、库名、密码一律从环境变量读——
+                例如 Python 写 os.environ["DB_HOST"]，Java 写 System.getenv("DB_HOST")，
+                shell 写 "$DB_HOST"。把 "db:3306" 或 "root/123456" 这种字面量写进测试代码，
+                换一台机器就全错，而那种错看起来像功能坏了。测试代码里出现写死的连接串，
+                整批产物会被判成不合格。
+
+                """);
+        out.append(inContainer ? """
+                真正要验的东西就在容器里跑：引擎会把你写的入口脚本送进 app 容器
+                （项目目录已经挂在那儿，工作目录就是项目根）。中间件在**同一张容器网络**里，
+                用服务名直连（就是上面 env: 里那些主机名），宿主上有没有端口一个都不用管。
+                **不要在你的脚本里再调 docker**——测试镜像里没有 docker 命令，
+                调了只会得到一句「命令不存在」。
+                """ : """
+                真正要验的东西要进容器里跑：中间件只在容器网络里有名字（宿主上看不到它们，
+                也没有端口映射）。上面那三个 SPECFLOW_ 开头的变量就是把容器叫起来的把手，
+                照这个样子用它们（尖括号里是变量的值，别照抄这一行）：
+                  docker compose -p <SPECFLOW_COMPOSE_PROJECT> -f "<SPECFLOW_COMPOSE_FILE>" \\
+                    exec -T app sh -c "cd <SPECFLOW_WORKDIR> && <你的检查命令>"
+                Windows 的 .cmd 里写成 %SPECFLOW_COMPOSE_PROJECT%，sh 里写成 $SPECFLOW_COMPOSE_PROJECT。
+                """);
+        return out.toString();
+    }
+
+    /**
+     * 生成测试代码与入口脚本的协议。
+     *
+     * @param directory   产物目录（相对项目根）
+     * @param entries     要生成哪几个入口脚本（单元一定，集成看这次勾没勾）
+     * @param variables   {@code env:} 那一组变量；没有环境时传 {@code null}
+     */
+    public static String instructions(String directory, Entries entries,
+                                      Map<String, String> variables) {
+        boolean windows = entries.unit().endsWith(".cmd");
         return """
                 现在进入「测试」阶段。代码已经写完并且编译通过了，你要做的是照着下面的用例清单，
                 把它们变成**真的能跑的测试**，并给出一个引擎能执行的入口脚本。
@@ -79,6 +165,8 @@ public final class TestProtocol {
                 2. 入口脚本必须是 %s，它自己就是一条完整可跑的命令序列：
                    %s
                    它必须能从「项目根目录」这个工作目录跑起来，编译产物和依赖都写在脚本里。
+                %s
+                %s
                 3. 用什么写测试，看项目本身：项目里已经有测试框架（依赖里有、目录里已经有测试）
                    就按它写；没有就用**零依赖**的检查方式（一个能自己断言的程序或脚本），
                    不要为了测试去改依赖清单，也不要联网装东西。
@@ -101,10 +189,65 @@ public final class TestProtocol {
                 8. 不要写删除文件、动系统配置、挂载目录、提权、下载外网东西这类命令；
                    出现这类写法，整批产物会被拒绝落盘。
                 9. 除了 PASS / FAIL / BLOCKED 这三种行，输出尽量少：不要整段整段地打日志。
-                10. 入口脚本正文尽量只用 ASCII。Windows 的命令提示符是按本机代码页读脚本的，
-                    正文里的中文可能变成乱码，严重时会把命令本身拆坏（连转义符都会被吃掉）；
-                    要输出中文，就在脚本开头先切到 UTF-8 再往下写。
-                """.formatted(directory, directory, directory, entry, workingDirectoryHint(windows));
+                10. %s
+                %s""".formatted(directory, directory, directory, entries.unit(),
+                workingDirectoryHint(windows), whereHint(entries), entryScripts(entries),
+                asciiRule(entries), environment(variables, entries.inContainer()));
+    }
+
+    /**
+     * 入口脚本正文的编码这一条。
+     *
+     * <p>宿主上那条是按本机代码页读脚本的（cmd 的坑），容器里是 Linux，没有这一条问题。
+     * 说反了不会立刻出事，但会让模型为一件不存在的事加一堆防御代码。
+     */
+    private static String asciiRule(Entries entries) {
+        return entries.inContainer()
+                ? "入口脚本正文尽量只用 ASCII，要输出中文就按 UTF-8 写——容器里是 Linux，"
+                        + "编码不会像 Windows 控制台那样被本机代码页带偏。\n"
+                : "入口脚本正文尽量只用 ASCII。Windows 的命令提示符是按本机代码页读脚本的，\n"
+                        + "    正文里的中文可能变成乱码，严重时会把命令本身拆坏（连转义符都会被吃掉）；\n"
+                        + "    要输出中文，就在脚本开头先切到 UTF-8 再往下写。\n";
+    }
+
+    /**
+     * 入口脚本<b>在哪儿跑</b>——模型必须知道这一条，它决定脚本里能不能用 docker。
+     *
+     * <p>不写这一段的话，模型会照着自己对这台机器的印象猜：它有可能会写一条
+     * 面向宿主的命令（宿主的路径、宿主才有的 docker），而脚本会被引擎送进 Linux 容器里执行。
+     * 那种错的表现是「命令不存在」，看起来像环境没装好。
+     */
+    private static String whereHint(Entries entries) {
+        return entries.inContainer()
+                ? "   引擎会把这两个入口脚本送进 **app 容器** 里执行（项目目录已经挂在那儿，"
+                        + "工作目录就是项目根）：写 **Linux/POSIX** 的脚本，"
+                        + "用项目测试镜像里本来就有的工具链，别在脚本里调 docker。\n"
+                : "   引擎会在 **本机（宿主）** 上执行这两个入口脚本：写本机平台的脚本（"
+                        + (entries.unit().endsWith(".cmd") ? "Windows 的 .cmd" : "POSIX 的 sh")
+                        + "），用这台机器上已有的工具链。\n";
+    }
+
+    /**
+     * 这一次要做几个入口脚本，各是什么。
+     *
+     * <p>写成一段话而不是一句话，是因为「要两个文件」这件事模型漏得最多：
+     * 它看到「入口脚本」四个字，天然只会写一个——而少的那一个的结果是
+     * 「集成测试一条都没跑」，不是「跑挂了」。
+     */
+    private static String entryScripts(Entries entries) {
+        if (entries.integration() == null) {
+            return "";
+        }
+        String where = entries.inContainer() ? "在容器里" : "在宿主上";
+        return """
+                2b. 这一次**要两个**入口脚本，两个都要写出来：
+                    %s —— 单元测试：不需要任何外部服务，%s就能跑完。
+                    %s —— 集成测试：要连库/中间件的那几条用例放这里，按上面那段环境说明
+                    连过去（服务名只在容器网络里解析得到）。它同样要逐条打 PASS/FAIL，
+                    跑不起来同样打 BLOCKED。
+                    两条路上的用例**不要重复**：同一个断言写两遍，一处过了另一处没过时，
+                    没人说得清该信哪个。
+                """.formatted(entries.unit(), where, entries.integration());
     }
 
     /**

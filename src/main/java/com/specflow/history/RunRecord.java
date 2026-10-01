@@ -1,6 +1,7 @@
 package com.specflow.history;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.specflow.env.EnvRegistration;
 import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
@@ -50,6 +51,14 @@ import java.util.List;
  *                  通过率，两个都得有——只记失败的那几条，分母就没了。
  *                  老记录、以及没跑过检查的运行里没有这一项，读出来是 {@code null}
  * @param tests     测试阶段那一次的结果（产物、退出码、失败清单）。没有用例清单就不会有它
+ * @param environment <b>测试环境</b>这一次的登记：起了哪些容器、卷、网络，跑了哪几条
+ *                  init/reset，环境是好是坏（十五.8 的第一件「登记」）。
+ *                  没声明环境（没有 {@code env.yaml}）、或这次只跑了单元测试时是 {@code null}——
+ *                  留档里于是没有这一项，而不是写一个空壳假装跑过环境
+ * @param knownFailures 用户标成「不重要 / 误报」的那几条用例。
+ *                 为什么它必须落档：这个判断是<b>人做的证据</b>（十五.6 的第三条路），
+ *                  只留在界面上就等于刷新一下就没了——而事后翻记录的人正是靠它解释
+ *                  「为什么那几条红的最后没被当成问题」。老记录里没有这一项
  * @param timeline  逐条的过程记录
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -72,8 +81,20 @@ public record RunRecord(
         String stepsSource,
         List<PlanReview.TestCase> testCases,
         TestOutcome tests,
+        EnvRegistration environment,
+        List<KnownFailure> knownFailures,
         List<Line> timeline
 ) {
+
+    /**
+     * 一条被标成「不重要」的失败用例。
+     *
+     * @param index 用例编号（和 {@code testCases} 对得上）
+     * @param at    标记的时间，ISO 格式。<b>它记的是「哪一刻人的判断变了」</b>——
+     *              同一条用例上一轮是问题、这一轮不是，只有时间分得清
+     */
+    public record KnownFailure(int index, String at) {
+    }
 
     /**
      * 一条落盘的改动。
@@ -119,5 +140,18 @@ public record RunRecord(
 
     public Summary summary() {
         return new Summary(id, startedAt, status, template, targets, detail);
+    }
+
+    /**
+     * 只换「已知失败」那一栏，其余原样。
+     *
+     * <p>为什么要这个方法：那一条是<b>跑完之后</b>人点的（十五.6 的第三条路），
+     * 而留档是一次写死的。要改其中一栏，只能整份重建——把它写在这里，
+     * 就只有一个地方知道「重建时哪些字段要原样带着」，漏一个字段就丢一栏历史。
+     */
+    public RunRecord withKnownFailures(List<KnownFailure> known) {
+        return new RunRecord(id, startedAt, status, template, prompt, acceptance, context,
+                requirementId, targets, attempts, detail, missing, changes, steps, planSteps,
+                stepsSource, testCases, tests, environment, known, timeline);
     }
 }

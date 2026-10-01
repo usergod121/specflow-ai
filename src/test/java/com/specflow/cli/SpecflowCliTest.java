@@ -178,6 +178,49 @@ class SpecflowCliTest {
         assertThat(SpecflowCli.execute("continue", "-p", project)).isZero();
     }
 
+    // ---------- 测试环境（十五.5） ----------
+
+    /**
+     * {@code specflow env status}：没写声明时是 0（这不是错误，只是这个项目只能跑单元测试），
+     * 而且<b>一条 docker 命令都不会起</b>——「没声明」这件事本身就已经把话说完了。
+     */
+    @Test
+    @DisplayName("env status：没声明环境时返回 0，并说清只能跑单元测试")
+    void envStatusWithoutDeclaration() {
+        assertThat(SpecflowCli.execute("env", "status", "-p", project)).isZero();
+        assertThat(SpecflowCli.execute("env", "-p", project))
+                .as("不带动作时默认就是 status").isZero();
+    }
+
+    /** 声明写错了：返回 1，并把带行号的问题逐条打出来（命令行下没有界面可看）。 */
+    @Test
+    @DisplayName("env status：声明写错时返回 1，问题里带着行号")
+    void envStatusWithBrokenDeclaration() throws Exception {
+        Path file = root.resolve(".specflow/env.yaml");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "image: \"x:1\"\nworkdir: \"work\"\n");
+
+        assertThat(SpecflowCli.execute("env", "init", "-p", project)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("env 的动作认不出来时返回 1，并列出能用的是哪几个")
+    void envRejectsUnknownAction() {
+        assertThat(SpecflowCli.execute("env", "whatever", "-p", project)).isEqualTo(1);
+    }
+
+    /**
+     * {@code env clear}：没声明环境时返回 0 并说清「没有可清的东西」。
+     *
+     * <p>这里是 0 而不是 1：<b>没东西可清不是失败</b>。但也不能静默——用户点了「清空」，
+     * 却什么都没被告知，他会以为环境真被清掉了（而实际是这个项目压根没有环境）。
+     */
+    @Test
+    @DisplayName("env clear：没声明环境时返回 0，并说清没有可清的东西")
+    void envClearWithoutDeclaration() {
+        assertThat(SpecflowCli.execute("env", "clear", "-p", project)).isZero();
+    }
+
     /** 造一份「校验通过、等人处置」的快照，模拟上一次运行留下的东西。 */
     private void markPendingSnapshot(Path file) {
         WorkspaceSnapshot.capture(new SafePathResolver(root),

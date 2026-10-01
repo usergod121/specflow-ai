@@ -612,6 +612,41 @@
   }
   .pending-body { padding: 0 12px 12px; max-height: 420px; overflow-y: auto; }
   .pending-body:empty { display: none; }
+
+  /* ---------- 测试环境（十五.5） ----------
+     它和待处置面板共用「一块带边框的卡片」这个形状，但底色不同：
+     那一块说的是「磁盘上有东西等你表态」，这一块说的是「测试环境现在能不能用」。
+     两者混成一样的底色，用户会以为环境也在等他做决定。 */
+  .env-panel {
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    background: var(--panel);
+    padding: 10px 12px;
+    margin: 10px 0 0;
+  }
+  .env-head { font-size: 13px; color: var(--text); margin-bottom: 4px; }
+  /* 需要人处理的那一档（起不来 / 没初始化）用告警色，其它一律素色：
+     颜色在这套界面里是「要不要我看一眼」的信号，不是装饰 */
+  .env-head.bad { color: var(--error-text); }
+  .env-head.ok { color: var(--ok-text); }
+  .env-line { font-size: 12px; color: var(--muted); line-height: 1.7; }
+  .env-bad {
+    font-size: 12px;
+    color: var(--error-text);
+    line-height: 1.7;
+    /* 那一行一行的错误是后端带行号报出来的原话，折行会让人对不上行号 */
+    white-space: pre-wrap;
+  }
+  .env-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+  .env-actions button { padding: 6px 16px; font-size: 13px; }
+  /* 留档里的那一段环境登记：它是「看」的，不是按钮，所以样式更轻 */
+  .run-env {
+    border-left: 3px solid var(--line-strong);
+    padding: 4px 0 4px 10px;
+    margin: 10px 0;
+  }
+  .run-env-head { font-size: 13px; color: var(--text); }
+  .run-env-line { font-size: 12px; color: var(--muted); line-height: 1.7; }
   /* 每个文件复用运行结果区那套 details.change / .diff：同一个东西在两处不该长得不一样 */
   .pending .change { background: var(--panel); }
   /* 挂起面板和待处置面板共用上面这套结构，含义却不同：一个是「磁盘上有改动等你表态」，
@@ -1352,6 +1387,9 @@
 
     <div class="row">
       <label><input type="checkbox" id="compile" checked> 编译校验</label>
+      <!-- 集成测试要不要跑。它是**可以点不动**的：环境没初始化时勾上就等于让一次运行
+           在测试阶段才发现跑不了（十五.5）。能不能勾由环境状态决定，见 updateIntegration -->
+      <label id="integ-label"><input type="checkbox" id="integration"> 集成测试</label>
       <label>失败重试上限
         <input type="number" id="maxretry" value="6" min="0" max="20" step="1"
                style="width:64px;text-align:center">
@@ -1367,12 +1405,18 @@
     </div>
     <div class="hint">总轮次上限留空＝自动：按施工单的步数算，3 × 步数；
       单步执行（没有施工单）时不设这道闸。它和「失败重试上限」是两道不同的闸。</div>
+    <!-- 集成测试那一行单独说清：它为什么能勾、为什么勾不动 -->
+    <div class="hint" id="integ-hint"></div>
 
     <!-- 待处置的改动。它挡着的正是「运行」，所以摆在运行按钮正上方。 -->
     <div id="pending"></div>
     <!-- 挂起的运行：模型说信息不足，停在这儿等补料。它不是闸门（不挡运行），
          只是一张「它在等什么」的说明。 -->
     <div id="suspended"></div>
+
+    <!-- 测试环境：导入项目时在这里问一次要不要初始化；之后就常驻显示状态，
+          外加「清空测试环境」这个手动入口（十五.8）。 -->
+    <div id="env"></div>
 
     <div class="actions">
       <button id="review" class="ghost">先检查</button>
@@ -1533,11 +1577,14 @@ const state = {
   testsOpen: true,      // 失败清单展开与否
   testsCases: null,     // 测试结果对着的那份用例清单（刷新过页面时只有留档里有）
   picked: new Set(),    // 失败清单里勾上「要回喂给开发」的用例编号
-  known: new Set(),     // 被标成「不重要 / 误报」的用例编号（只是界面上的记号）
+  known: new Set(),     // 被标成「不重要 / 误报」的用例编号（落档在运行记录里，见 markKnown）
   regenerated: null,    // 重新生成出来、等着放行的那批测试代码
   actionBusy: '',       // 正在做的那个动作（'' = 没有）；'regenerate' = 正在重新生成测试代码
   viewRecord: null,     // 历史面板正在看的那条留档：点开某条用例的细节时按它重画
   phase: '',            // 引擎此刻在哪一段（'tests' = 测试进行中，那一段停不下来）
+  env: null,            // 测试环境的状态（/api/env 那一份）；null = 还没拉到过
+  envSkipped: false,    // 用户这次打开项目时点了「先不初始化」：这一次不再问
+  recordId: '',         // 屏幕上这份测试结果属于哪条运行记录（标「已知失败」要写进它）
 };
 const $ = id => document.getElementById(id);
 
@@ -1927,6 +1974,238 @@ async function initializeProject() {
   location.reload();
 }
 
+// ---------- 测试环境 ----------
+// 十五.5 定的三件事，在界面上就是这一块：
+//   ① 导入项目时**问一次**要不要初始化环境（初始化好之前集成测试勾不动）；
+//   ② 三档分开报（命令找不到 / daemon 没起 / 可用），因为用户要做的事完全不同；
+//   ③ 一个「清空测试环境」的手动入口（十五.8）。
+//
+// 这一块里**没有**任何「假装」：环境不成的时候，界面说的是原话
+// （哪条命令、什么错、下一步干什么），而不是一句「环境不可用」。
+
+/**
+ * 拉一次环境状态并重画。
+ *
+ * @param refresh true = 无视服务端缓存重探 docker。用户点「我已经把 Docker 开好了」
+ *                时走这条：缓存是为了别反复起进程，而「我刚开好」只有用户自己知道
+ */
+async function refreshEnvironment(refresh = false) {
+  try {
+    state.env = await getJson('/api/env' + (refresh ? '?refresh=1' : ''));
+  } catch (e) {
+    // 拉不到就当不知道：环境这一块不画，但绝不因此把整个工作区弄崩
+    state.env = null;
+  }
+  renderEnv();
+  updateIntegration();
+  // 打开项目时收掉的残局在背后发生过，要说一句（不然用户只会发现容器没了）
+  if (state.env && state.env.cleanup) {
+    notice('warn', '打开项目时收掉了上一轮的测试环境残留：' + state.env.cleanup);
+  }
+}
+
+/** 环境面板里的一行。 */
+function envLine(text, cls) {
+  const line = document.createElement('div');
+  line.className = cls || 'env-line';
+  line.textContent = text;
+  return line;
+}
+
+/**
+ * 残留那一行（十五.8：残留超阈值告警）。
+ *
+ * <p>「残留」= 属于这个项目、但<b>没有 compose 文件管着</b>的容器/卷/网络。
+ * 它平时会被「打开项目收残局」自动收掉，所以这里要说的不是「有几件」，
+ * 而是<b>「这套环境一直在漏」</b>——件数攒多了说明前几次收尾反复没做成，
+ * 那才是用户需要知道的事。
+ */
+function leftoverLine(env) {
+  if (!env || !env.leftovers) {
+    return null;
+  }
+  const base = '发现 ' + env.leftovers + ' 件上一轮留下的东西（容器/卷/网络）。';
+  return env.leftoverWarn
+      ? envLine(base + '攒到这么多，通常说明前几次收尾没做成——打开项目时会自动收，'
+          + '也可以点「清空测试环境」手工收。', 'env-head bad')
+      : envLine(base + '打开项目时会自动收掉它们。', 'env-line');
+}
+
+function renderEnv() {
+  const box = $('env');
+  box.innerHTML = '';
+  const env = state.env;
+  if (!env) {
+    return;
+  }
+  const panel = document.createElement('div');
+  panel.className = 'env-panel';
+  box.appendChild(panel);
+
+  renderEnvBody(panel, env);
+
+  // 残留那一行放在最后：它和「环境能不能用」是两件事，不管上面画的是哪一档都要说
+  const leftover = leftoverLine(env);
+  if (leftover) {
+    panel.appendChild(leftover);
+  }
+}
+
+/**
+ * 面板的正文：按状态画（写错 / 没声明 / docker 不可用 / 就绪 / 还没初始化）。
+ *
+ * <p>它和 {@link renderEnv} 分开，是为了让「残留那一行」有一个共同的落点：
+ * 每一档都 `return`，残留要跟在所有档的后面——写进每一档里，
+ * 下一档新加的代码就会漏掉它（而那正是「超阈值告警」最容易失效的方式）。
+ */
+function renderEnvBody(panel, env) {
+  // env.yaml 自己写错了：这是最该先看见的一条——它比任何 docker 报错都靠前，
+  // 而消息里带着行号（用户改一轮就能改完）
+  const problems = env.configError || [];
+  if (problems.length) {
+    panel.appendChild(envLine('测试环境声明有问题（' + env.declaredFile + '）：', 'env-head bad'));
+    problems.forEach(problem => panel.appendChild(envLine('· ' + problem, 'env-bad')));
+    return;
+  }
+
+  if (!env.declared) {
+    panel.appendChild(envLine('这个项目没有 ' + env.declaredFile + '：只能跑单元测试。', 'env-head'));
+    panel.appendChild(envLine('要跑集成测试就先写一份环境声明（测试镜像、依赖、连接信息），'
+        + '再回到这里初始化。', 'env-line'));
+    return;
+  }
+
+  if (env.docker !== 'READY') {
+    // 三档里的前两档：命令找不到 / daemon 没起。分开说，待办也不同
+    panel.appendChild(envLine('测试环境：' + env.dockerLabel, 'env-head bad'));
+    if (env.todo) {
+      panel.appendChild(envLine(env.todo, 'env-line'));
+    }
+    panel.appendChild(envButton('重新探测', () => refreshEnvironment(true), '', 'env-probe'));
+    return;
+  }
+
+  if (env.usable) {
+    panel.appendChild(envLine('测试环境已就绪：' + env.registration.summary, 'env-head ok'));
+    panel.appendChild(envLine('compose 文件：' + env.registration.composeFile
+        + '（容器常驻复用，每次跑测试之前只会重置数据）', 'env-line'));
+    panel.appendChild(envButton('清空测试环境', clearEnvironment, 'ghost', 'env-clear'));
+    return;
+  }
+
+  // 声明了、docker 也能用，但环境不在：这是那个「问一次」的地方
+  if (!state.envSkipped) {
+    panel.appendChild(envLine('要不要初始化测试环境？', 'env-head'));
+    panel.appendChild(envLine('初始化会按 ' + env.declaredFile + ' 起一套容器（第一次要拉镜像，'
+        + '可能要几分钟），之后集成测试才能勾选。跳过就只能跑单元测试。', 'env-line'));
+    const actions = document.createElement('div');
+    actions.className = 'env-actions';
+    actions.appendChild(envButton('初始化测试环境', initEnvironment, '', 'env-init'));
+    actions.appendChild(envButton('先不初始化', () => {
+      state.envSkipped = true;
+      renderEnv();
+    }, 'ghost', 'env-skip'));
+    panel.appendChild(actions);
+  } else {
+    panel.appendChild(envLine('测试环境还没初始化（你选了先不初始化）：只能跑单元测试。', 'env-head'));
+    panel.appendChild(envButton('现在初始化', initEnvironment, '', 'env-init'));
+  }
+  if (env.todo) {
+    panel.appendChild(envLine(env.todo, 'env-line'));
+  }
+}
+
+function envButton(text, onClick, cls, act) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = cls || '';
+  button.textContent = text;
+  // data-act 是给浏览器测试用的钩子，和别的面板一个口径：
+  // 按文字找按钮的话，改一次文案就断一片测试
+  if (act) {
+    button.dataset.act = act;
+  }
+  button.onclick = onClick;
+  return button;
+}
+
+/**
+ * 初始化环境（起容器 + 跑 init 命令）。
+ *
+ * <p>它是同步等的：起容器要拉镜像，几十秒到几分钟。做成异步就得再搭一条进度通道，
+ * 而这一步的语义就是「点一下，等它好」——把忙碌状态摆出来、把原始错误原样显示，
+ * 比一条半成品进度流有用得多。
+ */
+async function initEnvironment() {
+  clearNotice();
+  state.actionBusy = 'env';
+  renderEnv();
+  notice('info', '正在初始化测试环境：这一步可能要拉镜像，请等它跑完……');
+  const result = await sendJson('POST', '/api/env/init', '{}');
+  state.actionBusy = '';
+  await refreshEnvironment();
+  if (!result.ok) {
+    // 失败的原因（哪条命令、原始错误、怎么办）后端已经原样弹出来了，这里只补一句方向
+    notice('error', '测试环境没起起来：上面那段原始错误就是现场，改完再点一次初始化。');
+    return;
+  }
+  notice('ok', '测试环境已就绪：' + result.payload.summarize);
+}
+
+/** 清空测试环境：down -v，连数据卷一起（十五.8 的那个手动入口）。 */
+async function clearEnvironment() {
+  clearNotice();
+  state.actionBusy = 'env';
+  renderEnv();
+  const result = await sendJson('POST', '/api/env/clear', '{}');
+  state.actionBusy = '';
+  await refreshEnvironment();
+  if (result.ok) {
+    notice('ok', '已清空测试环境：' + result.payload.summarize);
+  }
+}
+
+/**
+ * 「集成测试」能不能勾。
+ *
+ * <p>判据只有一条：环境现在可用（十五.5：初始化好之后集成测试才能勾选）。
+ * 抽成纯函数是因为它<b>是这一块唯一有判断的地方</b>：界面画的勾选框、
+ * 发出去的请求体、以及下面那句解释，三处都必须用同一个判据——
+ * 各写一遍的话，迟早出现「勾选框禁着、请求里却发了 true」这种自相矛盾。
+ */
+function integrationAllowed(env) {
+  return Boolean(env && env.usable);
+}
+
+/**
+ * 「集成测试」那一行下面写的解释。
+ *
+ * <p>勾不动的时候<b>必须说清为什么</b>：一个灰着的勾选框不解释，
+ * 用户只会反复点它，然后以为工具坏了。所以每一档都给一句不同的话。
+ */
+function integrationHint(env) {
+  if (integrationAllowed(env)) {
+    return '勾上「集成测试」：除了单元测试，还会把要连库/中间件的用例'
+        + '在环境里跑一遍（多一个集成入口脚本，慢一些）。';
+  }
+  const why = !env ? '还没有拿到测试环境的状态'
+      : !env.declared ? '这个项目没有 ' + env.declaredFile
+      : env.docker !== 'READY' ? env.dockerLabel
+      : '测试环境还没初始化';
+  return '集成测试暂时勾不了：' + why + '。';
+}
+
+/** 刷新那两处（勾选框 + 解释），它们必须同进同出。 */
+function updateIntegration() {
+  const box = $('integration');
+  const allowed = integrationAllowed(state.env);
+  box.disabled = !allowed;
+  if (!allowed) {
+    box.checked = false;
+  }
+  $('integ-hint').textContent = integrationHint(state.env);
+}
+
 /** 打开了项目才走这一套：拉配置和文件、渲染主界面、接上按钮。 */
 async function startWorkspace() {
   const [config, files] = await Promise.all([getJson('/api/config'), getJson('/api/files')]);
@@ -1948,6 +2227,9 @@ async function startWorkspace() {
   refreshPending();
   // 也看一眼有没有「上次它说缺料就停了」的运行：那条要接着跑，而不是从头再花钱。
   refreshSuspended();
+  // 测试环境也要看一眼（十五.5：导入项目时问一次要不要初始化）。
+  // 它同时决定「集成测试」那个勾选框能不能点
+  refreshEnvironment();
 }
 
 /**
@@ -2975,6 +3257,9 @@ function payload() {
         ? { name: item.name, ref: item.ref, note: item.note }
         : { name: item.name, text: item.text, note: item.note }),
     verifyCompile: $('compile').checked,
+    // 集成测试：只有勾上、而且环境确实可用时才发 true。灰着的勾选框是给人看的，
+    // 而这里是机器判的一道——界面旧了、被人改坏了，后端自己也拦得住（见 RunService）
+    integration: $('integration').checked && integrationAllowed(state.env),
     maxRetry: retryBudget($('maxretry').value),
     // 总轮次预算：0（留空）就是「让引擎按步数自动算」，这是后端约定的「没配」值
     maxRounds: roundBudget($('maxrounds').value),
@@ -3152,6 +3437,9 @@ async function postRun(path) {
   state.regenerated = null;
   state.actionBusy = '';
   state.phase = '';
+  // 上一次运行的那条记录 id 也不能跟过来：界面上的「已知失败」是按它写留档的，
+  // 而这一次还没跑完——留着它，人的判断会被写进<b>上一条</b>记录里
+  state.recordId = '';
   $('result').innerHTML = '';
   renderStepStates();
   // 用例清单也要重画：上一轮那些「过了/没过」的记号不能在这一次运行期间还挂着
@@ -4340,6 +4628,29 @@ function renderRunDetail(record) {
     box.appendChild(changePanel(change));
   }
 
+  // 那一次测试跑在什么环境里（十五.8 的登记）：容器、卷、跑过的 init/reset。
+  // 少了它，「那次为什么连不上库」这类问题在事后只能靠猜——而这份登记里
+  // 就有当时用的 compose 项目名和跑过的命令
+  if (record.environment) {
+    const env = record.environment;
+    const wrap = document.createElement('div');
+    wrap.className = 'run-env';
+    const head = document.createElement('div');
+    head.className = 'run-env-head';
+    head.textContent = '测试环境：' + (env.summary || env.state);
+    wrap.appendChild(head);
+    if (env.composeFile) {
+      wrap.appendChild(envLine('compose 文件：' + env.composeFile, 'run-env-line'));
+    }
+    if (env.commands && env.commands.length) {
+      wrap.appendChild(envLine('这次跑过的环境命令：' + env.commands.join('；'), 'run-env-line'));
+    }
+    if (env.detail) {
+      wrap.appendChild(envLine(env.detail, 'run-env-line'));
+    }
+    box.appendChild(wrap);
+  }
+
   // 用例清单与失败清单：隔几天回来翻记录的人，最想知道的就是
   // 「那一次验了什么、哪条没过、当时人怎么判的」。两块都用主面板那套渲染，
   // 差别只有两个：没有「确认（冻结）」按钮（这一次早就跑完了，冻不冻它没有意义），
@@ -4357,7 +4668,9 @@ function renderRunDetail(record) {
     open: state.testsOpen,
     actions: false,
     picked: new Set(),
-    known: new Set(),
+    // 当时人把哪几条判成「不重要」：它现在就写在留档里（knownFailures）。
+    // 不摆出来的话，事后翻记录的人只会看到一片红，然后以为那一次是失败的
+    known: new Set((record.knownFailures || []).map(item => item.index)),
   });
   if (testsHtml) {
     const holder = document.createElement('div');
@@ -5018,6 +5331,17 @@ function applyRunDetail(record) {
   }
   if (record && record.tests && !state.tests) {
     state.tests = record.tests;
+  }
+  if (record && record.id) {
+    // 「标成已知失败」要写进<b>这一条</b>记录。刷新过页面之后界面手里没有它，
+    // 而屏幕上这份失败清单就是这条记录跑出来的——所以这个 id 必须留下来
+    state.recordId = record.id;
+  }
+  // 人标过的「已知失败」也在留档里：刷新一次之后要照样是灰的，
+  // 否则那个判断看起来从没发生过（它现在是留档的一部分，不再只是界面上的记号）
+  if (record && record.knownFailures) {
+    state.known = new Set(record.knownFailures.map(item => item.index));
+    refreshResult();
   }
   const steps = ((record && record.steps) || []).filter(step => step && step.index > 0);
   // 单步执行、老记录：压根没有步骤信息，界面就保持现在的样子
@@ -5978,25 +6302,49 @@ function releaseRegenerated() {
 }
 
 /**
- * 「不重要 / 误报」：把勾中的那几条标成已知失败。
+ * 「不重要 / 误报」：把勾中的那几条标成已知失败，并<b>写进运行留档</b>。
  *
- * <p>它不发任何请求：没有任何机器动作配得上「这条不算数」这个判断。该动的是
- * <b>人下一次的决定</b>——别再把它回喂给开发，接受改动时也不拿它当阻拦。
- * 记号同时并进下一次回喂的说明里，所以留档里查得到「当时人判过它不重要」。
+ * <p>这是个纯人的判断（十五.6 的第三条路），机器做不了，但机器能把它记下来。
+ * 早先它只改界面上那个记号——刷新一次就没了，于是「我当时判过它不重要」这件事
+ * 在事后翻记录时查无实据。现在它落进那条运行记录（{@code knownFailures}），
+ * 界面再从这里把它读回来。
+ *
+ * <p>它<b>不</b>开一次运行、也不改产品代码：没有任何机器动作配得上这个判断。
+ * 服务端把返回的那条记录回给我们，记号就以留档为准重画一遍——
+ * 界面上的记号和服务端那份从此不会各说各的。
  */
-function markKnown() {
+async function markKnown() {
   if (!state.picked.size) {
     notice('warn', '先勾上要标记的那几条用例。');
     return;
   }
   const marked = [...state.picked];
+  const result = await sendJson('POST', '/api/tests/known',
+      JSON.stringify(knownPayload(state.recordId, marked)));
+  if (!result.ok) {
+    // 没写进留档就不要在界面上假装标过了：那样用户以为记下了，实际刷新就丢
+    return;
+  }
   for (const index of marked) {
     state.known.add(index);
     state.picked.delete(index);
   }
   refreshResult();
-  notice('ok', '已标成已知失败：' + marked.length + ' 条。它们不再算失败，也不会被回喂给开发'
-      + '（下一次回喂的说明里会写明这几条被标过）。');
+  notice('ok', '已标成已知失败：' + marked.length + ' 条（已写进这次运行的留档）。'
+      + '它们不再算失败，也不会被回喂给开发。');
+}
+
+/**
+ * 「已知失败」那个请求的正文。
+ *
+ * <p>发的是<b>完整的一份集合</b>（不是「这次新加的几条」）：界面上的记号本来就是一个集合，
+ * 发全量就不存在「两次点击乱序到达」这种要命的状态——而它的后果是人的一个判断被静默吞掉。
+ *
+ * <p>{@code id} 空着表示「屏幕上正看着的那一次」：刷新过页面之后界面手里没有记录 id，
+ * 而屏幕上那份失败清单就是最新一次跑出来的（服务端按最新那条落）。
+ */
+function knownPayload(recordId, indices) {
+  return { id: recordId || '', cases: [...indices] };
 }
 
 /** 失败清单/动作行上的点击分发。 */

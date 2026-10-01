@@ -15,15 +15,23 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
  * 测试脚本的执行器——「跑脚本、看退出码」这条链上唯一动手的那一环。
  *
- * <p>它<b>只做一件事</b>：在项目根目录下执行生成的入口脚本，然后看退出码。
+ * <p>它<b>只做一件事</b>：执行生成的入口脚本，然后看退出码。
  * 不判断谁对谁错、不解析失败清单、不回喂——那些是 {@link TestReport} 与上层的事。
  * 这条边界撑住了「引擎零知识」：它不知道项目是什么语言、测试用什么框架，
  * 因为「怎么跑」全写在那个脚本里了（十五.1）。
+ *
+ * <p><b>在哪儿跑由 {@link ExecutionLocation} 一处决定</b>：Docker 可用且环境活着时
+ * 引擎把命令包成 {@code docker compose … exec -T app sh -c "cd <workdir> && sh <脚本>"}，
+ * 否则在本机 shell 上跑。这个类不自己判断，只照着那条命令执行——
+ * 两处各判一次，「在哪儿跑」和「跑的是哪个文件」就会开始互相矛盾。
+ * 执行位置那句话（{@link ExecutionLocation#label()}）进 {@link VerificationResult#command()}，
+ * 于是它同时出现在界面上和运行留档里：回退宿主这件事不能只有引擎知道。
  *
  * <p>结构性做法照抄 {@link com.specflow.verify.CompileVerifier}：进程输出重定向到
  * <b>文件</b>而不是管道（管道有缓冲区，写满就死锁，而我们在等它结束）、
@@ -57,7 +65,6 @@ public final class TestScriptVerifier implements Verifier {
 
     private static final boolean WINDOWS = System.getProperty("os.name", "")
             .toLowerCase(Locale.ROOT).contains("win");
-
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     /** 保留下来的那份完整输出放在哪儿，和编译日志同一个目录（都在 .gitignore 里）。 */
@@ -71,11 +78,33 @@ public final class TestScriptVerifier implements Verifier {
     private final long timeoutSeconds;
 
     /**
+     * 跑脚本时注入的环境变量（测试环境那一组），没有环境时是空表。
+     *
+     * <p>为什么要从引擎这边注入、而不是让脚本自己去读文件：{@code env.yaml} 里的连接信息
+     * 本来就是「这台机器上这套环境怎么连」（十五.5），而脚本要跑在容器里、容器里的
+     * 环境变量是 compose 注入的——宿主这一份只是给脚本的把手。让脚本自己去解析 YAML，
+     * 等于在测试代码里再写一遍配置解析器。
+     */
+    private final Map<String, String> environment;
+
+    /** 这次脚本在哪儿跑（容器 / 宿主）。命令与留档里那句话都由它来，见 {@link ExecutionLocation}。 */
+    private final ExecutionLocation location;
+
+    /**
      * @param projectRoot 项目根目录，也是执行脚本的工作目录
      * @param entry       入口脚本相对项目根的路径（形如 {@code tools/20260930-120000/run.cmd}）
      */
     public TestScriptVerifier(Path projectRoot, String entry) {
-        this(projectRoot, entry, DEFAULT_TIMEOUT_SECONDS);
+        this(projectRoot, entry, DEFAULT_TIMEOUT_SECONDS, Map.of(), ExecutionLocation.host());
+    }
+
+    /**
+     * 带环境变量的那一版：集成测试那一条路用它。
+     *
+     * @param environment 注入给脚本的变量（连接信息 + 引擎那三个把手）
+     */
+    public TestScriptVerifier(Path projectRoot, String entry, Map<String, String> environment) {
+        this(projectRoot, entry, DEFAULT_TIMEOUT_SECONDS, environment, ExecutionLocation.host());
     }
 
     /**
@@ -86,10 +115,40 @@ public final class TestScriptVerifier implements Verifier {
      * 生产代码一律用上面那个两参数构造器。
      */
     TestScriptVerifier(Path projectRoot, String entry, long timeoutSeconds) {
+        this(projectRoot, entry, timeoutSeconds, Map.of(), ExecutionLocation.host());
+    }
+
+    /**
+     * 时限可调、带环境变量的那一版，包内可见：勾了集成测试时用它。
+     *
+     * <p>为什么时限要能由调用方给：那种情况下会跑<b>两个</b>脚本，而界面上那句
+     * 「测试进行中（最长 N 分钟）」是按一个时限说的。各给一份，用户等到的就是 2N 分钟——
+     * 那句话成了谎话。所以调用方按一个<b>共用时限</b>把剩余秒数发下来。
+     *
+     * @param environment 注入给脚本的变量（连接信息 + 引擎那三个把手）
+     */
+    TestScriptVerifier(Path projectRoot, String entry, long timeoutSeconds,
+                       Map<String, String> environment) {
+        this(projectRoot, entry, timeoutSeconds, environment, ExecutionLocation.host());
+    }
+
+    /**
+     * 全都给全的那一版：生产路径用它，别的构造器都落到这一条上。
+     *
+     * <p>公开是因为「真容器里跑一遍」那类灰盒测试要从别的包构造它（{@code com.specflow.env}）：
+     * 把执行位置换掉、时限压短，别的参数一个都不改。
+     *
+     * @param location 这次在哪儿跑（容器 / 宿主）；{@code null} 按宿主算
+     */
+    public TestScriptVerifier(Path projectRoot, String entry, long timeoutSeconds,
+                              Map<String, String> environment, ExecutionLocation location) {
         this.projectRoot = projectRoot.toAbsolutePath().normalize();
-        // 路径按本机分隔符交给 shell：cmd 对正斜杠虽然多半吃得下，但那是「多半」
+        // 路径按本机分隔符交给宿主 shell：cmd 对正斜杠虽然多半吃得下，但那是「多半」。
+        // 进容器的命令那边会把分隔符换回来（见 ExecutionLocation.command）
         this.entry = Path.of(entry).toString();
         this.timeoutSeconds = timeoutSeconds;
+        this.environment = environment == null ? Map.of() : Map.copyOf(environment);
+        this.location = location == null ? ExecutionLocation.host() : location;
     }
 
     /** 跑一次的结果：结论 + 退出码本身。 */
@@ -152,8 +211,12 @@ public final class TestScriptVerifier implements Verifier {
     }
 
     private ScriptResult execute(Path outputFile) {
-        ProcessBuilder builder = new ProcessBuilder(shellCommand(entry));
+        List<String> command = location.command(entry);
+        ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(projectRoot.toFile());
+        // 测试环境那一组变量：脚本要按它进容器、连库。注入而不是写在脚本里，
+        // 是因为它们全是「这台机器上这套环境」的事实，换一台机器就该换一份
+        builder.environment().putAll(environment);
         builder.redirectErrorStream(true);
         builder.redirectOutput(outputFile.toFile());
 
@@ -163,8 +226,8 @@ public final class TestScriptVerifier implements Verifier {
         } catch (IOException e) {
             // 命令不存在、没有执行权限、路径不合法都落在这里：脚本还没跑，一条断言都没执行
             return failed("入口脚本起不来：" + e.getMessage() + System.lineSeparator()
-                            + "  它应该在 " + entry + "；这台机器上会执行 "
-                            + String.join(" ", shellCommand(entry)),
+                            + "  它应该在 " + entry + "；" + location.label() + "，这台机器上会执行 "
+                            + String.join(" ", command),
                     NO_EXIT_CODE, VerificationResult.Kind.ENVIRONMENT);
         }
 
@@ -182,9 +245,10 @@ public final class TestScriptVerifier implements Verifier {
         if (!finished) {
             killTree(process);
             return failed("测试脚本超过 " + timeoutSeconds + " 秒未结束，已强制终止"
-                            + "（要么它真的慢，要么它卡住了）。下面是它到那一刻为止的输出："
-                            + System.lineSeparator() + shorten(output) + System.lineSeparator()
-                            + kept(outputFile),
+                    + "（要么它真的慢，要么它卡住了。" + location.label() + "）。"
+                    + "下面是它到那一刻为止的输出："
+                    + System.lineSeparator() + shorten(output) + System.lineSeparator()
+                    + kept(outputFile),
                     NO_EXIT_CODE, VerificationResult.Kind.TIMEOUT);
         }
 
@@ -193,12 +257,24 @@ public final class TestScriptVerifier implements Verifier {
             // 真通过：这份输出没有留下看的价值（编译那边也是这个规矩），
             // 也不该让一次通过的运行在项目里留下东西
             deleteFile(outputFile);
-            return new ScriptResult(VerificationResult.passed(NAME, entry, shorten(output)), 0);
+            return new ScriptResult(
+                    VerificationResult.passed(NAME, where(), shorten(output)), 0);
         }
         // 失败时把完整输出留在项目里：给人看的那份是掐过头的，而「缺什么」常常正好在被掐掉的部分
-        return new ScriptResult(VerificationResult.failed(NAME, entry,
+        return new ScriptResult(VerificationResult.failed(NAME, where(),
                 shorten(output) + System.lineSeparator() + kept(outputFile),
                 VerificationResult.Kind.NONE), exit);
+    }
+
+    /**
+     * 结果与留档里那一栏：<b>先写执行位置，再写跑的是哪个脚本</b>。
+     *
+     * <p>为什么位置要占在最前面：这句话要回答的是「这次有没有容器兜底」——没容器时
+     * 宿主上只剩高危字符串那一道闸（十五.9），用户有权知道。只写一个脚本路径的话，
+     * 「在宿主上跑的」和「在容器里跑的」在留档里长得一模一样。
+     */
+    private String where() {
+        return location.label() + "：" + location.path(entry);
     }
 
     /**
@@ -223,7 +299,7 @@ public final class TestScriptVerifier implements Verifier {
     }
 
     private ScriptResult failed(String reason, int exit, VerificationResult.Kind kind) {
-        return new ScriptResult(VerificationResult.failed(NAME, entry, reason, kind), exit);
+        return new ScriptResult(VerificationResult.failed(NAME, where(), reason, kind), exit);
     }
 
     private boolean await(Process process) {
@@ -357,10 +433,4 @@ public final class TestScriptVerifier implements Verifier {
                 + text.substring(text.length() - tail);
     }
 
-    /** Windows 走 cmd，其余走 sh——和编译校验同一条规矩。 */
-    private List<String> shellCommand(String command) {
-        return WINDOWS
-                ? List.of("cmd.exe", "/c", command)
-                : List.of("/bin/sh", "-c", command);
-    }
 }

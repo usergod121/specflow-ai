@@ -1,5 +1,6 @@
 package com.specflow.agent;
 
+import com.specflow.env.EnvRegistration;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
 import com.specflow.review.PlanStep;
@@ -83,7 +84,25 @@ public final class ProgressMessages {
         return reason + "，已回滚到本次运行前的状态";
     }
 
-    /** 校验失败时的级别：失败用 error，通过和跳过都是 info。 */
+    /**
+     * 测试环境那一条时间线。
+     *
+     * <p>为什么要发它：环境这一摊是全流程里唯一「慢得看不出来在干什么」的地方
+     * （拉镜像、等健康检查）。不发声的话，用户在结果面板上看到的只是一次没有失败清单的
+     * 「测试没跑起来」，而真正的原因（哪个容器、哪条命令）只有引擎知道。
+     *
+     * <p>坏掉时用 {@code error} 级别：它会连累整个运行收场，和编译那边判「缺依赖」同级。
+     */
+    public static String environmentChanged(EnvRegistration registration) {
+        return "测试环境：" + registration.summarize();
+    }
+
+    /** 环境那一条的级别：坏掉是 error，其余是 info。 */
+    public static String levelOf(EnvRegistration registration) {
+        return registration.state() == EnvRegistration.State.BROKEN ? "error" : "info";
+    }
+
+    /** 校验未通过时的级别：失败用 error，通过和跳过都是 info。 */
     public static String levelOf(VerificationResult result) {
         return result.failed() ? "error" : "info";
     }
