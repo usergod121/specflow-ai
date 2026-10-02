@@ -18,26 +18,36 @@ import java.util.regex.Pattern;
  * 那只是给人看的线索；「这次失败算哪一档」由引擎按下面这套顺序定。
  * 让被测方给自己定性，就是让写错的那一方投票。
  *
- * <p>判定顺序（先到先算）：
+ * <p><b>判定顺序（先到先算），排的是「机器有多确定」，不是「有多严重」</b>：
  * <ol>
- *   <li><b>引擎自己看见的</b>：进程压根起不来、输出读不出来 → 环境问题；</li>
- *   <li><b>跑过头了</b> → 测试超时（单独一档，见 {@link TestOutcome.Failure.Kind#TIMEOUT}）；</li>
- *   <li>有 {@link TestProtocol#FAIL_PREFIX} 行 → 断言失败（一条一行，进失败清单）；</li>
- *   <li>脚本打印了 {@link TestProtocol#BLOCKED_PREFIX} 行 → 环境问题（它自己说没跑起来）；</li>
- *   <li>输出里有「找不到命令 / 连不上」这类字样，<b>而且那一行本身像条报错</b> → 环境问题；</li>
- *   <li>非 0 退出但一行失败都没打印 → <b>测试代码问题</b>（它没能跑出结论：
- *       多半是编译不过、引用了不存在的 API、或者脚本自己写错了）。</li>
+ *   <li><b>引擎自己看见的</b>：进程压根起不来、输出读不出来 → {@link TestOutcome.Failure.Kind#ENVIRONMENT}
+ *       （<b>硬判据</b>：立刻停 + 保留现场 + 原始错误给人——不回滚、不删产物）；</li>
+ *   <li><b>跑过头了</b> → {@link TestOutcome.Failure.Kind#TIMEOUT}（<b>硬判据</b>；同样不回滚）；</li>
+ *   <li>有 {@link TestProtocol#FAIL_PREFIX} 行 → {@link TestOutcome.Failure.Kind#ASSERTION}
+ *       （脚本说这几条没过：只记现象，谁错了交给人）；</li>
+ *   <li>脚本打印了 {@link TestProtocol#BLOCKED_PREFIX} 行 → {@link TestOutcome.Failure.Kind#BLOCKED}
+ *       （<b>它的说法</b>，不是引擎的结论）；</li>
+ *   <li>输出里有「找不到命令 / 连不上」这类字样，<b>而且那一行本身像条报错</b> → 同样 {@code BLOCKED}
+ *       （它忘了打印 BLOCKED 时的兜底，仍然是猜的）；</li>
+ *   <li>退出码 0、上面一条都不占 → 这次就是过了；</li>
+ *   <li>非 0 退出、却一条用例的结论都没报出来 → {@link TestOutcome.Failure.Kind#UNRUNNABLE}
+ *       （引擎亲见的是「没有任何结论」，多半是它写的代码编不过）。</li>
  * </ol>
  *
- * <p><b>为什么第 3 条必须排在第 5 条前面。</b>用例自己打印「连不上」「找不到命令」是
+ * <p><b>为什么第 3 条必须排在第 4、5 条前面。</b>用例自己打印「连不上」「找不到命令」是
  * <b>很正常</b>的事（验「连不上时该返回 503」就会把 Connection refused 原样打出来）。
- * 先看环境字样的话，一次正常的断言失败会被判成环境问题——而环境问题的收场是
- * <b>整次回滚</b>（把编译通过的改动一起撤掉）外加一句「改测试代码解决不了」。
- * 判错的代价两边不对称，顺序就不能只是「看起来顺眼」。
+ * 先看环境字样的话，一次正常的断言失败会被记成「跑不起来」——而现在这一档不再回滚，
+ * 判错仍然会把用户的注意力引到环境上去，方向从一开始就错了。
  *
- * <p><b>为什么最后一条不能并进第 3 条。</b>「测试代码编译不过」和「产品代码错了」是两件事：
- * 前者要人去修测试（或者让 Test Agent 重生成），后者才轮到开发那一侧。
- * 合并成一句「测试没过」，用户第一个动作必然是去翻产品代码——方向从一开始就错了。
+ * <p><b>为什么只有第 1、2 条能让引擎停下来。</b>那两条是引擎亲眼看见的（进程起不来、超时），
+ * 再跑一万次也还是那样；第 3~7 条全是「脚本的说法」或「机器的猜测」——
+ * 实测过脚本拿一句 {@code BLOCKED} 盖住自己的编译错误，引擎采信之后把编译通过的产品改动
+ * 一起回滚掉了，用户既看不到那份测试代码、也失去了产品代码（十五.9：不许假装判得准）。
+ * 所以第 3~7 条<b>一律不停机、不回滚、不自动回喂</b>，只把证据摆给人看。
+ *
+ * <p><b>停下来的那两条也不动磁盘</b>：停机只等于「不再往下跑」，产品改动与测试产物都留在原地，
+ * 连同改动一起进「待处置」等人决定（用户 2026-10-02 拍板）。判错的代价不对称——
+ * 机器一次误判若顺手把改动收掉，人手里就什么都没有了。
  */
 public final class TestReport {
 
@@ -220,10 +230,17 @@ public final class TestReport {
                             + " 条）：这些结论对不回任何一条用例，既不算通过也不算没过",
                     ""));
         }
-        // 脚本压根没跑起来（环境问题）或没跑完（超时）时，不再补那条「哪几条没报」：
-        // 那两种情况下一条都没报是当然的，再列一遍只是噪声，还会把真正的原因挤到后面
+        // 脚本压根没跑起来（环境起不来）或没跑完（超时）时，不再补那条「哪几条没报」：
+        // 那两种情况下一条都没报是当然的，再列一遍只是噪声，还会把真正的原因挤到后面。
+        // 「一条结论都没报出来」同理——但那要分清两种：脚本说了为什么没跑出来（它自己打 BLOCKED、
+        // 或者它就是编不过）时，它已经说过一遍了；而「exit 0 却一条都没报」那种没人说过的话，
+        // 这条提示是**唯一**说出「它一条都没验」的地方，不能省
+        boolean noConclusionExplained = outcome.cases().isEmpty()
+                && (outcome.worst() == TestOutcome.Failure.Kind.UNRUNNABLE
+                        || outcome.worst() == TestOutcome.Failure.Kind.BLOCKED);
         boolean explain = !notRan.isEmpty() && !outcome.environmental()
-                && outcome.worst() != TestOutcome.Failure.Kind.TIMEOUT;
+                && outcome.worst() != TestOutcome.Failure.Kind.TIMEOUT
+                && !noConclusionExplained;
         if (explain) {
             failures = new ArrayList<>(failures);
             failures.add(new TestOutcome.Failure(TestOutcome.Failure.Kind.TEST_CODE, "", "",
@@ -362,56 +379,87 @@ public final class TestReport {
     }
 
     /**
-     * 产物已经清掉的那一版。
+     * 脚本跑了、也交了退出码，却<b>一条用例的结论都没报出来</b>。
      *
-     * <p>环境问题这条路会连同产品改动一起回滚，测试产物没有可测的代码了，
-     * 于是整批删掉——留档里那条结论还留着（它答得出「当时想验什么、为什么没跑成」），
-     * 但目录与文件清单得清空：指向一个不存在的地方比留空更糟。
+     * <p>这是自动重试生成测试代码的那条判据（见 {@code TestAgent}），也可能是本次运行最终那一档。
+     * 三条都要求，缺一不可：
+     * <ul>
+     *   <li>{@code cases} 空 —— 一条 {@code PASS |} / {@code FAIL |} 都没有。这个列表是
+     *       <b>脚本自己报出来的</b>，所以只能拿<b>对账之前</b>的那份结论来看（{@link #coverage}
+     *       会把清单上的每一条都补成「没过」）；</li>
+     *   <li>退出码拿得到 —— {@link TestScriptVerifier#NO_EXIT_CODE} 意味着脚本压根没被执行
+     *       （生成被拒、溯源核对没过）。那种「没跑」不是「跑不起来」：它的原因在别的失败行里，
+     *       重试一次生成是白花钱，人要看的是那批对不上线的产物；</li>
+     *   <li>没有命中硬判据 —— 环境起不来、超时是「再跑一次也一样」的两档，
+     *       它们由上层停机处理，不在这里耗第二次生成。</li>
+     * </ul>
      */
-    public static TestOutcome cleared(TestOutcome outcome) {
-        return new TestOutcome("", List.of(), outcome.calls(), outcome.exit(),
+    public static boolean ranWithoutConclusions(TestOutcome raw) {
+        return raw != null && raw.cases().isEmpty()
+                && raw.exit() != TestScriptVerifier.NO_EXIT_CODE
+                && !raw.hardStopped();
+    }
+
+    /**
+     * 同一份结论，换一个「为了生成它花了多少次模型调用」。
+     *
+     * <p>为什么要这一下：这一批起，「生成→跑」是<b>一个循环</b>（跑不出来就再生成一版），
+     * 于是每多一版就多一次真实调用。次数不改的话，界面上那句「花了 N 次调用」会说少，
+     * 而它是用户掏的钱。
+     */
+    public static TestOutcome withCalls(TestOutcome outcome, int calls) {
+        return new TestOutcome(outcome.directory(), outcome.files(), calls, outcome.exit(),
                 outcome.verification(), outcome.failures(), outcome.cases(), outcome.links());
     }
 
     // ---------- 分档 ----------
 
     private static List<TestOutcome.Failure> classify(VerificationResult result, String output) {
-        // 1) 引擎自己看见的：起不来、读不出来。这类失败不属于某一条用例
+        // 1) 引擎自己看见的：起不来、读不出来。硬判据：这一档要立刻停 + 回滚
         if (result.environmental()) {
             return List.of(environmental(firstUsefulLine(output)));
         }
-        // 2) 跑过头了：单独一档。既不算环境问题（环境弄好了它也还是慢），
-        //    也不算断言失败（它压根没跑到结论那一行）
+        // 2) 跑过头了：单独一档。既不算「起不来」（环境弄好了它也还是慢），
+        //    也不算断言没过（它压根没跑到结论那一行）。同样是硬判据，但不回滚
         if (result.timedOut()) {
             return List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.TIMEOUT,
                     "", "", firstUsefulLine(output), ""));
         }
-        // 3) 有 FAIL 行就是断言失败——**先看它**，理由见类注释
+        // 3) 有 FAIL 行就是「脚本说这几条没过」——**先看它**，理由见类注释。
+        //    这一档只记现象：是产品代码错了还是用例写错了，机器不判
         List<TestOutcome.Failure> failures = failures(output);
         if (!failures.isEmpty()) {
             return failures;
         }
-        // 4) 脚本自己说「我连跑都没跑起来」
+        // 4) 脚本自己说「我连跑都没跑起来」。这一句是**它的说法**，机器只转述：
+        //    实测过它拿这句话盖住自己的编译错误，采信它就会去回滚一份好代码
         String blocked = markerLine(output, BLOCKED_LINE);
         if (blocked != null) {
-            return List.of(environmental(blocked));
+            return List.of(blocked(blocked));
         }
-        // 5) 输出里有「命令不存在 / 连不上」这类字样（脚本忘了打印 BLOCKED 时的兜底）
+        // 5) 输出里有「命令不存在 / 连不上」这类字样（脚本忘了打印 BLOCKED 时的兜底）。
+        //    同样是猜的，所以落在同一档
         String evidence = environmentEvidence(output);
         if (evidence != null) {
-            return List.of(environmental(evidence));
+            return List.of(blocked(evidence));
         }
         // 6) 退出码 0、也没有上面任何一种迹象：这次就是过了
         if (result.passed()) {
             return List.of();
         }
-        // 7) 非 0 退出、却一行失败都没打印：它没能跑出结论
-        return List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.TEST_CODE,
+        // 7) 非 0 退出、却一条用例的结论都没报出来：多半是它写的代码编不过。
+        //    引擎亲见的是「没有任何结论」，所以按现象说，不替它判原因
+        return List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.UNRUNNABLE,
                 "", "", firstUsefulLine(output), ""));
     }
 
     private static TestOutcome.Failure environmental(String actual) {
         return new TestOutcome.Failure(TestOutcome.Failure.Kind.ENVIRONMENT, "", "", actual, "");
+    }
+
+    /** 「跑不起来的迹象」这一档：脚本自己说的、或者引擎从字样里看出来的。 */
+    private static TestOutcome.Failure blocked(String actual) {
+        return new TestOutcome.Failure(TestOutcome.Failure.Kind.BLOCKED, "", "", actual, "");
     }
 
     /**

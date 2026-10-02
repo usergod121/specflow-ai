@@ -14,6 +14,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Function;
@@ -39,6 +41,14 @@ class TestAgentTest {
 
     @TempDir
     Path root;
+
+    /**
+     * 假模型被调用了几次。
+     *
+     * <p>它数的是<b>真实的生成次数</b>：这一批起「生成→跑」是一个循环（跑不出来就再来一版），
+     * 「重试了几次」只能靠这个计数器看见（{@code outcome.calls()} 是它最终报出来的那个数）。
+     */
+    private int generation;
 
     @Test
     @DisplayName("一条断言没过：失败清单带四要素，产物留在磁盘上给人看")
@@ -218,22 +228,183 @@ class TestAgentTest {
         assertThat(outcome.verification().skipped()).isTrue();
     }
 
+    /**
+     * 脚本自己打的那行 {@code BLOCKED} 是<b>它的说法</b>。
+     *
+     * <p>旧行为是采信它：整批产物删掉、上头再回滚产品改动——实测里它拿这句话盖住了
+     * 自己的编译错误，于是用户既看不到那份测试代码，也失去了编译通过的产品代码。
+     * 现在：<b>停下等人，产物留着、产品改动不回滚</b>，原始输出摆出来。
+     */
     @Test
-    @DisplayName("脚本说跑不起来（BLOCKED）：算环境问题，产物整批清掉（这次运行要回滚）")
-    void clearsArtifactsOnEnvironmentFailure() throws IOException {
+    @DisplayName("脚本说跑不起来（BLOCKED）：记它的说法，产物留着、不停机")
+    void keepsArtifactsWhenTheScriptSaysBlocked() throws IOException {
         TestOutcome outcome = run(answer ->
                 block(answer.entry(), anchoredScript(2, "BLOCKED | javac not found")));
 
-        assertThat(outcome.environmental()).isTrue();
-        assertThat(outcome.detail()).contains("环境问题");
-        assertThat(outcome.directory()).isEmpty();
+        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.BLOCKED);
+        assertThat(outcome.environmental()).as("它说的话不等于引擎亲见的环境起不来").isFalse();
+        assertThat(outcome.detail()).contains("脚本自己说它没跑起来");
+        assertThat(outcome.directory()).as("产物留着：人要看得见它写成什么样").isNotEmpty();
+        assertThat(outcome.calls()).as("跑不起来会自动重试到上限（一共三版），账要按版数记").isEqualTo(3);
         try (var tools = Files.list(root.resolve("tools"))) {
-            assertThat(tools).isEmpty();
+            assertThat(tools).as("中间那几版收掉，只留最后一版（它是给人看的那一份）").hasSize(1);
+        }
+    }
+
+    /**
+     * 生成后重试的那条规则（§18 的第 6 条）：<b>跑不出来就再生成一版</b>，
+     * 而且要把上一版的原始错误带进下一次生成——重掷骰子只会再错一遍。
+     *
+     * <p>实测过它连着三版都选同一条错路（拿反射去改进程环境变量，JDK 17 一律拒绝）。
+     * 到上限就停下，把原始错误摆给人。
+     */
+    @Test
+    @DisplayName("第一版编不过、第二版就好了：自动重试一次就够，不惊动人")
+    void retriesGenerationWhenTheScriptProducedNoConclusion() {
+        FakeLlm llm = llm(answer -> ++generation == 1
+                // 第一版：编译不过（一条用例的结论都没有）
+                ? block(answer.entry(), anchoredScript(1, "error: cannot find symbol"))
+                // 第二版：修好了
+                : block(answer.entry(), anchoredScript(0, "PASS | 1", "PASS | 2")));
+
+        TestOutcome outcome = agent(llm).run(spec(), cases());
+
+        assertThat(generation).as("引擎自己又生成了一版（这就是「生成后重试」）").isEqualTo(2);
+        assertThat(outcome.passed()).isTrue();
+        assertThat(outcome.calls()).as("两版就是两次真实调用").isEqualTo(2);
+        assertThat(llm.user()).as("重试那次要把上一版的原始错误带上：重掷骰子只会再错一遍")
+                .contains("上一版测试代码没跑起来").contains("cannot find symbol");
+    }
+
+    /**
+     * 反面：<b>能跑起来但用例没过，绝不自动重跑</b>（十五.6）。
+     * 那种失败机器判不了是谁的错，自动重跑只是烧调用，还会把判断从人手里抢走。
+     */
+    @Test
+    @DisplayName("能跑但断言没过：一次都不重试，停在原地等人放行")
+    void doesNotRetryWhenTheRunJustFailedAnAssertion() {
+        FakeLlm llm = llm(answer -> {
+            generation++;
+            return block(answer.entry(), anchoredScript(1, "PASS | 1", "FAIL | 2 | a | b | code"));
+        });
+
+        TestOutcome outcome = agent(llm).run(spec(), cases());
+
+        assertThat(generation).as("只生成了一版").isEqualTo(1);
+        assertThat(outcome.failures()).isNotEmpty();
+        assertThat(outcome.calls()).isEqualTo(1);
+    }
+
+    /**
+     * <b>环境起不来时什么都不删</b>（用户 2026-10-02 拍板的那一条硬判据的收场）。
+     *
+     * <p>旧口径是「停下 + 产物整批删掉」（上头再连同产品改动一起回滚）：人手里什么都没剩，
+     * 既看不到它当时写成什么样，也没法判断这次改动值不值得留。现在只停下——产物留着，
+     * 改动进「待处置」，由人决定保留还是撤回。
+     *
+     * <p>造法：把「脚本输出」那个位置先占成一个<b>目录</b>——引擎执行脚本时起不了进程
+     * （它要把输出重定向到那里），于是落成引擎亲见的那一档环境问题。占的位置是
+     * {@code .specflow/logs/test-<时间戳>.log}，而时间戳是运行那一刻取的，所以按秒铺一段窗口。
+     * 试过「让脚本自己把兄弟入口删掉」那种造法：高危闸当场拦下（脚本不许删东西），
+     * 这本身是对的，所以换这一种。
+     */
+    @Test
+    @DisplayName("环境起不来（脚本进程起不来）：只停下等人，产物一个都不删")
+    void keepsArtifactsWhenTheEnvironmentIsAtFault() throws IOException {
+        Path logs = root.resolve(".specflow/logs");
+        Files.createDirectories(logs);
+        LocalDateTime start = LocalDateTime.now();
+        for (int second = 0; second < 120; second++) {
+            Files.createDirectories(logs.resolve("test-"
+                    + start.plusSeconds(second).format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+                    + ".log"));
+        }
+
+        TestOutcome outcome = run(answer -> block(answer.entry(),
+                anchoredScript(0, "PASS | 1", "PASS | 2")));
+
+        assertThat(outcome.environmental())
+                .as("进程起不来 = 引擎亲见的环境问题：%s", outcome).isTrue();
+        assertThat(outcome.hardStopped()).isTrue();
+        assertThat(outcome.detail())
+                .contains("环境起不来").contains("改动未回滚").contains("等你处置");
+        assertThat(outcome.directory()).as("产物留着的，所以这句话指得出一个真实存在的目录")
+                .isNotEmpty();
+        assertThat(root.resolve(outcome.directory())).as("产物整批留着，人要看得见它写成什么样")
+                .isDirectory();
+        assertThat(outcome.output()).as("原始错误照原样给人").contains("入口脚本起不来");
+    }
+
+    // ---------- 重新生成也要先编译核对（和每次生成同一条规则） ----------
+
+    /**
+     * 「重新生成」这条路<b>不再有跳过编译核对的例外</b>。
+     *
+     * <p>它和开发那一轮走的是同一个 {@link TestAgent#run} 里的同一段 {@code attempt}：
+     * 生成 → 落盘闸门 → 溯源核对 → <b>跑一次脚本</b> → 看有没有结论。编不过就自己再生成一版，
+     * 并把上一版的原始错误带进下一次生成（重掷骰子只会再错一遍）。
+     *
+     * <p>实测过的教训：旧口径下这条路连跑都不跑，人点完「重新生成」拿到的可能是一批
+     * 根本跑不起来的代码，而界面上写着「已重新生成」——一轮白跑被当成了进展。
+     */
+    @Test
+    @DisplayName("重新生成：第一版编不过就自己再生成一版，第二版编得过")
+    void regeneratesWhenTheNewCodeCannotBeCompiled() {
+        FakeLlm llm = llm(answer -> ++generation == 1
+                ? block(answer.entry(), anchoredScript(1, "error: cannot find symbol"))
+                : block(answer.entry(), anchoredScript(0, "PASS | 1", "PASS | 2")));
+
+        TestAgent.Generated generated = agent(llm).generate(spec(), cases());
+
+        assertThat(generation).as("引擎自己又生成了一版（这就是「生成后先编译」）").isEqualTo(2);
+        assertThat(generated.problem()).as("第二版跑得出结论：编得过，没什么可说的").isNull();
+        assertThat(generated.directory()).startsWith("tools/");
+        assertThat(generated.trace().ok()).isTrue();
+        assertThat(llm.user()).as("重试那次要把上一版的原始错误带上：重掷骰子只会再错一遍")
+                .contains("上一版测试代码没跑起来").contains("cannot find symbol");
+        try (var tools = Files.list(root.resolve("tools"))) {
+            assertThat(tools).as("中间那几版收掉，只留最后一版（它是给人看的那一份）").hasSize(1);
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * 预算用尽：<b>把最后一版和它的原始错误一起交给人</b>，标着「它的代码编不过」。
+     *
+     * <p>判据与开发那一轮<b>同一条</b>（{@link TestReport#ranWithoutConclusions}）：
+     * 脚本跑了、退出码拿得到、却一条用例的结论都没报出来。措辞用的是引擎里那一档的标签——
+     * 它说的是「引擎亲见的没有结论」，不替模型判「你编译错了」。
+     *
+     * <p>中间那几版要收掉：{@code tools/} 只增不减的话，下一轮翻产物时会分不清哪一版是真的。
+     */
+    @Test
+    @DisplayName("重新生成：三版都编不过就把原始错误交给人，标着「它的代码编不过」")
+    void reportsTheOriginalErrorWhenNoVersionCompiles() throws IOException {
+        FakeLlm llm = llm(answer -> {
+            generation++;
+            return block(answer.entry(), anchoredScript(1, "error: cannot find symbol"));
+        });
+
+        TestAgent.Generated generated = agent(llm).generate(spec(), cases());
+
+        assertThat(generation).as("跑不出结论会自己重试到上限（独立预算 3 版）").isEqualTo(3);
+        assertThat(generated.problem()).isNotNull();
+        assertThat(generated.problem().text())
+                .as("引擎那一档的标签原样用，不另编一句话")
+                .contains(TestOutcome.Failure.Kind.UNRUNNABLE.label())
+                .contains("3 版")
+                .contains("cannot find symbol");
+        assertThat(generated.problem().output()).as("原始错误原样带走，一个字节都不掐")
+                .contains("cannot find symbol");
+        assertThat(root.resolve(generated.directory())).as("最后一版留着：人要看得见它写成什么样")
+                .isDirectory();
+        try (var tools = Files.list(root.resolve("tools"))) {
+            assertThat(tools).as("中间那几版收掉，只留最后一版").hasSize(1);
         }
     }
 
     // ---------- 溯源连线：四条机器核对，不通过就拒绝跑 ----------
-
     /**
      * 清单上有、代码里没扫到锚点 = 漏实现。
      *

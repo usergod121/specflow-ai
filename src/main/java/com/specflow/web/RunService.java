@@ -17,6 +17,7 @@ import com.specflow.llm.LlmClient;
 import com.specflow.llm.OpenAiCompatibleClient;
 import com.specflow.patch.PatchApplier;
 import com.specflow.project.ProjectConfig;
+import com.specflow.review.AcceptanceCoverage;
 import com.specflow.review.PlanAudit;
 import com.specflow.review.PlanReview;
 import com.specflow.review.PlanReviewer;
@@ -28,6 +29,7 @@ import com.specflow.spec.Spec;
 import com.specflow.spec.SpecValidator;
 import com.specflow.template.TemplateRegistry;
 import com.specflow.tests.ExecutionLocation;
+import com.specflow.tests.Refeed;
 import com.specflow.tests.TestAgent;
 import com.specflow.tests.TestOutcome;
 import com.specflow.tests.TestSettings;
@@ -89,6 +91,15 @@ public final class RunService implements AgentListener {
      * 而真正的代价并不大：停下之前的所有改动都会被回滚。
      */
     private volatile boolean cancelRequested;
+
+    /**
+     * 这一次回喂给开发的那几条失败用例（十五.6 第一条路）。空 = 不是回喂。
+     *
+     * <p>和 {@link #lastTests} 同样的存法：它在 {@link #start} 那一刻定下来，
+     * 终态事件与运行留档都要用它（「这一轮带着哪几条失败」和「它到底改没改」）。
+     * 一次只跑一个运行，所以一个字段就够。
+     */
+    private Refeed currentRefeed = Refeed.none();
 
     /**
      * 当前在第几步（0 = 不属于某一步）。
@@ -185,6 +196,9 @@ public final class RunService implements AgentListener {
         // 上一次的测试结论同理：留着它，一次没跑测试的运行会顶着上一轮的失败清单收场
         lastTests = null;
         Spec spec = toValidSpec(request);
+        // 回喂在这一刻定下来：它要在发提示词之前拼好（它在提示词里、也进留档），
+        // 而它的原料是**上一轮那条留档**——不是界面发过来的文案（界面只发编号）
+        currentRefeed = refeedOf(request);
         // 环境这道闸排在模型配置之前：它是「这件事现在做不了」里最靠前的一条，
         // 而且不花钱。排在后面的话，一个没配密钥的项目会收到「密钥没配」，
         // 而它真正的问题是没有环境
@@ -197,12 +211,17 @@ public final class RunService implements AgentListener {
     }
 
     /**
-     * 勾了集成测试但没有可用的环境：<b>立刻拒，而不是等测试阶段才失败</b>。
+     * 勾了集成测试、而<b>项目压根没声明环境</b>：立刻拒，而不是等测试阶段才失败。
      *
      * <p>十五.5 定的是「初始化好之后集成测试才能勾选」。界面上那道闸（勾选框能不能点）
      * 是给人看的，而这条是机器判的：界面可以旧、可以被改坏、也可以被别的调用方绕开
      * （CLI 就是一个）。等到测试阶段才发现，用户已经烧掉一整轮开发调用了，
      * 而失败看起来还像「代码写错了」。
+     *
+     * <p><b>声明了、但还没起来的不再拦</b>：开发一开跑引擎就会异步把它起起来
+     * （见 {@code DevelopmentAgent.Warmup}），到测试阶段多半已经好了；真起不来也只记一句
+     * 「环境不可用」、跳过集成、产品改动照旧留着——让人白等一整轮开发，比这糟得多。
+     * 没声明则没得预热（连镜像名都没有），所以那一条仍然是硬拦。
      */
     private void requireEnvironment(RunRequest request) {
         if (!request.runsIntegration()) {
@@ -211,13 +230,23 @@ public final class RunService implements AgentListener {
         TestEnvironment.Status status = environment.status();
         if (!status.declared()) {
             throw new IllegalStateException("勾了集成测试，但这个项目没有 "
-                    + EnvConfigLoader.relativePath() + "：先写一份环境声明再初始化");
+                    + EnvConfigLoader.relativePath() + "：先写一份环境声明再跑");
         }
-        if (!status.usable()) {
-            throw new IllegalStateException("勾了集成测试，但测试环境还没就绪（"
-                    + status.state().label() + "）："
-                    + (status.todo().isEmpty() ? "" : status.todo()));
-        }
+    }
+
+    /**
+     * 把界面发来的那几个编号变成一段真正要喂给开发的话（十五.7 的固定模板）。
+     *
+     * <p>拼法只有一处：{@link RunStore#refeed(List)}。界面只发「哪几条」，
+     * 内容由引擎从上一轮那条留档里拼——失败清单、语义描述、目标文件都在那儿。
+     * 让界面自己拼一段文本发过来，等于把「回喂了什么」交给一个可以旧、可以被改坏的调用方。
+     * 命令行（{@code run --refeed}）走的是同一个方法，两条路不许各拼一套。
+     *
+     * @return 回喂内容；这次不是「下一轮」时是 {@link Refeed#none()}
+     * @throws IllegalStateException 勾了编号、但上一轮压根没有可回喂的失败清单
+     */
+    private Refeed refeedOf(RunRequest request) {
+        return store.refeed(request.pickedRefeed());
     }
 
     /** 这次运行按哪个测试设置走。 */
@@ -256,6 +285,7 @@ public final class RunService implements AgentListener {
                 .orElseThrow(() -> new IllegalStateException("现在没有挂起的运行，直接点运行就行"));
         cancelRequested = false;
         lastTests = null;
+        currentRefeed = refeedOf(request);
         Spec spec = toValidSpec(request);
         requireEnvironment(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
@@ -305,7 +335,10 @@ public final class RunService implements AgentListener {
         return new ReviewOutcome(plan,
                 PlanAudit.check(plan, spec.targets(), entries.files(), entries.directories()),
                 // 施工单那几条不用扫项目：要动哪些文件是白纸黑字写在单子上的
-                StepAudit.check(plan.steps(), spec.targets()));
+                StepAudit.check(plan.steps(), spec.targets()),
+                // 覆盖核对补的是「验没验」那一半：哪条验收标准一条用例都没覆盖、
+                // 哪几条必须过的用例没写对应哪条验收标准。两个数都该是 0，而它只是给人看的
+                AcceptanceCoverage.check(spec.acceptance(), plan.cases()));
     }
 
     /** 界面与 CLI 走同一套校验：这里过不了的 spec，命令行那边同样过不了。 */
@@ -366,11 +399,12 @@ public final class RunService implements AgentListener {
         try {
             // 装饰器：先记进运行留档，再转发给界面推送。两件事互不知道对方存在，
             // CLI 那边套的是同一个录制器，只是转发目标换成了空实现。
-            AgentListener listener = RunRecorder.start(store, spec, approved, this);
+            // 回喂那一段也交给它：它要跟着这一轮的记录一起落档（见 RunRecorder）
+            AgentListener listener = RunRecorder.start(store, spec, approved, this, currentRefeed);
             DevelopmentAgent agent = new DevelopmentAgent(projectRoot, project, templates(),
                     llm, List.of(new CompileVerifier()), listener, settings, environment);
             if (resume == null) {
-                agent.run(spec, approved);
+                agent.run(spec, approved, currentRefeed);
             } else {
                 agent.resume(spec, approved, resume.modelSaid(), resume.force(), resume.steps());
             }
@@ -527,21 +561,32 @@ public final class RunService implements AgentListener {
         if (lastTests != null) {
             body.put("tests", testPayload(lastTests));
         }
+        // 回喂与「它没有改动」：界面上要一眼看得出这一轮是按哪几条失败在改的，
+        // 以及它到底改没改（实测过它把文件原样再交一遍，而界面上和真改过长得一模一样）
+        if (currentRefeed.present()) {
+            body.put("refeed", currentRefeed.cases());
+            body.put("unchanged", Refeed.unchanged(currentRefeed, result.changes()));
+        }
         hub.publishResult(body);
     }
 
     // ---------- 测试阶段的界面接口 ----------
 
     /**
-     * 重新生成测试产物：<b>只生成，不跑</b>（十五.6 里「测试代码错了」那条路）。
+     * 重新生成测试产物：生成一版新的，<b>并且先做一次编译核对</b>（十五.6 里「测试代码错了」那条路）。
      *
      * <p>为什么它不在 {@code /api/run} 里顺手做掉：这两件事的语义正好相反。
      * 运行是「按已确认的方案改产品代码，然后验收」；用户点「测试代码错了」的时候，
-     * 他要的恰恰是<b>别再动产品代码、也别再跑一遍</b>，先看一眼新生成的测试代码写成什么样。
+     * 他要的恰恰是<b>别再动产品代码、也别把这一遍当验收</b>，先看一眼新生成的测试代码写成什么样。
      * 塞进运行里，用户点一下就又烧掉一轮开发调用，而他要 review 的那份代码可能还是错的。
      *
+     * <p><b>但它不是「连跑都不跑」</b>：从这一批起，生成的代码必须先过「跑一次、看有没有结论」
+     * 这道编译核对（和开发那一轮生成的规矩<b>同一个</b>，见 {@code TestAgent.generate}）——
+     * 旧口径下它拿回来的可能是一批编不过的代码，而界面上写着「已重新生成」，一轮白跑被当成了进展。
+     * 那一遍跑出来的断言结论<b>不当证据</b>（谁错了仍由人判），只用它回答「跑不跑得起来」。
+     *
      * <p>所以它不是一次运行：不排队、不占运行槽、不进轮次账、不写运行留档
-     * （要留档的是产品改动，这里一个字节产品代码都没动）。它只花一次模型调用，
+     * （要留档的是产品改动，这里一个字节产品代码都没动）。它花的是生成那几次模型调用，
      * 把产物写到新的 {@code tools/<时间戳>/} 里，然后原样把代码交回界面。
      *
      * @param request 界面那份运行请求：用例清单在 {@code approvedPlan.cases} 里
@@ -581,6 +626,11 @@ public final class RunService implements AgentListener {
         // 这批新代码接上线了没有（四条判据的结果）：没接上就先别点「放行」，
         // 因为拿去跑也是被拒绝运行——等再跑一次才发现，就白花一轮
         payload.put("trace", generated.trace());
+        // 编译核对没过时把它一并交出去（标着「它的代码编不过」+ 原始错误）：
+        // 这一版<b>不是</b>可以放行的东西，界面必须看得见，而不是收到一句「已重新生成」
+        if (generated.problem() != null) {
+            payload.put("problem", generated.problem());
+        }
         return payload;
     }
 

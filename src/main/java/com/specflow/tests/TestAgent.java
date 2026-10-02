@@ -89,6 +89,18 @@ public final class TestAgent {
     /**
      * 跑一轮测试阶段，位置由调用方给。
      *
+     * <p><b>「生成→跑」是一个循环，不是一条直线。</b>实测过：它写的测试代码第一版就编不过
+     * （{@code javac} 少带 {@code -encoding UTF-8}，14 个错），而人只能点一次「重新生成」，
+     * 修一轮又只修掉一个症状。所以从这一批起，<b>只要脚本一条用例的结论都没跑出来</b>
+     * （多半就是编不过、跑不起来），引擎自己再生成一版（最多 {@value #MAX_GENERATIONS} 版），
+     * 并把上一版的原始错误带进下一次生成——重掷骰子只会再错一遍。
+     *
+     * <p><b>能跑起来但用例没过，绝不自动重跑</b>（十五.6）：那种失败机器判不了是谁的错，
+     * 自动重跑只会烧调用、还会把「谁错了」这个判断从人手里抢走。停在那里等人放行。
+     *
+     * <p>环境起不来（{@link TestOutcome.Failure.Kind#hard() 硬判据}）时同样只生成这一版：
+     * 它不是「没有结论」那一档，停机交给上层，产物与产品改动都留着等人处置。
+     *
      * @param settings  跑单元还是单元+集成
      * @param variables 测试环境那组变量（连接信息 + 引擎那三个把手）；没有环境时是 {@code null}
      * @param location  这次脚本在哪儿跑（容器 / 宿主）。它决定入口脚本叫什么、引擎执行什么命令，
@@ -96,14 +108,63 @@ public final class TestAgent {
      */
     public TestOutcome run(Spec spec, List<PlanReview.TestCase> cases, TestSettings settings,
                            Map<String, String> variables, ExecutionLocation location) {
+        TestOutcome outcome = null;
+        for (int generation = 1; generation <= MAX_GENERATIONS; generation++) {
+            // 模型调用本身失败会从这里原样冒泡（整次运行都要停）；「生成被拒」落成下面那一档
+            Attempt attempt = attempt(spec, cases, settings, variables, location, outcome);
+            if (attempt.rejected()) {
+                log.warn("测试产物没能落地，这次测试到此为止：{}", attempt.rejection().getMessage());
+                return TestReport.withCalls(attempt.outcome(), generation);
+            }
+            // 每生成一版就是一次真实调用，账要按版数记（用户掏的钱不能说少）
+            outcome = TestReport.withCalls(attempt.outcome(), generation);
+            if (!attempt.reportedNothing()) {
+                // 要么跑出结论了（交给人），要么是硬判据那两档（上层停机），要么压根没跑。
+                // 三种都不再重试
+                return outcome;
+            }
+            if (generation == MAX_GENERATIONS) {
+                log.warn("生成 {} 版测试代码都跑不出一条用例的结论，停下来交给人：{}",
+                        MAX_GENERATIONS, outcome.detail());
+                return outcome;
+            }
+            log.warn("这一版测试代码跑不出一条用例的结论（第 {} 版），带上原始错误再生成一版：{}",
+                    generation, attempt.outcome().output());
+            // 把这一版收掉再进下一版：它编不过/跑不起来，留着只会让 tools/ 只增不减，
+            // 而真正要给人看的那一份是最后一版（前几版的原始错误已经写进下一版的提示词里）
+            attempt.artifacts().delete();
+        }
+        return outcome;
+    }
+
+    /**
+     * 生成 + 跑<b>一版</b>测试产物。
+     *
+     * <p>拆出来是为了让上面那个循环只有「什么时候再来一版」这一件事：生成、落盘闸门、
+     * 溯源核对、跑脚本、对账，五步的顺序和判据全在这一处，一版和最后一版走的是<b>同一条路</b>。
+     * <b>{@link #generate}（重新生成那条路）走的也是它</b>：从这一批起，凡是生成的测试代码
+     * 都要过「跑一次、看有没有结论」这道编译核对，那条路上不再有「跳过编译」的例外。
+     *
+     * @param previous 上一版跑完的结论；第一版是 {@code null}。
+     *                 非空时它的原始输出会作为「上一版的错误」附在提示词里——模型照着自己的
+     *                 原始报错改，比重新想一遍命中率高得多（实测过它连着三版都选了同一条错路）
+     * @return 这一版的结果。<b>两种失败分开走：</b>模型调用本身失败会原样抛出去
+     *         （整次运行都要停），而「这批测试代码不能用」落成 {@link Attempt#rejected()}——
+     *         怎么交代由调用方决定（{@code run} 落成一条结论，{@code generate} 原样抛出）。
+     *         之所以不在这里抛：两者都是 {@code SpecflowException}，调用方分不开
+     */
+    private Attempt attempt(Spec spec, List<PlanReview.TestCase> cases, TestSettings settings,
+                            Map<String, String> variables, ExecutionLocation location,
+                            TestOutcome previous) {
         TestArtifacts artifacts = TestArtifacts.create(projectRoot,
                 location == null ? ExecutionLocation.host() : location);
         String response;
         try {
-            response = ask(spec, cases, artifacts, settings, variables);
+            response = ask(spec, cases, artifacts, settings, variables, previous);
         } catch (RuntimeException e) {
             // 模型调用没回来 = 这一轮一个字节都没生成。刚建的那个空 tools/<时间戳>/ 要收掉：
-            // 留着它会攒成一串空目录，看上去像「跑过好几次测试」，而实际什么都没跑
+            // 留着它会攒成一串空目录，看上去像「跑过好几次测试」，而实际什么都没跑。
+            // 异常原样冒泡：这不是「这批测试代码不能用」，是整次运行都要停的那一类
             artifacts.delete();
             throw e;
         }
@@ -115,30 +176,67 @@ public final class TestAgent {
             CaseTraceCheck.Report trace = CaseTraceCheck.check(cases, contentsOf(written));
             if (!trace.ok()) {
                 log.warn("溯源核对不通过，拒绝运行这批测试：{}", trace.summarize());
-                return TestReport.traceRefused(1, artifacts.relative(), written, cases, trace);
+                return new Attempt(TestReport.traceRefused(1, artifacts.relative(), written,
+                        cases, trace), artifacts, false, written, trace, null);
             }
             // 跑哪一个入口，由这次勾没勾集成决定：勾了就是**两个都跑**
             // （两个都在同一个位置跑：有可用环境就是容器里，否则宿主上；见 runScripts）
-            TestOutcome outcome = TestReport.coverage(
-                    runScripts(spec, artifacts, written, settings, variables), cases, trace.links());
+            TestOutcome raw = runScripts(spec, artifacts, written, settings, variables);
+            // 「一条结论都没报出来」要在对账**之前**判：对账会把清单上的每一条都补成「没过」，
+            // 那份账看不出脚本到底报过几条（见 TestReport.ranWithoutConclusions）
+            boolean reportedNothing = TestReport.ranWithoutConclusions(raw);
+            TestOutcome outcome = TestReport.coverage(raw, cases, trace.links());
             log.info("测试脚本跑完：退出码 {}（{}）", outcome.exit(), artifacts.relative());
-            if (outcome.environmental()) {
-                // 环境问题这一次会连同产品改动一起回滚（上层收场时决定），测试产物也就没有
-                // 可测的代码了：整批删掉，别让一个指向已回滚代码的脚本留在项目里。
-                // 留档里那句结论留着——它答得出「当时想验什么、为什么没跑成」
-                log.warn("测试跑不起来（环境问题），产物已清掉：{}", artifacts.relative());
-                artifacts.delete();
-                return TestReport.cleared(outcome);
-            }
-            return outcome;
+            // 环境起不来（硬判据）时**什么都不删**：停下的只是这一次运行，现场原样留着
+            // （产品改动进「待处置」、产物留在 tools/ 里）——见 run 的注释
+            return new Attempt(outcome, artifacts, reportedNothing, written, trace, null);
         } catch (SpecflowException e) {
             // 生成阶段就被拒了（没按协议写、路径越界、命中高危命令）：产物一个字节都不留。
-            // 产品代码刚才编译通过、改动还在磁盘上，这里只报告「这批测试代码不能用」
+            // 产品代码刚才编译通过、改动还在磁盘上，这里只报告「这批测试代码不能用」。
+            // <b>这一档照旧删产物</b>：拒绝的理由是这批代码本身不能用（不是环境的事），
+            // 而它连一个可执行的入口都没落地，留着只是一堆指向空处的文件
             log.warn("测试产物没能落地，已整批清掉：{}", e.getMessage());
             artifacts.delete();
-            return TestReport.rejected(1, e.getMessage());
+            return new Attempt(TestReport.rejected(1, e.getMessage()), artifacts, false,
+                    List.of(), null, e);
         }
     }
+
+    /**
+     * 一版的结果，连同它的产物目录与写下的文件一起交出去。
+     *
+     * <p>为什么要把产物一起带上：重试之前得先把这一版删掉（它跑不起来，留着只会让
+     * {@code tools/} 只增不减），而删除是 {@link TestArtifacts} 的事——
+     * 循环那边只该知道「这一版不成了，收掉它」，不该自己拼路径。
+     *
+     * <p>为什么还要带上 {@code written} 与 {@code trace}：{@link #generate} 那边要把
+     * 这一版原样交回给界面（正文 + 连线核对结果 + 它编不编得过），而它走的是<b>同一条</b>
+     * {@link #attempt}。少这两样，那条路就只能自己再拼一遍——那正是「两套实现」的开头。
+     *
+     * @param reportedNothing 这一版<b>一条用例的结论都没报出来</b>（自动重试的判据）。
+     *                        它必须在对账之前算好：对账之后那份账里每条用例都有下场了
+     * @param rejection       这一版<b>没能落盘</b>时那个原因（协议、越界、高危命令）；
+     *                        落盘成功时是 {@code null}。两种失败在调用方那边要分开交代，
+     *                        而它们都是 {@code SpecflowException}，所以在这里就把类型记下来
+     */
+    private record Attempt(TestOutcome outcome, TestArtifacts artifacts, boolean reportedNothing,
+                           List<String> written, CaseTraceCheck.Report trace,
+                           SpecflowException rejection) {
+
+        /** 这一版是不是「生成就被拒了」（产物已经清掉，没什么可给人看的）。 */
+        boolean rejected() {
+            return rejection != null;
+        }
+    }
+
+    /**
+     * 同一次运行里最多生成几版测试代码。
+     *
+     * <p>3 = 首版 + 两次自动重试。定 3 而不是更多：每一次都是真金白银的一次模型调用，
+     * 而实测里「连着三版都选同一条错路」是出现过的（三次都拿反射去改进程环境变量）。
+     * 到上限就停下，把原始错误摆给人——继续试下去只是替一个已经判不了的局面烧钱。
+     */
+    private static final int MAX_GENERATIONS = 3;
 
     /**
      * 跑这次该跑的入口脚本，把它们的结果合成一份（十五.4/15.5）。
@@ -190,16 +288,25 @@ public final class TestAgent {
     }
 
     /**
-     * <b>只生成、不跑</b>：十五.6 里「测试代码错了」那条路要的东西。
+     * 「测试代码错了 → 重新生成」那条路：生成一批新的测试产物，<b>并且先做一次编译核对</b>。
      *
-     * <p>它和 {@link #run} 只差最后一步——不执行入口脚本。差这一步正是这条路的意义：
-     * 用户认为坏的是测试代码本身，那么把新生成的代码顺手跑一遍，只会再收到一份「失败的证据」，
-     * 而他要的是先看一眼这批代码写成什么样（十五.6：停下等你 review，不自动重跑）。
+     * <p>它和 {@link #run} 走的是<b>同一条</b> {@link #attempt}：生成 → 落盘闸门 → 溯源核对 →
+     * 跑一次入口脚本 → 看有没有结论。差别只在结果怎么用——这里<b>不把跑出来的断言结论当验收证据</b>
+     * （那要等人点「放行」、点「下一轮」再跑，十五.6），只用它回答「这批代码到底跑不跑得起来」。
+     * 从这一批起，「重新生成时跳过编译校验」那个例外没有了：上一次实测里人点完「重新生成」，
+     * 拿到的是一批<b>编不过</b>的代码，而界面上写着「已重新生成」，等于把一轮白跑当成了进展。
+     *
+     * <p>跑不出结论（多半是编不过）时它有自己的预算：最多 {@value #MAX_GENERATIONS} 版，
+     * 和 {@link #run} 那一份<b>各记各的</b>（这是两条路、两次动作，谁也不该吃掉对方的次数）。
+     * 到上限就把最后一版和它的原始错误一起交出去，由界面标成「它的代码编不过」。
      *
      * <p>它不写产品代码、不碰运行留档、也不进轮次账：这不是一次运行，是一次生成。
+     * 环境那一摊（预热 / reset）也不在这里——那是<b>一次运行</b>的排场（见 {@code DevelopmentAgent}），
+     * 这里只是把脚本执行一次看有没有结论。
      *
-     * @return 产物目录、写了哪些文件、以及每个文件的正文
-     * @throws SpecflowException 生成阶段被拒（没按协议写、路径越界、命中高危命令）；
+     * @return 产物目录、写了哪些文件、每个文件的正文、连线核对结果；
+     *         最后那一版编不过时还有一段「它的代码编不过 + 原始错误」
+     * @throws SpecflowException 生成被拒（没按协议写、路径越界、命中高危命令）；
      *                           模型调用本身失败也会冒泡出去。两种情况下产物一个字节都不留
      */
     public Generated generate(Spec spec, List<PlanReview.TestCase> cases) {
@@ -207,7 +314,7 @@ public final class TestAgent {
     }
 
     /**
-     * 只生成、不跑，这一次带环境。
+     * 生成 + 编译核对，这一次带环境。
      *
      * <p>重新生成也要跟着这次勾没勾集成走：勾了集成却只重新生成了一个单元入口，
      * 「放行」之后跑集成那一步会因为找不到入口而失败——而人要的是「换一版测试代码」，
@@ -219,42 +326,90 @@ public final class TestAgent {
     }
 
     /**
-     * 只生成、不跑，位置由调用方给。
+     * 生成 + 编译核对，位置由调用方给。
      *
      * <p>位置必须和真正跑起来那一次<b>是同一个</b>：名字（{@code run.sh} 还是 {@code run.cmd}）
-     * 由它决定，而「放行」之后引擎会照着同一个位置去执行。两次判断不一致的结果是
-     * 「产物有了、入口找不到」。
+     * 由它决定，而编译核对这一步立刻就要执行它，之后「放行」时引擎还会照着同一个位置去执行。
+     * 两次判断不一致的结果是「产物有了、入口找不到」。
      */
     public Generated generate(Spec spec, List<PlanReview.TestCase> cases, TestSettings settings,
                               Map<String, String> variables, ExecutionLocation location) {
-        TestArtifacts artifacts = TestArtifacts.create(projectRoot,
-                location == null ? ExecutionLocation.host() : location);
-        String response;
-        try {
-            response = ask(spec, cases, artifacts, settings, variables);
-        } catch (RuntimeException e) {
-            artifacts.delete();
-            throw e;
+        Generated generated = null;
+        TestOutcome previous = null;
+        for (int generation = 1; generation <= MAX_GENERATIONS; generation++) {
+            Attempt attempt = attempt(spec, cases, settings, variables, location, previous);
+            if (attempt.rejected()) {
+                // 这条路是同步接口，说得出「为什么不行」（界面上就是一条错误提示）；和 run()
+                // 那边落成 TestOutcome.rejected 是同一个理由，只是这里把**原来那个异常**
+                // 原样交出去（换一个类型或重拼一句话，都会丢掉它自带的说法）。
+                // 产物已经在 attempt 里清掉了，一次都不重试：协议问题重掷骰子还是同样的错
+                throw attempt.rejection();
+            }
+            String directory = attempt.artifacts().relative();
+            generated = new Generated(directory, attempt.written(),
+                    sources(projectRoot, directory, attempt.written()), attempt.trace(),
+                    compileProblem(attempt, generation));
+            if (!attempt.reportedNothing()) {
+                // 跑出结论了（编得过）：这一版就是交给人 review 的那一版
+                return generated;
+            }
+            if (generation == MAX_GENERATIONS) {
+                log.warn("重新生成 {} 版测试代码都跑不出一条用例的结论，把最后一版和原始错误交给人：{}",
+                        MAX_GENERATIONS, attempt.outcome().output());
+                return generated;
+            }
+            log.warn("重新生成的这一版跑不出一条用例的结论（第 {} 版），带上原始错误再生成一版：{}",
+                    generation, attempt.outcome().output());
+            // 和 run 那边同一条规矩：中间这几版收掉，只留最后一版（原始错误已经进了下一版的提示词）
+            attempt.artifacts().delete();
+            previous = attempt.outcome();
         }
-        try {
-            List<String> written = write(response, artifacts, settings);
-            return new Generated(artifacts.relative(), written,
-                    sources(projectRoot, artifacts.relative(), written),
-                    // 重新生成这条路也算一遍溯源：这批新代码要是还没接上线，人在这里就该看见
-                    // （实测过「修一轮只修掉一个症状」，等到再跑一次才发现是白跑一轮）
-                    CaseTraceCheck.check(cases, contentsOf(written)));
-        } catch (SpecflowException e) {
-            // 这条路是同步接口，说得出「为什么不行」（界面上就是一条错误提示）；和 run()
-            // 那边落成 TestOutcome.rejected 是同一个理由，只是这里直接把原因交出去
-            log.warn("重新生成测试产物失败，已整批清掉：{}", e.getMessage());
-            artifacts.delete();
-            throw e;
-        }
+        return generated;
     }
 
-    /** 生成结果：产物在哪儿、写了哪些文件、每个文件长什么样、以及这批代码接上线了没有。 */
+    /**
+     * 这一版「编不过」时给用户的那一段；编得过（跑出了结论）时是 {@code null}。
+     *
+     * <p>判据与 {@link #run} 那边<b>同一个</b>（{@link TestReport#ranWithoutConclusions}）：
+     * 脚本跑了、退出码拿得到、却一条 {@code PASS} / {@code FAIL} 都没报出来。
+     * 措辞也沿用引擎里那一档的标签（{@link TestOutcome.Failure.Kind#UNRUNNABLE}）——
+     * 它说的是「引擎亲见的是没有结论」，而不是替模型判「你编译错了」。
+     *
+     * <p>原始错误<b>原样带走</b>：掐掉它，人就只能猜这批代码坏在哪。
+     */
+    private static CompileProblem compileProblem(Attempt attempt, int generations) {
+        if (!attempt.reportedNothing()) {
+            return null;
+        }
+        String first = attempt.outcome().failures().stream()
+                .map(TestOutcome.Failure::actual)
+                .filter(text -> !text.isBlank())
+                .findFirst()
+                .orElse("");
+        String text = TestOutcome.Failure.Kind.UNRUNNABLE.label()
+                + "：它一条用例的结论都没跑出来，换了 " + generations + " 版都是这样（多半是编不过）。"
+                + (first.isEmpty() ? "" : "第一条错误：" + first);
+        return new CompileProblem(text, attempt.outcome().output());
+    }
+
+    /**
+     * 生成结果：产物在哪儿、写了哪些文件、每个文件长什么样、这批代码接上线了没有、
+     * 以及它到底跑不跑得起来。
+     *
+     * @param problem 最后那一版<b>跑不出一条结论</b>时的那段话（标着「它的代码编不过」+ 原始错误）；
+     *                编得过时是 {@code null}——那时候没什么可说的，人看正文就行
+     */
     public record Generated(String directory, List<String> files, Map<String, String> sources,
-                            CaseTraceCheck.Report trace) {
+                            CaseTraceCheck.Report trace, CompileProblem problem) {
+    }
+
+    /**
+     * 「它编不过」那一档：给用户的一句话，以及它凭什么这么说（脚本的原始输出）。
+     *
+     * <p>分成两栏是因为它们的去处不同：那句话是结论（界面上一眼看见），
+     * 原始输出是证据（折在下面，但一个字节都不许掐）。
+     */
+    public record CompileProblem(String text, String output) {
     }
 
     /** 单个文件最多读回这么多字符：它给眼睛看，再长也不会有人在这里读完。 */
@@ -270,15 +425,23 @@ public final class TestAgent {
      * 和「这批代码不能用」（一次正常的结果）在调用方那边<b>仍是两条路</b>：
      * 前者的异常一路冒泡，后者落成 {@code TestOutcome.rejected}。合成一个方法的话，
      * 两种失败分不开——而它们的收场方式完全不同。
+     *
+     * @param previous 上一版跑完的结论（第一版是 {@code null}）。非空时把它的原始输出
+     *                 附在用户消息的最后一段：这一版是「修上一版的错」，不是重新想一遍
      */
     private String ask(Spec spec, List<PlanReview.TestCase> cases, TestArtifacts artifacts,
-                       TestSettings settings, Map<String, String> variables) {
+                       TestSettings settings, Map<String, String> variables,
+                       TestOutcome previous) {
+        String message = assembler.userMessage(spec, templates)
+                + "\n" + TestProtocol.caseList(cases);
+        if (previous != null) {
+            message = message + "\n" + TestProtocol.retryNotice(previous);
+        }
         return llm.complete(List.of(
                 ChatMessage.system(assembler.systemMessage(spec, templates,
                         TestProtocol.instructions(artifacts.relative(),
                                 entriesOf(artifacts, settings), variables))),
-                ChatMessage.user(assembler.userMessage(spec, templates)
-                        + "\n" + TestProtocol.caseList(cases))));
+                ChatMessage.user(message)));
     }
 
     /** 这一次要哪几个入口脚本：单元那个永远要；集成那个只有勾了集成测试才要。 */

@@ -6,10 +6,12 @@ import com.specflow.agent.ProgressMessages;
 import com.specflow.env.EnvRegistration;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
+import com.specflow.review.AcceptanceCoverage;
 import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
 import com.specflow.spec.Spec;
+import com.specflow.tests.Refeed;
 import com.specflow.tests.TestOutcome;
 import com.specflow.verify.VerificationResult;
 import org.slf4j.Logger;
@@ -51,6 +53,15 @@ public final class RunRecorder implements AgentListener {
     private final List<RunRecord.Line> timeline = new ArrayList<>();
     private final List<RunRecord.Step> steps = new ArrayList<>();
     private String stepsSource;
+
+    /**
+     * 这一轮回喂给开发的那几条失败用例（十五.6 第一条路）。
+     *
+     * <p>开工时就定下来了（它在提示词里），所以在这里存着、写记录时一并落档：
+     * 「这一轮到底按什么在改」只有它答得出来，而实测里那一轮它一个字节都没改——
+     * 不留这一段，事后谁也说不清那次为什么白跑。
+     */
+    private final Refeed refeed;
 
     /**
      * 这次运行定下来的完整施工单。
@@ -115,11 +126,13 @@ public final class RunRecorder implements AgentListener {
      */
     private EnvRegistration environment;
 
-    private RunRecorder(RunStore store, AgentListener delegate, Spec spec, PlanReview approved) {
+    private RunRecorder(RunStore store, AgentListener delegate, Spec spec, PlanReview approved,
+                        Refeed refeed) {
         this.store = store;
         this.delegate = delegate;
         this.spec = spec;
         this.approved = approved;
+        this.refeed = refeed == null ? Refeed.none() : refeed;
         LocalDateTime now = LocalDateTime.now();
         this.id = STAMP.format(now);
         this.startedAt = now.toString();
@@ -130,7 +143,17 @@ public final class RunRecorder implements AgentListener {
      */
     public static RunRecorder start(RunStore store, Spec spec, PlanReview approved,
                                     AgentListener delegate) {
-        return new RunRecorder(store, delegate, spec, approved);
+        return start(store, spec, approved, delegate, Refeed.none());
+    }
+
+    /**
+     * 带「这一轮回喂了什么」的那一版：界面上点「下一轮」时走它（十五.6 第一条路）。
+     *
+     * @param refeed 这次回喂给开发的失败用例与那段原文；{@link Refeed#none()} 表示不是回喂
+     */
+    public static RunRecorder start(RunStore store, Spec spec, PlanReview approved,
+                                    AgentListener delegate, Refeed refeed) {
+        return new RunRecorder(store, delegate, spec, approved, refeed);
     }
 
     // ---------- 记录并转发 ----------
@@ -295,7 +318,14 @@ public final class RunRecorder implements AgentListener {
                 // settle / regenerated）；这里给 null，留档里于是没有这几项——
                 // 「没人判过」和「判了一个空表」是两件事
                 null, null, null,
-                List.copyOf(timeline));
+                List.copyOf(timeline),
+                // 覆盖核对：拿需求里的验收标准与这次那份清单数一遍。它和判决一样是**算出来的**，
+                // 跟着记录走，界面在通过率旁边固定显示的那两个计数就是它
+                AcceptanceCoverage.check(spec.acceptance(),
+                        approved == null ? List.of() : approved.cases()),
+                refeed.present() ? refeed : null,
+                // 「它没有改动」：只有这一轮真回喂了才给这个结论（见 Refeed.unchanged）
+                refeed.present() ? Refeed.unchanged(refeed, result.changes()) : null);
         try {
             store.save(record);
             log.debug("运行记录已写入 {}", store.directory().resolve(id));

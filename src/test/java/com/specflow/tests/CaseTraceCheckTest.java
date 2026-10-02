@@ -90,7 +90,7 @@ class CaseTraceCheckTest {
     }
 
     @Test
-    @DisplayName("③ 同一个编号出现两次：报重复实现，两个位置都摆出来")
+    @DisplayName("③ 同一个文件里同一个编号出现两次：报重复实现，两个位置都摆出来")
     void reportsADuplicatedAnchor() {
         CaseTraceCheck.Report report = CaseTraceCheck.check(declared(1),
                 Map.of("tools/x/UnitTest.java",
@@ -100,8 +100,51 @@ class CaseTraceCheckTest {
         assertThat(report.findings()).singleElement().satisfies(finding -> {
             assertThat(finding.kind()).isEqualTo(CaseTraceCheck.Kind.DUPLICATE);
             assertThat(finding.index()).isEqualTo(1);
-            assertThat(finding.detail()).contains("出现了 2 次")
+            assertThat(finding.detail()).contains("同一个文件 tools/x/UnitTest.java 里出现了 2 次")
                     .contains("tools/x/UnitTest.java:1").contains("tools/x/UnitTest.java:4");
+        });
+    }
+
+    /**
+     * 重复<b>按文件判</b>：同一条用例在单元与集成两个入口里各写一遍不算重复。
+     *
+     * <p>旧实现按「整批产物里出现两次」判，于是单元与集成各写一遍<自己>这条正常的写法被当成重复，
+     * 而它的后果是<b>整批测试一次都不跑</b>（十五.4 的两个入口本来就是两条路）。
+     * 真正要挡的是「同一个文件里把同一条用例写了两遍」——那才会出现一处过一处不过的局面。
+     */
+    @Test
+    @DisplayName("③ 同一个编号在两个文件里各写一遍：不算重复（单元与集成本来就是两条路）")
+    void allowsTheSameAnchorInTwoFiles() {
+        // 用 LinkedHashMap 而不是 Map.of：产物是按写入顺序扫的（TestAgent 给的就是有序表），
+        // 而「连到哪一份」的答案依赖那个顺序——用无序表这条断言会时绿时红
+        Map<String, String> contents = new java.util.LinkedHashMap<>();
+        contents.put("tools/x/UnitTest.java", "// CASE 1\n// expect: 期望 1\n");
+        contents.put("tools/x/IntegrationTest.java", "// CASE 1\n// expect: 期望 1\n");
+
+        CaseTraceCheck.Report report = CaseTraceCheck.check(declared(1), contents);
+
+        assertThat(report.ok()).as("跨文件不算重复，这批照跑：%s", report.summarize()).isTrue();
+        assertThat(report.findings()).isEmpty();
+        assertThat(report.links()).singleElement().satisfies(link -> {
+            assertThat(link.index()).isEqualTo(1);
+            assertThat(link.file()).as("连线按第一个出现的位置记").isEqualTo("tools/x/UnitTest.java");
+        });
+    }
+
+    /** 同一个文件里写三遍：报一条，位置把三处都列出来。 */
+    @Test
+    @DisplayName("③ 同一个文件里写三遍：一条差异里三处位置都给出来")
+    void reportsEveryDuplicateInOneFile() {
+        CaseTraceCheck.Report report = CaseTraceCheck.check(declared(1),
+                Map.of("tools/x/UnitTest.java",
+                        "// CASE 1\n// expect: 期望 1\n// CASE 1\n// expect: 期望 1\n"
+                                + "// CASE 1\n// expect: 期望 1\n"));
+
+        assertThat(report.findings()).singleElement().satisfies(finding -> {
+            assertThat(finding.kind()).isEqualTo(CaseTraceCheck.Kind.DUPLICATE);
+            assertThat(finding.detail()).contains("出现了 3 次")
+                    .contains("tools/x/UnitTest.java:1").contains("tools/x/UnitTest.java:3")
+                    .contains("tools/x/UnitTest.java:5");
         });
     }
 

@@ -89,21 +89,37 @@ public record TestOutcome(
     ) {
 
         /**
-         * 失败类型。这几档是<b>收场方式</b>的分界，不是措辞上的分类：
+         * 失败类型。<b>这里只回答「机器看见了什么」，不回答「谁错了」</b>——
+         * 谁错了由人看失败清单来定（十五.1）。
+         *
+         * <p>六档按「凭什么这么说」排，前两档是<b>引擎自己看见的硬判据</b>，
+         * 后四档是脚本的说法或机器的猜测，都<b>不许自动回喂</b>：
          * <ul>
-         *   <li>{@link #ENVIRONMENT} —— 立刻停、回滚，把原始错误给人（再跑也没用）；</li>
-         *   <li>{@link #TIMEOUT} —— 没在时限内跑完，单独一档：不算环境问题（环境弄好了它也还是慢），
-         *       也不该连累磁盘上那份改动被回滚；</li>
-         *   <li>{@link #ASSERTION} —— 交给人（机器判不了是代码错还是用例错），<b>不自动回喂</b>；</li>
-         *   <li>{@link #TEST_CODE} —— 和「产品代码错」分开标：坏的是测试代码本身
-         *       （编译不过、引用了不存在的 API、压根没跑出结论）。</li>
+         *   <li>{@link #ENVIRONMENT}（硬）—— 命令/环境<b>起不来</b>：入口脚本不存在、进程起不来、
+         *       输出读不出来。引擎亲见，再跑一万次也一样，所以立刻停 + 把原始错误给人；
+         *       但<b>不动磁盘</b>：产品改动与测试产物都留着等人处置；</li>
+         *   <li>{@link #TIMEOUT}（硬）—— 没在时限内跑完，引擎亲见；单独一档：环境弄好了它也还是慢，
+         *       同样不该连累磁盘上那份改动被回滚；</li>
+         *   <li>{@link #UNRUNNABLE} —— 跑完了、退出码非 0，却<b>一条用例的结论都没报出来</b>
+         *       （多半是它写的代码编不过）。引擎亲见的是「没有结论」，所以按现象说，
+         *       不替它判「编译不过」这个原因。这一档会先自动重试生成（见 {@code TestAgent}）；
+         *   <li>{@link #BLOCKED} —— 脚本自己打了一行 {@code BLOCKED}（或者输出里有带报错形状的
+         *       「命令不存在 / 连不上」）。<b>那是它的说法</b>：实测过它把「编译不过」也写成
+         *       BLOCKED，所以引擎只转述、采信它就没有下文了——停下等人看，不回滚、不删产物；</li>
+         *   <li>{@link #ASSERTION} —— 输出里有 {@code FAIL | …} 行：脚本说这几条没过。机器只看见
+         *       现象，是产品代码错了还是用例写错了，<b>机器判不了也不判</b>，交给人；</li>
+         *   <li>{@link #TEST_CODE} —— 机器<b>核对测试产物本身</b>得出的结论：溯源没接上线、
+         *       清单上的用例一条都没报、脚本报了清单外的编号、产物没能落盘。这一档不是猜的，
+         *       是算出来的。</li>
          * </ul>
          */
         public enum Kind {
-            ASSERTION("断言失败"),
-            TEST_CODE("测试代码问题"),
-            ENVIRONMENT("环境问题"),
-            TIMEOUT("测试超时");
+            ENVIRONMENT("环境起不来"),
+            TIMEOUT("测试超时"),
+            UNRUNNABLE("它的代码编不过"),
+            BLOCKED("脚本报跑不起来"),
+            ASSERTION("断言没过"),
+            TEST_CODE("测试代码问题");
 
             private final String label;
 
@@ -113,6 +129,18 @@ public record TestOutcome(
 
             public String label() {
                 return label;
+            }
+
+            /**
+             * 这是不是那两条<b>机器说了算</b>的硬判据（十五.5 的第①条与第②条）。
+             *
+             * <p>它的意思是「不用再往下跑了」——这两档再跑一万次也还是这样。
+             * <b>它不等于「把磁盘收掉」</b>：从这一批起，硬判据同样不回滚、不删产物，
+             * 改动进「待处置」、现场原样留着等人处置（判错的代价不对称：机器一次误判
+             * 若顺手替人把改动收掉，人手里就什么都不剩了）。
+             */
+            public boolean hard() {
+                return this == ENVIRONMENT || this == TIMEOUT;
             }
         }
 
@@ -174,10 +202,14 @@ public record TestOutcome(
     }
 
     /**
-     * 这次失败是不是「再跑也没用」的那一类。
+     * 这次失败是不是「命令/环境压根起不来」——<b>引擎亲见的那一条</b>。
      *
-     * <p>它是上层的刹车信号：环境问题要立刻停下、回滚，并把原始错误交给人——
-     * 和编译那边判「缺依赖」是同一个道理。
+     * <p>它是上层的刹车信号：这一档要立刻停下，并把原始错误交给人——和编译那边判「缺依赖」
+     * 是同一个道理。<b>但它不动磁盘</b>：产品改动与测试产物都留在原处，和改动一起进「待处置」。
+     *
+     * <p>它<b>只认引擎自己看见的那一档</b>（进程起不来、输出读不出来）。脚本自己打一行
+     * {@code BLOCKED} 说的「跑不起来」不在这里：那句话是它的说法，实测过它拿这句话
+     * 盖过自己的编译错误，采信它就会把编译通过的产品改动一起回滚掉（见 {@link Failure.Kind#BLOCKED}）。
      *
      * <p>超时<b>不</b>在这一类里：环境弄好了也还是慢，而且磁盘上那份改动未必有错（见 {@link Failure.Kind#TIMEOUT}）。
      */
@@ -186,25 +218,39 @@ public record TestOutcome(
     }
 
     /**
+     * 这次失败里有没有那两条硬判据（起不来 / 超时）。
+     *
+     * <p>它是「机器判得了」与「机器判不了」的分界：硬的那两条可以停机；其余每一档都只摆事实。
+     * <b>停机不等于回滚</b>——两条硬判据同样把改动和产物原样留着（见 {@link Failure.Kind#hard()}）。
+     * 分开成方法而不是让各处自己写 {@code failures.stream().anyMatch(...)}：
+     * 判据只有一处，改一处就够。
+     */
+    public boolean hardStopped() {
+        return failures.stream().anyMatch(failure -> failure.kind().hard());
+    }
+
+    /**
      * 这次测试阶段算哪一档——给运行终态用，也和界面上那一行字一一对应。
      *
-     * <p>环境问题优先：一次运行里同时出现「连不上」和「断言没过」时，
-     * 断言那条结果本身就不可信（脚本是跑到一半崩的），先说环境。
-     * 超时排第二：它同样意味着「后面那些结论都不算数」。
+     * <p>顺序按「机器有多确定」排，不按严重度排：
+     * 硬判据在前（环境起不来 &gt; 超时——它们意味着后面那些结论都不算数），
+     * 然后是机器看见或算出来的（一条结论都没跑出来 &gt; 脚本说它没跑起来 &gt; 测试产物本身对不上线），
+     * 最后才是现象（断言没过）。
+     *
+     * <p><b>BLOCKED 排在 TEST_CODE 前面</b>：脚本说「我压根没跑起来」时，另一条「清单上这几条没报」
+     * 只是它的后果；把后果当成结论（「测试代码问题」）会把人的注意力引到改测试上去。
      */
     public Failure.Kind worst() {
         if (failures.isEmpty()) {
             return null;
         }
-        if (environmental()) {
-            return Failure.Kind.ENVIRONMENT;
+        for (Failure.Kind kind : List.of(Failure.Kind.ENVIRONMENT, Failure.Kind.TIMEOUT,
+                Failure.Kind.UNRUNNABLE, Failure.Kind.BLOCKED, Failure.Kind.TEST_CODE)) {
+            if (failures.stream().anyMatch(failure -> failure.kind() == kind)) {
+                return kind;
+            }
         }
-        if (failures.stream().anyMatch(failure -> failure.kind() == Failure.Kind.TIMEOUT)) {
-            return Failure.Kind.TIMEOUT;
-        }
-        return failures.stream().anyMatch(failure -> failure.kind() == Failure.Kind.TEST_CODE)
-                ? Failure.Kind.TEST_CODE
-                : Failure.Kind.ASSERTION;
+        return Failure.Kind.ASSERTION;
     }
 
     /**
@@ -221,8 +267,12 @@ public record TestOutcome(
             // 事后翻留档的人要一眼看出「那次根本没跑完」，而不是以为断言失败了
             out.append("测试超时：脚本没在时限内结束，已经被强制终止（整棵进程树一起收掉了）。");
         } else if (exit < 0) {
-            // 脚本压根没被执行：生成阶段就被拒了，或者溯源核对没过（都是「没跑」，不是「跑了没过」）
+            // 脚本压根没被执行：生成阶段就被拒了，或者溯源核对没过，再或者它起不来（环境）。
+            // 产物留着时要说清在哪儿——「现场给你留着了」这句话得能落到一个具体的目录上
             out.append("这一次测试脚本没有被执行。");
+            if (!directory.isEmpty()) {
+                out.append("测试产物还在 ").append(directory).append("/。");
+            }
         } else {
             out.append("测试脚本退出码 ").append(exit).append("。");
             if (!directory.isEmpty()) {
@@ -241,24 +291,48 @@ public record TestOutcome(
                 out.append("（它认为：").append(failure.opinion()).append("）");
             }
         }
-        if (worst == Failure.Kind.ENVIRONMENT) {
-            out.append(System.lineSeparator())
-                    .append("这一类是环境问题：缺命令、连不上、脚本本身起不来——")
-                    .append("改测试代码解决不了，先把环境弄好再说。");
-        } else if (worst == Failure.Kind.TIMEOUT) {
-            out.append(System.lineSeparator())
-                    .append("超时不是环境问题，也不是断言没过：它要么真的慢，要么卡住了。")
-                    .append("磁盘上的改动我们没回滚——先看看它卡在哪儿，再决定重跑还是改测试。");
-        } else if (worst == Failure.Kind.TEST_CODE) {
-            out.append(System.lineSeparator())
-                    .append("坏的是测试代码本身（编译不过、引用了不存在的 API、没跑出结论，")
-                    .append("或者溯源核对没过——它和用例清单没接上线），不是产品代码——两者要分开看。")
-                    .append("修它走「测试代码错了 → 重新生成」，别去改产品代码。");
-        } else {
-            out.append(System.lineSeparator())
-                    .append("这几条是断言没过：可能是产品代码错了，也可能是用例写错了，")
-                    .append("机器判不了，交给你定。改动还在磁盘上，等你看完再决定。");
-        }
+        out.append(System.lineSeparator()).append(closing(worst));
         return out.toString();
+    }
+
+    /**
+     * 收尾那句「接下来怎么办」——<b>按档分，因为每一档的下一步完全不同</b>。
+     *
+     * <p>两条硬判据说「停下来把环境弄好，现场给你留着」；其余每一档都明说「机器判不了谁错，
+     * 证据都在这儿，你看着定」——实测过的教训是：机器下的结论会被当结论读，
+     * 而一句错方向的结论比不下结论糟得多。
+     *
+     * <p>硬判据那一档还非说清「改动没回滚」不可：用户 2026-10-02 拍板「环境起不来也保留现场」，
+     * 而这一档以前是自动回滚的——旧说法留着不改，人就不知道该去「待处置」里找那份改动。
+     */
+    private String closing(Failure.Kind worst) {
+        if (worst == Failure.Kind.ENVIRONMENT) {
+            return "环境起不来，改动未回滚，等你处置：这一类是「命令/环境压根起不来」，"
+                    + "引擎亲眼看见的（脚本自己打的 BLOCKED 不算）——改测试代码解决不了，"
+                    + "先把环境弄好再说。产品改动与测试产物都原样留着（进「待处置」），"
+                    + "你可以修好环境重跑、也可以直接保留或撤回它。";
+        }
+        if (worst == Failure.Kind.TIMEOUT) {
+            return "超时不是环境问题，也不是断言没过：它要么真的慢，要么卡住了。"
+                    + "磁盘上的改动我们没回滚、测试产物也留着——先看看它卡在哪儿，"
+                    + "再决定重跑还是改测试；改动本身进「待处置」，等你处置。";
+        }
+        if (worst == Failure.Kind.UNRUNNABLE) {
+            return "它写的测试代码一条用例的结论都没跑出来（多半是编不过）——换了 "
+                    + Math.max(1, calls) + " 版都是这样，就不再自动重试了。"
+                    + "原始错误在下面的输出里；改动<b>没有回滚</b>，产物也留着。";
+        }
+        if (worst == Failure.Kind.BLOCKED) {
+            return "脚本自己说它没跑起来。引擎<b>只转述这句话，不当结论</b>（实测过它拿这句话"
+                    + "盖住自己的编译错误），所以这里不猜是谁的错：改动没有回滚、产物也没有删，"
+                    + "原始输出在下面，你看完再决定。";
+        }
+        if (worst == Failure.Kind.TEST_CODE) {
+            return "这几条是引擎核对测试产物本身算出来的（溯源没接上线、清单上的用例没报、"
+                    + "产物没能落盘），不是猜的。它和「产品代码错了」是两件事——"
+                    + "修它走「测试代码错了 → 重新生成」，别去改产品代码。";
+        }
+        return "这几条是「脚本报了 FAIL」，机器只看见现象：可能是产品代码错了，也可能是用例写错了，"
+                + "机器判不了，交给你定。改动还在磁盘上，等你看完再决定。";
     }
 }

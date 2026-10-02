@@ -4,14 +4,17 @@ import com.specflow.SpecflowCli;
 import com.specflow.TestSpecs;
 import com.specflow.agent.AgentListener;
 import com.specflow.agent.AgentResult;
+import com.specflow.exception.SpecflowException;
 import com.specflow.history.RunRecord;
 import com.specflow.history.RunRecorder;
 import com.specflow.history.RunStore;
 import com.specflow.project.SnapshotConfig;
+import com.specflow.review.PlanReview;
 import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.tests.TestOutcome;
 import com.specflow.util.SafePathResolver;
 import com.specflow.verify.VerificationResult;
+import com.specflow.web.StubModelServer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -22,13 +25,18 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 命令行端到端测试。
  *
- * <p>覆盖到 {@code validate} / {@code templates} / {@code init} 三条不联网的命令。
- * {@code run} 需要真实模型，不在这里测——它的编排逻辑由
- * {@code DevelopmentAgentTest} 用假模型覆盖。
+ * <p>覆盖到 {@code validate} / {@code templates} / {@code init} 几条不联网的命令，
+ * 以及 {@code accept} / {@code rollback} / {@code env} 的收场语义。
+ *
+ * <p>{@code run} 不能拿真模型测（慢、不确定），但<b>能用本机的假模型端点测</b>——
+ * 「命令行参数真的被解析、真的进了发给模型的那条提示词」只有这样才验得到
+ * （见 {@code refeedsThePreviousFailuresFromTheCommandLine}）。
+ * 编排逻辑本身由 {@code DevelopmentAgentTest} 用假模型覆盖。
  */
 @DisplayName("命令行")
 class SpecflowCliTest {
@@ -279,6 +287,135 @@ class SpecflowCliTest {
         RunRecord.Settlement settlement = store.load(store.latestId()).settlement();
         assertThat(settlement.choice()).isEqualTo(RunRecord.Settlement.ACCEPT);
         assertThat(settlement.failing()).containsExactly(2);
+    }
+
+    // ---------- 回喂（十五.6 第一条路）：命令行上的「下一轮」 ----------
+
+    /**
+     * {@code run --refeed 2}：命令行上也能把上一轮失败的哪几条喂回给开发。
+     *
+     * <p>这一条走的是<b>真命令 + 假模型</b>（本机的 OpenAI 兼容端点），验的是三件事接上了：
+     * ①那一栏被解析成了编号；②内容由引擎按十五.7 的模板从<b>上一轮那条留档</b>里拼
+     * （界面与命令行共用 {@code RunStore.refeed}，谁都不许自己拼文案）；
+     * ③它真的进了发给模型的那条提示词。只测 {@code Refeed.of} 的话，
+     * 「拼出来了但没发给模型」这种断线照样是绿的——而那正是这条路的全部意义。
+     */
+    @Test
+    @DisplayName("run --refeed 2：把上一轮失败的那几条喂给开发（真命令 + 假模型）")
+    void refeedsThePreviousFailuresFromTheCommandLine() throws Exception {
+        writeSpec("""
+                prompt: 把 a 改成 2
+                targets: [Foo.java]
+                """);
+        Files.writeString(root.resolve("Foo.java"), "class Foo { int a = 1; }\n");
+        recordRefeedableRun();
+
+        try (StubModelServer model = StubModelServer.answering(
+                // 开工前那两次「现生成施工单」的探测（桩不认识 STEPS 块，于是引擎退化成单步）
+                "这个需求我拆不开。",
+                "这个需求我拆不开。",
+                // 开发那一轮：真改一个文件（改没改成不是这一条要验的，验的是它收到了什么）
+                "<<<<<<< SEARCH Foo.java\nclass Foo { int a = 1; }\n=======\n"
+                        + "class Foo { int a = 2; }\n>>>>>>> REPLACE\n")) {
+            writeProjectConfig(model.baseUrl());
+
+            assertThat(SpecflowCli.execute("run", "-p", project, "--refeed", "2")).isZero();
+
+            int development = -1;
+            for (int index = 0; index < model.calls(); index++) {
+                if (!model.askedForStepsOnly(index)) {
+                    development = index;
+                    break;
+                }
+            }
+            assertThat(development).as("开发那一轮调用过（一共 %s 次调用）", model.calls())
+                    .isNotNegative();
+            String user = model.userOf(development);
+            assertThat(user).as("回喂那一段真的进了提示词：%s", user)
+                    .contains("## 上一轮的测试失败")
+                    .contains("用例 2「改完还能编译」")
+                    .contains("期望 compiled")
+                    .contains("实际 not compiled")
+                    .contains("Foo.java");
+            assertThat(user).as("不给测试代码：照着断言改代码等于对着答案抄")
+                    .doesNotContain("echo FAIL");
+        }
+    }
+
+    @Test
+    @DisplayName("--refeed all = 上一轮失败清单里的全部（和界面上的「全选」同一件事）")
+    void refeedAllMeansEveryFailingCase() {
+        recordRefeedableRun();
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+
+        assertThat(RunCommand.refeedOf("all", store).cases()).containsExactly(2);
+        assertThat(RunCommand.refeedOf("2", store).cases()).containsExactly(2);
+        assertThat(RunCommand.refeedOf("2, 3", store).cases()).as("编号分隔符随便写")
+                .containsExactly(2, 3);
+        assertThat(RunCommand.refeedOf("", store).present()).as("没写这一栏 = 不是「下一轮」").isFalse();
+        assertThat(RunCommand.refeedOf(null, store).present()).isFalse();
+    }
+
+    /**
+     * 写错了要当场拒，而且两种说法不是同一句：一个是「你的参数写错了」，
+     * 另一个是「上一轮压根没有可回喂的东西」。混成一句，用户会去改一个本来就对的参数。
+     */
+    @Test
+    @DisplayName("--refeed 写错了当场拒：认不出编号 / 上一轮没跑过测试")
+    void refeedRejectsWhatItCannotFeed() {
+        RunStore empty = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        assertThatThrownBy(() -> RunCommand.refeedOf("7,8", empty))
+                .isInstanceOf(SpecflowException.class)
+                .hasMessageContaining("没有可回喂的失败清单");
+
+        recordRefeedableRun();
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        assertThatThrownBy(() -> RunCommand.refeedOf("这几条", store))
+                .isInstanceOf(SpecflowException.class)
+                .hasMessageContaining("--refeed 要写编号");
+    }
+
+    // ---------- 辅助 ----------
+
+    /**
+     * 造一条<b>可以拿来回喂</b>的记录：带用例清单、带失败清单、带目标文件。
+     *
+     * <p>三样缺一不可——回喂那一段要「用例的语义描述」（清单里有）、
+     * 「期望 vs 实际」（失败清单里有）、「涉及的目标文件」（run 级 targets）。
+     */
+    private void recordRefeedableRun() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        List<PlanReview.TestCase> cases = List.of(
+                new PlanReview.TestCase(1, "a 变成 2", "读 Foo.java 里的 a",
+                        PlanReview.TestCase.Level.MUST, "a == 2", "无"),
+                new PlanReview.TestCase(2, "改完还能编译", "跑一次编译",
+                        PlanReview.TestCase.Level.SHOULD, "compiled", "无"));
+        TestOutcome tests = new TestOutcome("tools/20260930-180000", List.of(), 1, 1,
+                VerificationResult.failed("测试脚本", "run", "一条没过"),
+                List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.ASSERTION, "2",
+                        "compiled", "not compiled", "code is wrong")),
+                List.of(new TestOutcome.CaseResult(1, true), new TestOutcome.CaseResult(2, false)),
+                List.of());
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                PlanReview.of("做点事", "", List.of(), List.of(), cases), AgentListener.NOOP);
+        recorder.testsFinished(tests);
+        recorder.finished(AgentResult.testsFailed(1, List.of(), List.of(), "一条没过"));
+    }
+
+    /**
+     * 一份指向假模型的项目配置 + 密钥：{@code run} 那条路要自己读 {@code project.yaml}
+     * （界面那条路是把它装配好传进来的，命令行没有这一层）。
+     */
+    private void writeProjectConfig(String baseUrl) throws Exception {
+        Path config = root.resolve(".specflow/project.yaml");
+        Files.createDirectories(config.getParent());
+        Files.writeString(config, """
+                llm:
+                  base-url: "%s"
+                  model: "stub"
+                  api-key-env: "SPECFLOW_TEST_KEY"
+                """.formatted(baseUrl));
+        Files.writeString(root.resolve(".specflow/local.env"), "SPECFLOW_TEST_KEY=sk-test\n");
     }
 
     /** 造一条「跑过测试、第 1 条过了、第 2 条没过」的运行记录。 */

@@ -3139,6 +3139,15 @@ async function main() {
         .textContent.includes(${JSON.stringify(path.basename(interfaceProject))})`, '页面切到这一链的项目');
 
     await setField('demand', '给 Foo 加一个方法，让 a 变成 2');
+    // 一条验收标准：覆盖核对那两枚计数要靠它才画得出来（没写验收标准时它们整个不出现）。
+    // 这一链的用例那一栏写的都是「无」，所以它必然零覆盖——正是要看见的那种红灯
+    await clickButton('add-acceptance');
+    await evaluate(`(() => {
+      const box = document.getElementById('acceptance');
+      box.querySelectorAll('.a-text')[box.querySelectorAll('.a-text').length - 1].value
+          = 'R-1：加完之后 a 等于 2';
+      return 'ok';
+    })()`);
     await evaluate(`(() => {
       state.selected = new Set(['src/main/java/com/demo/Foo.java']);
       updatePicked();
@@ -3158,6 +3167,22 @@ async function main() {
     check(rates26.includes('必须过 0/1') && rates26.includes('建议过 0/1')
             && rates26.includes('可选 0/0') && rates26.includes('未标 0/0'),
         '四档通过率都在（某一档为空也照常显示 0/0，不是整块消失）：' + JSON.stringify(rates26));
+
+    // 覆盖核对那两枚计数：固定摆在通过率旁边，两个数都该是 0（这一链故意造出两个非 0）
+    check(rates26.includes('零覆盖验收') && rates26.includes('无对应验收的必须过用例'),
+        '通过率旁边固定摆着「零覆盖验收」与「无对应验收的必须过用例」：' + JSON.stringify(rates26));
+    check(await evaluate(`document.querySelector('#cases .rate-row .rate.bad') !== null`),
+        '不为 0 时按错误色画（红线要看得见）');
+    const coverageNote26 = await evaluate(`(() => {
+      const note = document.querySelector('#cases .wire-bad-note');
+      return note ? note.textContent : '';
+    })()`);
+    check(coverageNote26.includes('R-1：加完之后 a 等于 2') && coverageNote26.includes('用例 1'),
+        '并且把零覆盖的那条验收标准原文与那几条必须过的用例列出来：'
+            + JSON.stringify(coverageNote26.slice(0, 90)));
+    check(coverageNote26.includes('不影响这一轮往下走'),
+        '说清它不拦人（用例是证据，不是门槛）');
+
     check(await evaluate(`document.querySelectorAll('#cases .case-tier-empty').length`) === 2,
         '空着的那两档各自写着「这一档没有用例」');
     check(await evaluate(`document.querySelector('#cases .case-detail') === null`),
@@ -3205,7 +3230,9 @@ async function main() {
         '失败清单里就一条（过了的那条不进清单）');
     const failText26 = await evaluate(`document.querySelector('#result .fail').textContent`);
     check(failText26.includes('用例 2'), '① 哪条用例：' + JSON.stringify(failText26.slice(0, 60)));
-    check(failText26.includes('断言失败'), '② 失败原因（机器判的那一档）');
+    check(failText26.includes('断言没过'), '② 失败原因（机器判的那一档）');
+    check(failText26.includes('机器只看现象，谁错了由你判'),
+        '② 紧挨着标签写着这一档是「机器只看现象」——机器下的结论最容易被当成结论读');
     check(failText26.includes('期望：') && failText26.includes('compiled'), '③ 期望');
     check(failText26.includes('实际：') && failText26.includes('not compiled'), '③ 实际');
     check(await evaluate(`document.querySelector('#result .fail-guess') !== null
@@ -3216,11 +3243,28 @@ async function main() {
     check(await evaluate(`document.querySelector('#result .tests-output') !== null
         && document.querySelector('#result .tests-output').textContent.includes('原始输出')`),
         '脚本的原始输出也能看（猜错了就去翻原话）');
+    // 原始输出尾部**固定摊开**在失败清单底下：实测里「期望/实际」两栏常常只是脚本自己的一句话，
+    // 真正的原始错误只在输出里——折一层，人就会在没看到它的情况下把这几条判掉
+    const tail26 = await evaluate(`(() => {
+      const box = document.querySelector('#result .fail-output');
+      return box ? box.textContent : '';
+    })()`);
+    check(tail26.includes('not compiled'),
+        '失败清单底下固定摊着脚本输出的尾部（原始证据不折在 details 里）：'
+            + JSON.stringify(tail26.slice(0, 80)));
 
     // 通过率跟着这一次的结果走
     const ratesAfter26 = await evaluate(`document.querySelector('#cases .rate-row').textContent`);
     check(ratesAfter26.includes('必须过 1/1') && ratesAfter26.includes('建议过 0/1'),
         '跑完之后通过率按这一次的结果算（必须过过了、建议过没过）：' + JSON.stringify(ratesAfter26));
+    // 结果面板里那份通过率旁边也有这两枚计数：翻到哪一屏都是同一份账
+    const testsRates26 = await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('#result .rate-row')];
+      return rows.length ? rows[0].textContent : '';
+    })()`);
+    check(testsRates26.includes('总通过率') && testsRates26.includes('零覆盖验收')
+        && testsRates26.includes('无对应验收的必须过用例'),
+        '结果面板的通过率旁边同样摆着覆盖那两个数：' + JSON.stringify(testsRates26));
     check(await evaluate(`document.querySelector('#cases .case-item[data-case="2"] .mark').textContent`)
         === '没过', '没过的那个 chip 上写着「没过」');
     check(await evaluate(`document.querySelector('#cases .case-item[data-case="1"] .mark').textContent`)
@@ -3305,11 +3349,23 @@ async function main() {
         const method = (opts && opts.method) || 'GET';
         if (target.endsWith('/api/tests/regenerate')) {
           window.__calls.push(target + ' ' + method);
-          return Promise.resolve(new Response(JSON.stringify({
+          // 第一次给一版能编译的；第二次给一版**编不过**的（引擎跑了一圈、一条结论都没跑出来）：
+          // 「重新生成」这条路从这一批起也要先过编译核对，编不过那句话得真的画到界面上
+          const n = window.__calls.filter(call => call.startsWith('/api/tests/regenerate')).length;
+          const body = {
             directory: 'tools/20990101-000000',
             files: ['tools/20990101-000000/run.cmd'],
             sources: { 'tools/20990101-000000/run.cmd': 'echo PASS ^| 1\\r\\n' },
-          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          };
+          if (n > 1) {
+            body.problem = {
+              text: '它的代码编不过：它一条用例的结论都没跑出来，换了 3 版都是这样（多半是编不过）。'
+                  + '第一条错误：error: cannot find symbol',
+              output: 'javac: 需要 -encoding\\nCheck.java:12: error: cannot find symbol\\n1 error',
+            };
+          }
+          return Promise.resolve(new Response(JSON.stringify(body),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
         }
         if (target.endsWith('/api/tests/judge')) {
           // 「谁错了」那三档都走这一个接口（开发错了 / 测试代码错了 / 不重要）。
@@ -3361,7 +3417,7 @@ async function main() {
         '写进去的是「谁错了 = 不重要」加上勾中的那几条：' + JSON.stringify(await judged26()));
     check(await runCalls26() === 0, '它不开运行、也不改产品代码（没有机器动作配得上这个判断）');
     check(String(await evaluate(`document.querySelector('#result .fail').textContent`))
-        .includes('已知失败'), '那一条被标成已知失败，不再是红色的断言失败');
+        .includes('已知失败'), '那一条被标成已知失败，不再是红色的「断言没过」');
 
     // ② 测试代码错了 → 重新生成 → 停下等人放行
     await evaluate(`document.querySelector('#result [data-act="regenerate"]').click(); 'ok'`);
@@ -3380,7 +3436,52 @@ async function main() {
     check(String(await evaluate(`document.querySelector('#result .regen').textContent`))
         .includes('已放行'), '放行之后那一块写着「已放行」');
 
-    // ① 开发 AI 错了 → 勾选 → 下一轮（一次性回喂）
+    // ②b 再换一版，这一版编不过：引擎跑了一圈、一条结论都没跑出来
+    // 旧口径下这条路连跑都不跑，人会收到一句「已重新生成」而手里是一批死代码——
+    // 所以「编不过」这件事必须在真实浏览器里看得见，而且原始错误就摊在下面
+    await evaluate(`document.querySelector('#result [data-act="regenerate"]').click(); 'ok'`);
+    await waitFor(`document.querySelector('#result .regen .wire-bad-note') !== null`,
+        '编不过那一块出来了', 20000);
+    const broke26 = await evaluate(`(() => {
+      const box = document.querySelector('#result .regen');
+      const picked = document.querySelector('#result [data-act="next-round"]');
+      return { text: box.textContent, notice: document.getElementById('notice').textContent,
+               held: picked.title };
+    })()`);
+    check(broke26.text.includes('它的代码编不过'),
+        '编不过的那一版标着「它的代码编不过」（引擎那一档的标签原样用）：'
+            + JSON.stringify(broke26.text.slice(0, 60)));
+    check(broke26.text.includes('error: cannot find symbol') && broke26.text.includes('脚本原始输出'),
+        '原始错误摊在同一块里——人要看得见它坏在哪：'
+            + JSON.stringify((broke26.text.match(/脚本原始输出[^：]*/) || [''])[0]));
+    check(broke26.notice.includes('编不过'),
+        '提示不再是一句「已重新生成」，而是「重新生成了一版，但它编不过」：'
+            + JSON.stringify(broke26.notice));
+    // 放行这一版照旧是人的选择：界面不替他决定，但要让他知道这批照样跑不起来
+    await evaluate(`document.querySelector('#result [data-act="release"]').click(); 'ok'`);
+    await sleep(300);
+    check(!String(await evaluate(`document.querySelector('#result [data-act="next-round"]').title`))
+        .includes('先处理上面那批重新生成的测试代码'),
+        '放行之后「下一轮」不再被这一批按住（编不过不影响他自己的判断）');
+    check(String(await evaluate(`document.querySelector('#result .regen').textContent`))
+        .includes('放行之后照样跑不起来'), '那一块里说清了放行它也没用（先换一版）');
+
+    // ① 开发 AI 错了 → 勾选（或「全选」） → 下一轮（一次性回喂）
+    // 「全选」是这一批加的那一枚：失败清单默认只勾人判过「是开发错」的那几条，
+    // 而十条八条全过一遍再逐条点，是这类界面上最烦的一步
+    check(await evaluate(`document.querySelector('#result [data-act="pick-all"]') !== null`),
+        '失败清单上有一枚「全选」');
+    await evaluate(`document.querySelector('#result [data-act="pick-all"]').click(); 'ok'`);
+    await sleep(300);
+    check(await evaluate(`document.querySelector('#result [data-pick="2"]').checked === true`),
+        '点「全选」把清单里的编号全勾上');
+    check(String(await evaluate(`document.querySelector('#result [data-act="pick-all"]').textContent`))
+        .includes('取消全选'), '都勾上了那枚按钮改成「取消全选」');
+    check(await runCalls26() === 0, '它只改勾选，不开运行（也不是一个动作）');
+    await evaluate(`document.querySelector('#result [data-act="pick-all"]').click(); 'ok'`);
+    await sleep(300);
+    check(await evaluate(`document.querySelector('#result [data-pick="2"]').checked === false`),
+        '再点一下就是全部取消');
     await evaluate(`(() => {
       const box = document.querySelector('#result [data-pick="2"]');
       box.checked = true; box.onchange(); return 'ok';
@@ -3392,15 +3493,17 @@ async function main() {
     check((await judged26()).includes('"owner":"CODE"'),
         '而且先把「开发 AI 错了」这个判断写进留档，再开这一轮（这一次失败清单马上就被新的替换了）：'
             + JSON.stringify(await judged26()));
+    // 回喂从这一批起由**引擎**做：界面只发编号，内容由引擎按十五.7 的固定模板从留档里拼。
+    // 界面自己拼一段文本塞进「上下文依赖」是上一版的做法——那段话进不了留档，
+    // 而「已回喂」这个标签当时是假的（引擎里根本没有那条路）
     const refeedBody26 = String(await evaluate(`window.__lastRunBody`));
-    check(refeedBody26.includes('上一轮测试失败（回喂给开发）')
-            && refeedBody26.includes('用例 2') && refeedBody26.includes('compiled'),
-        '回喂的内容跟着这次请求走了（用例的语义 + 期望 vs 实际）');
-    check(!refeedBody26.includes('echo FAIL'),
-        '回喂里不给测试代码（给了它就会照着断言改代码）');
-    check(String(await evaluate(`document.getElementById('ctxlist').textContent`))
+    check(refeedBody26.includes('"refeed":[2]'),
+        '回喂只把编号发过去：' + JSON.stringify(refeedBody26.slice(0, 90)));
+    check(!refeedBody26.includes('echo FAIL') && !refeedBody26.includes('compiled'),
+        '回喂里不给测试代码、不给断言（给了它就会照着断言改代码）');
+    check(!String(await evaluate(`document.getElementById('ctxlist').textContent`))
         .includes('回喂给开发'),
-        '那条回喂在「上下文依赖」里看得见（不是藏进请求体的隐藏字段）');
+        '回喂不再是一条内联上下文（它现在是引擎侧的路：留档里答得出「这一轮按什么在改」）');
 
     // ④ 接受（磁盘上那份改动留着）；通用出口的按钮与位置也一起看一眼
     check(await evaluate(`document.querySelector('#result [data-act="accept"]') !== null`),
@@ -3425,7 +3528,7 @@ async function main() {
     await waitFor(`document.querySelector('#rundetail .pending.tests') !== null`,
         '历史里那一屏画出来了', 10000);
     const detailText26 = await evaluate(`document.getElementById('rundetail').textContent`);
-    check(detailText26.includes('测试结果') && detailText26.includes('断言失败')
+    check(detailText26.includes('测试结果') && detailText26.includes('断言没过')
             && detailText26.includes('not compiled'),
         '历史详情里也有失败清单（事后翻记录的人只有它）：'
             + JSON.stringify(detailText26.slice(0, 120)));

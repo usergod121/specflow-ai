@@ -42,7 +42,14 @@ public record AgentResult(
         TESTS_FAILED,
         /** 达到重试上限仍未通过，磁盘已回滚到初始状态。 */
         FAILED,
-        /** 失败原因不是代码，而是依赖/环境——重试无用，磁盘已回滚，等人处理。 */
+        /**
+         * 失败原因不是代码，而是依赖/环境——重试无用，等人处理。
+         *
+         * <p><b>磁盘的去留看它来自哪一段。</b>开发阶段的编译校验发现缺依赖时磁盘已回滚
+         * （那时候改的代码还没被人看过）；而测试阶段的硬判据（环境起不来 / 超时，
+         * 见 {@code TestOutcome.hard()}）<b>不回滚</b>——改动进「待处置」、测试产物留在
+         * {@code tools/} 里，等人决定保留还是撤回。两种情况的 {@code detail} 里都写着磁盘现在什么样。
+         */
         NEEDS_ENVIRONMENT,
         /** 被人工中断，磁盘已回滚到初始状态。 */
         CANCELLED,
@@ -96,6 +103,7 @@ public record AgentResult(
      *
      * <p>和 {@link #failed} 分开，是因为这两件事对用户的含义完全不同：
      * 「它没做对」要改需求或改上下文，而「缺依赖」要人去动项目配置。
+     * 磁盘的回滚与否由调用方在那句话里说清（见 {@link Status#NEEDS_ENVIRONMENT}）。
      */
     public static AgentResult needsEnvironment(int attempts, List<PatchApplier.FileChange> changes,
                                                List<VerificationResult> verifications, String detail) {

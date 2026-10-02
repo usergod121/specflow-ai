@@ -1145,7 +1145,9 @@ class WebServerTest {
                         com.specflow.verify.VerificationResult.failed("测试脚本", "run", "一条没过"),
                         List.of(),
                         List.of(new com.specflow.tests.TestOutcome.CaseResult(1, false)), List.of()),
-                null, null, null, null, List.of());
+                null, null, null, null, List.of(),
+                // 覆盖核对、回喂、「它没有改动」：这一条只关心收场怎么删产物，三笔都留空
+                null, null, null);
     }
 
     private String latestRunId() {
@@ -1441,13 +1443,19 @@ class WebServerTest {
     }
 
     /**
-     * 勾了集成测试但环境没就绪：<b>点下运行的那一刻</b>就拒（409），而不是等测试阶段才失败。
+     * 勾了集成测试、声明也在、只是还没起来：<b>不再拦。</b>
      *
-     * <p>等那时候，用户已经烧掉一整轮开发调用，而失败看起来还像「代码写错了」。
+     * <p>开发一开跑引擎就会异步把它起起来（预热），到测试阶段多半已经好了；
+     * 真起不来也只记一句「环境不可用」、跳过集成，产品改动照旧留着。
+     * 旧行为是当场 409，用户要先去点「初始化测试环境」、等半分钟再回来点运行——
+     * 白等一整轮开发调用，而失败看起来还像「代码写错了」。
+     *
+     * <p>该拦的那一条（<b>没声明</b>环境就勾集成）没变，见
+     * {@link #refusesIntegrationWithoutDeclaration()}。
      */
     @Test
-    @DisplayName("勾了集成测试但环境没就绪：提交运行时当场拒（不烧模型调用）")
-    void refusesIntegrationBeforeTheEnvironmentIsReady() throws Exception {
+    @DisplayName("勾了集成测试但环境还没起来：受理（引擎会先预热），不再当场拒")
+    void acceptsIntegrationBeforeTheEnvironmentIsWarmedUp() throws Exception {
         declare("""
                 image: "x:1"
                 """);
@@ -1455,8 +1463,9 @@ class WebServerTest {
         HttpResponse<String> response = post("/api/run",
                 "{\"prompt\":\"做点什么\",\"targets\":[\"README.md\"],\"integration\":true}");
 
-        assertThat(response.statusCode()).as(response.body()).isEqualTo(409);
-        assertThat(body(response).path("error").asText()).contains("集成测试");
+        assertThat(response.statusCode()).as(response.body()).isNotEqualTo(409);
+        assertThat(response.body()).as("拦的该是「没声明环境」，而不是「环境还没起来」")
+                .doesNotContain("集成测试");
     }
 
     /** 没声明环境却勾了集成测试：说清缺的是那份声明文件。 */

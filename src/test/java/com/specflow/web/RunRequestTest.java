@@ -76,7 +76,24 @@ class RunRequestTest {
 
     private static RunRequest request(Integer maxRounds) {
         return RunRequest.of(null, "改点东西", null, null, null, List.of("Foo.java"),
-                null, null, null, true, 6, maxRounds, null);
+                null, null, null, true, 6, maxRounds, null,
+                // 回喂编号：这一条不是「下一轮」，所以是空的
+                List.of());
+    }
+
+    /**
+     * 回喂那几条失败用例的编号要能发得进来、也要认得出来（十五.6 第一条路）。
+     *
+     * <p>去重与排序在引擎那一侧做（见 {@code RunRequest.pickedRefeed}）：界面只管把勾中的
+     * 编号发过来，而拼出来的那一段必须是稳定的——同一份勾选两次跑出来的提示词要一模一样。
+     */
+    @Test
+    @DisplayName("回喂的编号：去重、丢非法值、升序，空表示不是「下一轮」")
+    void carriesRefeedIndexes() {
+        assertThat(request(null).pickedRefeed()).isEmpty();
+        assertThat(RunRequest.of(null, "x", null, null, null, List.of("Foo.java"),
+                null, null, null, true, 6, 3, null, List.of(8, 2, 8, 0, -1)).pickedRefeed())
+                .containsExactly(2, 8);
     }
 
     /**

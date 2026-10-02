@@ -941,6 +941,18 @@ check(notInResult.length === 0, '结果面板那张表一项不缺：'
 check(!!historyTable.STATUS_LABEL.PENDING_DECISION,
     'CLI 撞门禁留下的那一条在历史里读得懂：'
         + JSON.stringify(historyTable.STATUS_LABEL.PENDING_DECISION));
+// 环境起不来那一档（硬判据）只停下、不回滚：两张表都要说清「改动未回滚」——
+// 旧文案写的是「已回滚到运行前」，而用户 2026-10-02 拍板改成保留现场等人处置。
+// 少了这句话，用户会以为改动已经被收掉，也就不会去「待处置」里找它
+const envInHistory = String(historyTable.STATUS_LABEL.NEEDS_ENVIRONMENT);
+const envInResult = String(resultTable.STATUS_TEXT.NEEDS_ENVIRONMENT);
+check(envInHistory.includes('环境起不来') && envInHistory.includes('未回滚')
+    && envInResult.includes('环境起不来') && envInResult.includes('未回滚')
+    && envInResult.includes('等你处置'),
+    '环境起不来那一档在两张表里都写着「改动未回滚，等你处置」：'
+        + JSON.stringify([envInHistory, envInResult]));
+check(!envInResult.includes('已回滚') && !envInHistory.includes('已回滚'),
+    '而不再说「已回滚」（那已经不是事实了）');
 
 // ---------- 用例清单：分档、通过率、chip ----------
 // 这一批的主战场。判据全是「喂一份清单和一份结果，看那句话对不对」，
@@ -951,22 +963,27 @@ const caseApi = load('index.html', [
   'CASE_LEVELS', 'CASE_OUTCOME_MARKS', 'CASE_OUTCOME_TEXT', 'FAILURE_KINDS', 'TRACE_KINDS',
   'UNWIRED_HINT', 'VERDICT', 'VERDICT_LABELS',
   'caseLevel', 'caseLevelMeta', 'caseTiers', 'caseByIndex', 'caseOutcome', 'tierRate',
-  'casePassRate', 'caseChipText', 'numbersIn', 'failureOf', 'failureKind', 'testsReport',
+  'casePassRate', 'caseChipText', 'numbersIn', 'failureOf', 'failureKind', 'failureSource',
+  'testsReport',
   'testsSummaryText', 'failPairHtml', 'guessHtml', 'failRowHtml', 'testActionPath', 'startsRun',
-  'refeedText', 'putRefeedContext', 'caseCodeHtml', 'caseDetailHtml', 'caseItemHtml',
+  'outputTail', 'noChangeNote', 'refeedNote', 'pickableIndexes', 'defaultPicks', 'toggleAllPicks',
+  'caseCodeHtml', 'caseDetailHtml', 'caseItemHtml',
   'casesPanelHtml', 'casesFootHtml', 'hasCases', 'caseSignature', 'targetSignature',
   'planSignature', 'staleFreeze', 'needsConfirm', 'confirmCases', 'regenBlockHtml',
-  'regenTraceHtml', 'traceRateHtml', 'caseTrace', 'caseAcceptance',
+  'regenProblemHtml', 'regenTraceHtml', 'traceRateHtml', 'coverageRates', 'coverageProblemsHtml',
+  'caseTrace', 'caseAcceptance',
   'testsActionsHtml', 'testsPanelHtml', 'rateOfAll', 'caseListForTests',
   'verdictLabel', 'verdictsOf', 'settlementText', 'judgementPayload',
 ], '// ---------- 用例与测试结果 ----------', 'async function refreshPending');
 
 const {
   caseLevel, caseLevelMeta, caseTiers, caseByIndex, caseOutcome, tierRate, casePassRate,
-  caseChipText, numbersIn, failureOf, failureKind, testsReport, testsSummaryText, failRowHtml,
-  testActionPath, startsRun, refeedText, caseDetailHtml, casesPanelHtml, casesFootHtml,
+  caseChipText, numbersIn, failureOf, failureKind, failureSource, testsReport, testsSummaryText,
+  failRowHtml, testActionPath, startsRun, outputTail, noChangeNote, refeedNote, pickableIndexes,
+  defaultPicks, toggleAllPicks, caseDetailHtml, casesPanelHtml, casesFootHtml,
   hasCases, caseSignature, targetSignature, planSignature, staleFreeze, needsConfirm,
-  confirmCases, regenBlockHtml, regenTraceHtml, traceRateHtml, caseTrace, caseAcceptance,
+  confirmCases, regenBlockHtml, regenProblemHtml, regenTraceHtml, traceRateHtml, coverageRates,
+  coverageProblemsHtml, caseTrace, caseAcceptance,
   testsActionsHtml, testsPanelHtml, rateOfAll,
   VERDICT, verdictLabel, verdictsOf, settlementText,
 } = caseApi;
@@ -1058,15 +1075,28 @@ const report = {
   failures: [failure],
   output: 'PASS | 1\nFAIL | 2 | 404 | 500 | it thinks code is wrong\n',
 };
-check(failureKind('ASSERTION')[1] === '断言失败' && failureKind('TEST_CODE')[1] === '测试代码问题'
-    && failureKind('ENVIRONMENT')[1] === '环境问题' && failureKind('TIMEOUT')[1] === '测试超时',
-    '四类失败各有各的说法（合并成一句「测试没过」，用户就会去翻产品代码）');
+check(failureKind('ASSERTION')[1] === '断言没过' && failureKind('TEST_CODE')[1] === '测试代码问题'
+    && failureKind('ENVIRONMENT')[1] === '环境起不来' && failureKind('TIMEOUT')[1] === '测试超时'
+    && failureKind('BLOCKED')[1] === '脚本报跑不起来'
+    && failureKind('UNRUNNABLE')[1] === '它的代码编不过',
+    '六档各有各的说法（合并成一句「测试没过」，用户就会去翻产品代码）');
+check(failureSource('ENVIRONMENT').includes('引擎亲见')
+    && failureSource('BLOCKED').includes('仅供参考')
+    && failureSource('ASSERTION').includes('谁错了由你判'),
+    '每一档都说清它是「引擎亲见」还是「机器猜的」——机器下结论的那一档最容易被当成结论读');
+// 硬判据那两档只停下、不回滚（用户 2026-10-02 拍板）：这一句里少了「未回滚」，
+// 人就会以为改动已经被收掉，也就不会去「待处置」里找它
+check(failureSource('ENVIRONMENT').includes('未回滚') && failureSource('TIMEOUT').includes('未回滚'),
+    '硬判据那两档的说明里都写着「改动未回滚」：'
+        + JSON.stringify([failureSource('ENVIRONMENT'), failureSource('TIMEOUT')]));
 check(failureKind('WEIRD')[1] === 'WEIRD', '认不出来的类型原样显示，不假装认出来了');
 
 const failText = failRowHtml(failure, caseSample, new Set(), new Map());
 check(failText.includes('用例 2'), '① 哪条用例（编号）在里面：' + failText.slice(0, 120));
 check(failText.includes('查不到时返回 404'), 'chip 的语义描述跟着走，人不用回去翻清单');
-check(failText.includes('断言失败'), '② 失败原因是机器判的那一档');
+check(failText.includes('断言没过'), '② 失败原因是机器判的那一档');
+check(failText.includes('机器只看现象，谁错了由你判'),
+    '② 旁边就写着这一档是「机器只看现象」——紧挨着标签，别让人把它当结论读');
 check(failText.includes('期望：') && failText.includes('404'), '③ 期望在里面');
 check(failText.includes('实际：') && failText.includes('500'), '③ 实际在里面');
 check(failText.includes('class="fail-guess"') && failText.includes('这是 AI 的猜测'),
@@ -1097,7 +1127,7 @@ check(testsReport({ exit: 1, failures: [], verification: { output: 'oops' } }).o
 
 const panel = testsPanelHtml(report, caseSample, { picked: new Set([2]), known: new Map(), pending: true });
 check(panel.includes('测试结果'), '这一块有自己的标题：测试结果');
-check(panel.includes('断言失败') && panel.includes('404') && panel.includes('500'),
+check(panel.includes('断言没过') && panel.includes('404') && panel.includes('500'),
     '失败清单在结果面板里（四要素都在）');
 check(panel.includes('必须过 1/1') && panel.includes('建议过 0/1'),
     '这块里也报一遍通过率（只给失败清单的话，一次只跑了三条用例的运行会被读成满分）');
@@ -1207,10 +1237,31 @@ const regen = {
 const regenText = regenBlockHtml(regen);
 check(regenText.includes('tools/20260930-121500/run.cmd') && regenText.includes('echo PASS'),
     '重新生成的测试代码连正文一起摊开给人 review');
-check(regenText.includes('还没有跑') || regenText.includes('没有被执行'),
-    '并且说清它没跑过（不自动重跑）');
+check(regenText.includes('已经被引擎执行过一遍') && regenText.includes('不是验收'),
+    '并且如实说清它被跑过一遍（编译核对），但那一遍不是验收');
+check(regenText.includes('不会自动重跑') && regenText.includes('产品代码一个字节都没动'),
+    '也仍然说清它不会被自动重跑、没动产品代码（十五.6 那条顺序没变）');
 check(regenText.includes('data-act="release"'), '等人点「放行」');
 check(regenBlockHtml({ ...regen, released: true }).includes('已放行'), '放行之后这一块不再是按钮');
+
+// 这批新代码到底跑不跑得起来：编不过就在这里说清（旧口径连跑都不跑，人会拿到一批死代码）
+console.log('重新生成的代码编不过时：');
+const regenBad = regenBlockHtml({ ...regen, problem: {
+  text: '它的代码编不过：它一条用例的结论都没跑出来，换了 3 版都是这样（多半是编不过）。'
+      + '第一条错误：error: cannot find symbol',
+  output: 'javac: 需要 -encoding\nCheck.java:12: error: cannot find symbol\n1 error',
+} });
+check(regenBad.includes('它的代码编不过') && regenBad.includes('换了 3 版都是这样'),
+    '标着「它的代码编不过」，人一眼看得出这批不能放行：'
+        + JSON.stringify(regenBad.match(/它的代码编不过[^<]*/)));
+check(regenBad.includes('error: cannot find symbol') && regenBad.includes('脚本原始输出'),
+    '原始错误照原样摊在下面（不折进 details）：' + JSON.stringify(regenBad.match(/脚本原始输出[^<]*/)));
+check(regenBad.includes('wire-bad-note') && regenBad.includes('放行之后照样跑不起来'),
+    '用的是错误色那一枚样式，并且说清放行它也没用（先换一版）');
+check(regenBlockHtml(regen).includes('wire-bad-note') === false,
+    '编得过的那一批不画这块（编不过才画）');
+check(regenProblemHtml(null) === '' && regenProblemHtml(undefined) === '',
+    '没有这一档时一个字都不画');
 
 // 重新生成那批代码接上线了没有：没接上就在这里说清，别等到「下一轮」才被引擎拒绝（白烧一轮）
 console.log('重新生成的代码接上线了没有：');
@@ -1235,16 +1286,77 @@ check(regenTrace.includes('tools/20260930-121500/T.java:9'), '差异里带着位
 check(!regenBlockHtml({ ...regen, trace: null }).includes('溯源'),
     '没拿到核对结果时不编一句话出来');
 
-console.log('回喂给开发的那段话（十五.7 的固定模板）：');
-const refeed = refeedText([2], caseSample, report, ['src/main/java/com/demo/Foo.java']);
-check(refeed.includes('用例 2') && refeed.includes('查不到时返回 404'), '带用例的语义描述');
-check(refeed.includes('断言失败'), '带失败类型');
-check(refeed.includes('期望 404') && refeed.includes('实际 500'), '带期望 vs 实际');
-check(refeed.includes('src/main/java/com/demo/Foo.java'), '带涉及的目标文件');
-check(!refeed.includes('echo FAIL') && !refeed.includes('assert404'),
-    '不给测试代码、不给断言源码（给了它就会照着断言改代码）');
-check(refeedText([2], caseSample, report, []).includes('（没勾任何目标文件）'),
-    '一条目标文件都没勾时明说，不留空');
+console.log('回喂与「它没有改动」（这一批起由引擎做，界面只认它的结论）：');
+const fed = { refeed: [7, 8] };
+check(refeedNote(fed).includes('2 条失败') && refeedNote(fed).includes('7、8'),
+    '结果面板上说清这一轮带着哪几条失败去改的：' + JSON.stringify(refeedNote(fed).slice(0, 60)));
+check(refeedNote(fed).includes('不含测试代码与断言'),
+    '并且说清回喂里不给测试代码（给了它就会照着断言改代码）');
+check(refeedNote({ refeed: { cases: [7], text: '## 上一轮的测试失败' } }).includes('用例 7'),
+    '留档里那份是 {cases, text}：两种形状都要认，历史里才画得出来');
+check(refeedNote({}) === '' && refeedNote(null) === '',
+    '不是回喂的那一轮不画这一句（画了就成了「每一轮都在回喂」）');
+check(noChangeNote({ unchanged: true }).includes('它没有改动')
+    && noChangeNote({ unchanged: true }).includes('逐字相同'),
+    '回喂之后它一个字节都没改：直接标出来，别让人以为已经修过了');
+check(noChangeNote({ unchanged: false }) === '' && noChangeNote({}) === '' && noChangeNote(null) === '',
+    '改过的那一轮、以及不是回喂的那一轮，都没有这一句');
+check(noChangeNote({ unchanged: true }).includes('别把它当成')
+    && noChangeNote({ unchanged: true }).includes('已经修过了'),
+    '还说清这一句该怎么读（不然它会被当成「修好了」）');
+
+console.log('原始输出尾部（原始证据要摆在脸上）：');
+const noisy = ['> task 1', '编译中…', ...Array.from({ length: 30 }, (_, i) => 'line ' + i), 'err: 找不到符号'].join('\n');
+const tail = outputTail(noisy, 5);
+check(tail.split('\n').length === 5 && tail.includes('err: 找不到符号') && !tail.includes('> task 1'),
+    '只留尾部几行，而报错那几行一定在里面：' + JSON.stringify(tail.split('\n')[0]));
+check(outputTail('') === '' && outputTail(null) === '', '没有输出时给空串（那一块整个不画）');
+check(outputTail('a\n\n\n b\n') === 'a\n b',
+    '空行不占位（否则几行空行就把有用的挤出去了），但行首的缩进留着（栈帧靠它看层次）');
+
+console.log('默认勾选与全选：');
+const picksReport = { failures: [
+  { kind: 'ASSERTION', testCase: '2' },
+  { kind: 'ASSERTION', testCase: '3' },
+  { kind: 'ASSERTION', testCase: '5' },
+] };
+check(pickableIndexes(picksReport).join() === '2,3,5',
+    '能勾的就是失败清单里那几个编号：' + pickableIndexes(picksReport).join());
+check([...defaultPicks(picksReport, new Map([[2, VERDICT.CODE], [3, VERDICT.TEST]]))].join() === '2',
+    '默认只勾「人判过是开发错」的那几条（默认全勾等于替他认下所有失败）');
+check(defaultPicks(picksReport, new Map()).size === 0,
+    '一条都没判过时默认一条都不勾（他会自己点「全选」）');
+check(defaultPicks(picksReport, new Map([[9, VERDICT.CODE]])).size === 0,
+    '判过的编号不在这次的失败清单里时也不勾（勾了发出去的是对不上号的编号）');
+check([...toggleAllPicks(picksReport, new Set())].join() === '2,3,5', '「全选」把清单里那几条全勾上');
+check(toggleAllPicks(picksReport, new Set([2, 3, 5])).size === 0, '再点一下就是「取消全选」');
+check([...toggleAllPicks(picksReport, new Set([2]))].join() === '2,3,5',
+    '只勾了一半时点它是「全勾上」，不是清空');
+
+// ---------- 验收覆盖核对（通过率旁边那两个数） ----------
+console.log('覆盖核对那两个计数：');
+const coverage = {
+  criteria: ['A1：查得到', 'A2：查不到返回 404', 'A3：参数为空报 400'],
+  uncovered: ['A3：参数为空报 400'],
+  unmappedMust: [4],
+};
+const coverageHtml = coverageRates(coverage);
+check(coverageHtml.includes('零覆盖验收') && coverageHtml.includes('<b>1</b>'),
+    '通过率旁边固定摆着「零覆盖验收 N」：' + JSON.stringify(coverageHtml.slice(0, 80)));
+check(coverageHtml.includes('无对应验收的必须过用例') && coverageHtml.includes('<b>1</b>'),
+    '另一枚是「无对应验收的必须过用例 N」');
+check(coverageHtml.includes('rate bad'), '不为 0 时那两枚按错误色画（0 的时候是灰的）');
+check(coverageRates({ criteria: ['A1'], uncovered: [], unmappedMust: [] }).includes('rate bad') === false,
+    '两个数都是 0 时不标红');
+check(coverageRates(null) === '' && coverageRates({ criteria: [] }) === '',
+    '没写过验收标准时不画这两枚（画一个恒为 0 的计数，会让人以为已经核过了）');
+const coverageBad = coverageProblemsHtml(coverage);
+check(coverageBad.includes('A3：参数为空报 400') && coverageBad.includes('用例 4'),
+    '光有计数人还得自己去找是哪一条：这里把原文与编号列出来');
+check(coverageProblemsHtml({ criteria: ['A1'], uncovered: [], unmappedMust: [] }) === '',
+    '都覆盖上了就一句话都不多说');
+check(coverageProblemsHtml(coverage).includes('不影响这一轮往下走'),
+    '说清它不拦人（用例是证据，不是门槛）');
 
 // ---------- 确认 → 冻结 ----------
 console.log('确认与冻结：');
@@ -1354,7 +1466,7 @@ const caseDetailText = caseDetailHtml(caseSample[1], testsReport(report));
 check(caseDetailText.includes('要测什么') && caseDetailText.includes('怎么测') && caseDetailText.includes('对应验收'),
     '四栏都在（要测什么 / 怎么测 / 期望 / 对应哪条验收）');
 check(caseDetailText.includes('没过'), '上次的下场也写着');
-check(caseDetailText.includes('断言失败'), '失败原因跟着走');
+check(caseDetailText.includes('断言没过'), '失败原因跟着走');
 check(caseDetailHtml(caseSample[1], null).includes('还没有'),
     '还没生成测试代码时明说它什么时候才有');
 

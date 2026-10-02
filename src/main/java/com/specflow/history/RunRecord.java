@@ -4,9 +4,11 @@ import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.specflow.env.EnvRegistration;
+import com.specflow.review.AcceptanceCoverage;
 import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
+import com.specflow.tests.Refeed;
 import com.specflow.tests.TestOutcome;
 
 import java.util.List;
@@ -70,6 +72,18 @@ import java.util.Locale;
  *                 为什么要单独记：重新生成会开一个新的 {@code tools/<时间戳>/}，而留档里本来只有
  *                 它跑过的那一份——收场时按留档删产物就会漏掉这几份，{@code tools/} 于是只增不减
  * @param timeline  逐条的过程记录
+ * @param coverage  这次<b>机器数出来的验收覆盖</b>：哪条验收标准一条用例都没覆盖、哪几条必须过的
+ *                 用例没写对应哪条验收标准（见 {@code AcceptanceCoverage}）。两个数都该是 0。
+ *                 与 {@code testCases} 的分工：那个是「打算验什么」，这个是「验收标准那边有没有被漏掉」。
+ *                 没写验收标准、或者没走过检查的记录里没有这一项，读出来是 {@code null}
+ * @param refeed    <b>这一轮回喂给开发的失败用例</b>（十五.6 第一条路真正落地的那一步）：
+ *                 回喂了哪几条、以及拼进提示词的那段原文（见 {@code Refeed}）。
+ *                 为什么要连原文一起留：它是「这一轮到底按什么在改」的唯一答案，
+ *                 而实测里那一轮它<b>一个字节都没改</b>（写入内容与旧版逐字相同）——
+ *                 不留这一段，事后谁也说不清那次为什么白跑。不是「下一轮」的运行里没有它
+ * @param unchanged 回喂之后<b>它到底改没改</b>：这一轮有回喂、而产品改动一处差异都没有时为
+ *                 {@code true}（「它没有改动」）。不是回喂的运行里没有这一项——普通运行没改文件
+ *                 是另一件事，不该顶着这句话出现在结果面板上
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record RunRecord(
@@ -95,7 +109,10 @@ public record RunRecord(
         @JsonAlias("knownFailures") List<Verdict> verdicts,
         Settlement settlement,
         List<String> regenerated,
-        List<Line> timeline
+        List<Line> timeline,
+        AcceptanceCoverage.Report coverage,
+        Refeed refeed,
+        Boolean unchanged
 ) {
 
     /**
@@ -270,7 +287,7 @@ public record RunRecord(
         return new RunRecord(id, startedAt, status, template, prompt, acceptance, context,
                 requirementId, targets, attempts, detail, missing, changes, steps, planSteps,
                 stepsSource, testCases, tests, environment, newVerdicts, newSettlement,
-                newRegenerated, timeline);
+                newRegenerated, timeline, coverage, refeed, unchanged);
     }
 
     /** 换「每一条失败用例怎么判的」那一栏。 */

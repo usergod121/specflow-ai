@@ -1004,6 +1004,25 @@
   .fail-guess summary { cursor: pointer; }
   .fail-guess summary:hover { color: var(--text-2); }
   .fail-guess .word { margin-top: 4px; color: var(--muted); white-space: pre-wrap; }
+  /* 「机器只看现象 / 引擎亲见」那一枚：失败类型旁边的小字。
+     它要说清这一档是算出来的还是猜的——实测过机器判的那一档被当成结论读，方向一带就全错 */
+  .fail-source { flex: none; font-size: 11px; color: var(--muted-weak); }
+  /* 原始输出尾部：固定摊在失败清单底下，不折进 details。
+     实测里「期望 vs 实际」两栏都是脚本自己的一句话，真正的原始错误只在输出里——
+     想看还得自己展开一层，于是人常常没看就判了 */
+  .fail-output-head { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .fail-output {
+    margin: 4px 0 0; padding: 8px 10px; max-height: 220px; overflow: auto;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    font-size: 12px; white-space: pre-wrap;
+  }
+  /* 「它没有改动」：回喂之后它一个字节都没改。这一条必须扎眼——
+     实测里它把文件原样再交了一遍，而界面上「已写入 1 个文件」长得和真改过一模一样 */
+  .no-change {
+    margin-top: 8px; padding: 6px 10px; border-radius: 6px; font-size: 12px;
+    background: var(--warn); color: var(--warn-text); border: 1px solid var(--warn-line);
+  }
+  .refeed-note { color: var(--muted); font-size: 12px; margin-top: 8px; }
 
   .tests-note { color: var(--muted); font-size: 12px; margin-top: 8px; }
   .tests-output { margin-top: 8px; font-size: 12px; }
@@ -1600,7 +1619,9 @@ const state = {
   tests: null,          // 最近一次运行带回来的测试结果（事件里那份带着测试代码正文）
   testsOpen: true,      // 失败清单展开与否
   testsCases: null,     // 测试结果对着的那份用例清单（刷新过页面时只有留档里有）
+  coverage: null,       // 验收覆盖核对（引擎算的那两个计数：零覆盖验收 / 无对应验收的必须过用例）
   picked: new Set(),    // 失败清单里勾上「要回喂给开发」的用例编号
+  picksSeeded: false,   // 默认勾选已经铺过一次了没有（见 seedPicks：只铺一次，别覆盖用户的手动勾选）
   known: new Map(),     // 用例编号 → 人的判断（CODE/TEST/KNOWN），落档在运行记录里（见 markVerdict）
   regenerated: null,    // 重新生成出来、等着放行的那批测试代码
   actionBusy: '',       // 正在做的那个动作（'' = 没有）；'regenerate' = 正在重新生成测试代码
@@ -3300,7 +3321,14 @@ function addContextItem() {
 }
 
 // ---------- 运行 ----------
-function payload() {
+/**
+ * 这次请求的正文。
+ *
+ * @param refeed 回喂给开发的失败用例编号（十五.6 第一条路）；只在「下一轮」那一条路上传。
+ *               普通运行、「先检查」、「重新生成」都不带它——回喂是「人看完失败清单之后的
+ *               一次决定」，跟着别的动作一起发出去就成了「没看清单也替我喂一遍」
+ */
+function payload(refeed) {
   const body = {
     prompt: $('demand').value,
     acceptance: readAcceptance(),
@@ -3320,6 +3348,9 @@ function payload() {
     // 总轮次预算：0（留空）就是「让引擎按步数自动算」，这是后端约定的「没配」值
     maxRounds: roundBudget($('maxrounds').value),
   };
+  if (refeed && refeed.length) {
+    body.refeed = [...refeed].sort((a, b) => a - b);
+  }
   if (currentTemplate()) body.template = currentTemplate().name;
   // 检查阶段确认过的方案随运行一起发回去，让模型按图施工。
   // 施工单要带上界面上改过的那一份：引擎照 approvedPlan.steps 施工，
@@ -3469,14 +3500,17 @@ async function run() {
 }
 
 /**
- * 起一次运行：普通运行和「接着上次跑」共用这一条路。
+ * 起一次运行：普通运行、「下一轮」和「接着上次跑」共用这一条路。
  *
  * <p>合并的理由很实际：两条路各写一遍的话，会出现「普通运行会拦执行不了的方案、
  * 接着跑却直接冲过去」这种分叉——而用户看不出差别在哪。
  *
+ * @param refeed 回喂给开发的失败用例编号（十五.6 第一条路）；不传表示不是「下一轮」。
+ *               只发编号：内容由引擎从上一轮那条留档里拼（见 {@code Refeed}），
+ *               界面不自己拼一段文案——那样「它到底按什么改的」就进不了留档
  * @return 请求发出去并开始轮询了返回 true
  */
-async function postRun(path) {
+async function postRun(path, refeed) {
   state.cursor = 0;
   state.runId = '';
   // 上一次运行留下的步态、每步留档、终态事件都不能跟到这一次来：
@@ -3489,6 +3523,8 @@ async function postRun(path) {
   state.tests = null;
   state.testsOpen = true;
   state.picked = new Set();
+  // 新的那份失败清单还没到，默认勾选得重新铺一次（见 seedPicks）
+  state.picksSeeded = false;
   state.known = new Map();
   state.regenerated = null;
   state.actionBusy = '';
@@ -3522,7 +3558,7 @@ async function postRun(path) {
     response = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload()),
+      body: JSON.stringify(payload(refeed)),
     });
     body = await response.json().catch(() => ({}));
   } catch (e) {
@@ -3739,6 +3775,9 @@ async function review() {
     // 施工单那份「执行不了的地方」和方案那份分开发过来，界面也分开存：
     // 一处是「这些文件改不了」，另一处是「这几步做不了」，拦人的理由不一样
     state.stepAudit = body.stepAudit || { findings: [], hints: [] };
+    // 覆盖核对也分开存：它和上面两块的用途都不一样——那两块拦人，它只是在通过率旁边
+    // 摆两个该为 0 的计数（哪条验收标准一条用例都没覆盖、哪几条必须过的用例没写对应验收）
+    state.coverage = body.coverage || null;
   } catch (e) {
     notice('error', '检查失败：' + e.message);
     setReviewing(false);
@@ -3783,6 +3822,8 @@ function renderPlan() {
       // 留着它们，下一份还没检查的方案会顶着上一份的问题被拦下来
       state.audit = [];
       state.stepAudit = { findings: [], hints: [] };
+      // 覆盖那两个计数也是冲着这一份方案算的，一起丢掉
+      state.coverage = null;
       state.steps = [];
       state.stepStates = new Map();
       state.stepsEdited = false;
@@ -4584,7 +4625,8 @@ const STATUS_LABEL = {
   // 测试没过不是「失败」：改动还在磁盘上等人处置（接受或撤回），失败清单在运行记录里
   TESTS_FAILED: ['mid', '测试没过：改动留着，等你看失败清单'],
   FAILED: ['bad', '失败'],
-  NEEDS_ENVIRONMENT: ['bad', '待你处理环境'],
+  // 这一档在留档里也要说清「改动没被收掉」：翻历史的人据此才知道磁盘上还留着那份改动
+  NEEDS_ENVIRONMENT: ['bad', '环境起不来：改动未回滚，等你处置'],
   CANCELLED: ['mid', '中断'],
   NEEDS_CONTEXT: ['mid', '等补充信息：模型停下来问你缺什么，磁盘未动'],
   // 不是失败：磁盘上那份改动是好的，只是还没被人处置，所以这一次什么都没做
@@ -4782,7 +4824,9 @@ function renderRunDetail(record) {
   // 以及没有那四个动作（它们动的是磁盘上此刻那份待处置的改动，而历史只该看）
   const report = testsReport(record.tests);
   const cases = record.testCases || [];
-  const casesHtml = casesPanelHtml(cases, report, { detail: state.caseOpen, confirm: false });
+  const casesHtml = casesPanelHtml(cases, report, { detail: state.caseOpen, confirm: false,
+    // 覆盖核对也在留档里：历史里那两个计数要和当时界面上看到的一样
+    coverage: record.coverage || null });
   if (casesHtml) {
     const holder = document.createElement('div');
     holder.innerHTML = casesHtml;
@@ -4796,6 +4840,10 @@ function renderRunDetail(record) {
     // 当时人把这几条判成了什么：它现在就写在留档里（verdicts）。
     // 不摆出来的话，事后翻记录的人只会看到一片红，然后以为那一次是失败的
     known: verdictsOf(record),
+    // 回喂与「它没有改动」同样在留档里：那一次它到底按什么改的、改没改，
+    // 正是「隔几天回来看记录」时最想问的问题
+    result: record,
+    coverage: record.coverage || null,
   });
   if (testsHtml) {
     const holder = document.createElement('div');
@@ -5457,6 +5505,11 @@ function applyRunDetail(record) {
   if (record && record.tests && !state.tests) {
     state.tests = record.tests;
   }
+  // 覆盖核对也在留档里（引擎在跑完那一刻算的）：刷新过页面、或者翻历史时，
+  // 通过率旁边那两个计数靠它才画得出来
+  if (record && record.coverage) {
+    state.coverage = record.coverage;
+  }
   if (record && record.id) {
     // 「标成已知失败」要写进<b>这一条</b>记录。刷新过页面之后界面手里没有它，
     // 而屏幕上这份失败清单就是这条记录跑出来的——所以这个 id 必须留下来
@@ -5468,6 +5521,9 @@ function applyRunDetail(record) {
     state.known = verdictsOf(record);
     refreshResult();
   }
+  // 判决换了、失败清单也就换了：默认勾选要按新的一份重铺一次（见 seedPicks）。
+  // 少了这一句，刷新页面之后「上一轮判过是开发错」的那几条不会被默认勾上
+  state.picksSeeded = false;
   const steps = ((record && record.steps) || []).filter(step => step && step.index > 0);
   // 单步执行、老记录：压根没有步骤信息，界面就保持现在的样子
   if (!steps.length) {
@@ -5698,14 +5754,79 @@ function failureOf(report, index) {
  * 用户第一个动作必然是去翻产品代码——方向从一开始就错了。
  */
 const FAILURE_KINDS = {
-  ASSERTION: ['bad', '断言失败'],
-  TEST_CODE: ['mid', '测试代码问题'],
-  ENVIRONMENT: ['bad', '环境问题'],
-  TIMEOUT: ['mid', '测试超时'],
+  // 第三栏是「凭什么这么判」，和引擎那边 TestOutcome.Failure.Kind 的档位一一对应：
+  // 前两档是引擎亲见的硬判据（只有它们能停机），后面几档是脚本的说法或机器的猜测，
+  // 一律停在原地交给人。写清楚这一栏，人才不会把机器猜的那一档当结论读。
+  // **停机不等于回滚**：前两档同样把改动与测试产物留给人处置，所以那句话里带着「未回滚」
+  ENVIRONMENT: ['bad', '环境起不来', '引擎亲见：命令/环境起不来，改动未回滚'],
+  TIMEOUT: ['mid', '测试超时', '引擎亲见：没在时限内跑完，改动未回滚'],
+  UNRUNNABLE: ['bad', '它的代码编不过', '引擎亲见：跑完一条用例结论都没有'],
+  BLOCKED: ['mid', '脚本报跑不起来', '机器转述脚本的说法，仅供参考'],
+  ASSERTION: ['bad', '断言没过', '机器只看现象，谁错了由你判'],
+  TEST_CODE: ['mid', '测试代码问题', '机器核对测试产物得出的结论'],
 };
 
 function failureKind(kind) {
-  return FAILURE_KINDS[kind] || ['mid', String(kind || '失败')];
+  return FAILURE_KINDS[kind] || ['mid', String(kind || '失败'), ''];
+}
+
+/**
+ * 这一档是怎么来的——「引擎亲见」还是「机器猜的，仅供参考」。
+ *
+ * <p>为什么要在界面上、紧挨着标签写这一句：实测里被当成结论读的正是机器判的那个标签
+ * （「断言失败」），而它下面那条失败其实出在测试代码的 harness 里。分档降级之后，
+ * 机器能说的只有现象，人和机器各自的份量必须在字面上分得开。
+ */
+function failureSource(kind) {
+  return failureKind(kind)[2] || '';
+}
+
+/**
+ * 失败清单底下那段「原始输出（尾部）」。
+ *
+ * <p>为什么要固定摊出来、而不是只放在可折叠的「看测试脚本的原始输出」里：
+ * 实测两次都出现过「期望 / 实际」两栏都只是脚本自己的一句话，真正的原始错误
+ * （{@code InaccessibleObjectException}、14 条 javac 编码错）只在输出里。折一层，
+ * 人就会在没看到原始错误的情况下把这几条判掉。
+ *
+ * <p>只给尾部：开头那几行命令回显对判断没用，而报错的最后几行才是「卡在哪」。
+ * 取不到（没有输出）时给空串，调用方就不画这一块。
+ */
+function outputTail(text, maxLines = 25) {
+  const lines = String(text === null || text === undefined ? '' : text)
+      .replace(/\r\n/g, '\n').split('\n').filter(line => line.trim() !== '');
+  if (!lines.length) {
+    return '';
+  }
+  return lines.slice(-maxLines).join('\n');
+}
+
+/**
+ * 回喂之后「它有没有真改」那一句。
+ *
+ * <p>{@code unchanged} 由引擎给（它拿得到改动与 diff），界面<b>不自己判</b>：
+ * 「一条 diff 都没有」这件事在两边各算一遍，迟早出现「界面说它没改、留档说改了」。
+ */
+function noChangeNote(result) {
+  if (!result || result.unchanged !== true) {
+    return '';
+  }
+  return '<div class="no-change">它没有改动：这一轮回喂之后，产品文件与上一轮<b>逐字相同</b>'
+      + '（每一处改动的 diff 都是空的）。它既没按失败清单改代码，也没说明为什么——'
+      + '别把它当成「已经修过了」。</div>';
+}
+
+/** 这一轮带着哪几条失败去改的（回喂的下落）。不是回喂的运行里没有这一句。 */
+function refeedNote(result) {
+  // 两种形状都要认：终态事件里是编号数组（引擎现算的），留档里是 {cases, text}（连原文一起存）
+  const raw = result && result.refeed;
+  const cases = Array.isArray(raw) ? raw : ((raw && raw.cases) || []);
+  if (!cases.length) {
+    return '';
+  }
+  return '<div class="refeed-note">这一轮带着上一轮的 ' + cases.length + ' 条失败回喂给开发（用例 '
+      + cases.join('、') + '）：内容是引擎按固定模板拼的——用例的语义、期望 vs 实际、失败类型、'
+      + '涉及的目标文件，<b>不含测试代码与断言</b>。</div>';
 }
 
 /**
@@ -5788,6 +5909,7 @@ function guessHtml(opinion) {
  */
 function failRowHtml(failure, cases, picked, verdicts) {
   const [kindCls, kindLabel] = failureKind(failure.kind);
+  const source = failureSource(failure.kind);
   const index = numbersIn(failure.testCase)[0];
   const one = index === undefined ? null : caseByIndex(cases, index);
   const owner = index === undefined ? undefined : verdicts.get(index);
@@ -5803,7 +5925,10 @@ function failRowHtml(failure, cases, picked, verdicts) {
       + '<div class="fail-head">' + check
       + '<span class="fail-case">' + escapeHtml(title) + '</span>'
       + '<span class="fail-kind ' + (known || owner ? 'known' : kindCls) + '">'
-      + escapeHtml(owner ? verdictLabel(owner) : kindLabel) + '</span></div>'
+      + escapeHtml(owner ? verdictLabel(owner) : kindLabel) + '</span>'
+      // 这一档是算出来的还是猜的，紧挨着标签说：机器下结论的那一档最容易被当成结论读
+      + (source ? '<span class="fail-source">' + escapeHtml(source) + '</span>' : '')
+      + '</div>'
       + failPairHtml('期望', failure.expected)
       + failPairHtml('实际', failure.actual)
       + guessHtml(failure.opinion)
@@ -5843,56 +5968,14 @@ function startsRun(act) {
 }
 
 /**
- * 回喂给开发的那段话（十五.7 的固定模板）。
+ * 回喂给开发的那段话（十五.7 的固定模板）——<b>这一批起由引擎拼</b>。
  *
- * <p>固定四样：用例的语义描述、失败类型、期望 vs 实际、涉及的目标文件。
- * <b>不给测试代码，也不给断言源码</b>——给了它，模型最省事的做法就是照着断言改代码，
- * 而那份断言本身可能才是错的，这正是「回喂」这条路上最容易踩的坑。
- *
- * <p>「涉及的目标文件」给的是本次运行的白名单（{@code targets}）：引擎没记
- * 「哪条用例对应哪个文件」，硬编一个上去比说清它是什么更糟。
+ * <p>这里只留一句注释交代去向：界面现在只发<b>编号</b>（{@code refeed: [7,8]}），
+ * 内容由引擎从上一轮那条运行留档里取失败清单、按固定四要素拼好放进提示词，
+ * 并连同这一段写进新的留档（见 {@code com.specflow.tests.Refeed}）。
+ * 界面自己拼一份的坏处实测过：那段话进不了留档，「它当时按什么在改」事后无人答得出；
+ * 而「已回喂」这个标签当时是假的——引擎里根本没有那条路。
  */
-function refeedText(picked, cases, tests, targets) {
-  const report = testsReport(tests);
-  const lines = ['上一轮测试没过的用例（人看过失败清单，确认这几条是产品代码的问题）：'];
-  for (const index of picked) {
-    const one = caseByIndex(cases, index);
-    const failure = failureOf(report, index);
-    const parts = [];
-    parts.push('用例 ' + index + '「' + (one ? (one.what || '（这条没写要测什么）') : '（清单里没有这一条）') + '」');
-    parts.push(failure ? failureKind(failure.kind)[1] : '没在这份失败清单里');
-    const expected = (failure && failure.expected) || (one && one.expected) || '';
-    parts.push('期望 ' + (expected || '（没写）'));
-    parts.push('实际 ' + ((failure && failure.actual) || '（没写）'));
-    if (one && one.how) {
-      parts.push('它怎么验的：' + one.how);
-    }
-    lines.push('- ' + parts.join('；'));
-  }
-  lines.push('涉及的目标文件（本次运行的白名单）：'
-      + ((targets || []).join('、') || '（没勾任何目标文件）'));
-  lines.push('按这些语义去改产品代码。测试代码与断言源码不给你——照着断言改代码等于对着答案抄，'
-      + '而那份断言本身可能才是错的。');
-  return lines.join('\n');
-}
-
-/** 把勾中的失败用例变成一条内联上下文：用户看得见、能改能删，留档里也带着它。 */
-function putRefeedContext(text) {
-  // 同一批失败只留最新的一份：喂两遍是噪声，而且第二遍会和第一遍打架
-  const stale = state.context.filter(item => item.from === 'refeed');
-  state.context = state.context.filter(item => item.from !== 'refeed');
-  for (const item of stale) {
-    state.ctxUnchecked.delete(item);
-  }
-  state.context.push({
-    name: '上一轮测试失败（回喂给开发）',
-    ref: null,
-    text,
-    note: '界面按你勾选的用例拼的；不想带着它就删掉这一条',
-    from: 'refeed',
-  });
-  renderContext();
-}
 
 // ---------- 用例清单那一块（检查阶段） ----------
 
@@ -6037,7 +6120,7 @@ function casesPanelHtml(cases, report, opts = {}) {
     const rate = tierRate(tier, report);
     return '<span class="rate ' + tier.cls + (tier.items.length ? '' : ' empty') + '">'
         + escapeHtml(tier.label) + ' <b>' + rate.passed + '/' + rate.total + '</b></span>';
-  }).join('') + traceRateHtml(list, report);
+  }).join('') + traceRateHtml(list, report) + coverageRates(opts.coverage);
 
   let body = '';
   for (const tier of tiers) {
@@ -6064,6 +6147,7 @@ function casesPanelHtml(cases, report, opts = {}) {
       + (unwired ? '<div class="hint wire-bad-note">有 ' + unwired
           + ' 条用例没接上测试代码：这批测试会被引擎拒绝运行，'
           + '点「测试代码错了」重新生成，把锚点补上。</div>' : '')
+      + coverageProblemsHtml(opts.coverage)
       + body
       + casesFootHtml(list, opts)
       + '</div>';
@@ -6087,6 +6171,73 @@ function traceRateHtml(cases, report) {
           : '每条用例的测试代码都带上了 CASE 编号与 expect，核对通过')
       + '">溯源 <b>' + wired + '/' + cases.length + '</b>'
       + (unwired ? '（' + unwired + ' 条未连线）' : '') + '</span>';
+}
+
+/**
+ * 覆盖核对那两枚计数：<b>零覆盖的验收标准</b>与<b>无对应验收的必须过用例</b>。
+ *
+ * <p>为什么固定摆在通过率旁边：通过率回答「验的这几条过了没有」，答不出「该验的都验了没有」。
+ * 真模型实测里 10 条验收标准有 1 条一条用例都没覆盖、另一条被并进别的用例而追溯字段没填，
+ * 引擎当时什么都没报——两张清单的差集从来没有人算过（§14.8 提过，§15 漏了）。
+ *
+ * <p>两个数都该是 0。它们<b>不拦人</b>：用例是给人看的证据（十五.3），
+ * 「这一条我打算靠人工验」是正当的选择；但人得看得见。
+ *
+ * <p>没有覆盖数据时（没写过验收标准、也没跑过检查）不画这两枚——画一个恒为 0 的计数，
+ * 只会让人以为「已经核过了」。
+ */
+function coverageRates(coverage) {
+  if (!coverage || !coverage.criteria || !coverage.criteria.length) {
+    return '';
+  }
+  const uncovered = (coverage.uncovered || []).length;
+  const unmapped = (coverage.unmappedMust || []).length;
+  const chip = (label, count, why) => '<span class="rate' + (count ? ' bad' : '') + '" title="'
+      + escapeHtml(why) + '">' + escapeHtml(label) + ' <b>' + count + '</b></span>';
+  return chip('零覆盖验收', uncovered,
+      uncovered
+          ? '这些验收标准一条用例都没提到：' + (coverage.uncovered || []).join('、')
+          : '每条验收标准都有用例提到它')
+      + chip('无对应验收的必须过用例', unmapped,
+      unmapped
+          ? '这几条「必须过」的用例没写对应哪条验收标准：用例 '
+              + (coverage.unmappedMust || []).join('、')
+          : '必须过的用例都写了对应哪条验收标准');
+}
+
+/**
+ * 覆盖核对里那些「有问题」的行——零覆盖的验收标准原文、以及没写对应验收的必须过用例。
+ *
+ * <p>光有两枚非 0 的计数，人还得自己去清单里找是哪一条。这里把原文列出来，
+ * 一条一行（最多 8 条，多的明说还有几条）。整块<b>一个容器</b>：说明与它列的那几行是同一件事，
+ * 拆成两处之后，「说的是哪几条」要靠人自己对。
+ */
+function coverageProblemsHtml(coverage) {
+  if (!coverage || !coverage.criteria || !coverage.criteria.length) {
+    return '';
+  }
+  const uncovered = coverage.uncovered || [];
+  const unmapped = coverage.unmappedMust || [];
+  if (!uncovered.length && !unmapped.length) {
+    return '';
+  }
+  const rows = [];
+  for (const item of uncovered.slice(0, 8)) {
+    rows.push('<div class="case-line"><span class="k">零覆盖</span><span class="v">'
+        + escapeHtml(item) + '</span></div>');
+  }
+  if (uncovered.length > 8) {
+    rows.push('<div class="case-line"><span class="k">零覆盖</span><span class="v">还有 '
+        + (uncovered.length - 8) + ' 条没有列出来（一共 ' + uncovered.length + ' 条）</span></div>');
+  }
+  if (unmapped.length) {
+    rows.push('<div class="case-line"><span class="k">无对应验收</span><span class="v">用例 '
+        + unmapped.join('、') + '：这几条是「必须过」，却没写它对应哪条验收标准</span></div>');
+  }
+  return '<div class="hint wire-bad-note">验收标准 ⇄ 用例清单对不上：'
+      + uncovered.length + ' 条验收标准没有任何用例提到，'
+      + unmapped.length + ' 条必须过的用例没写对应哪条验收标准（两个数都该是 0）。'
+      + '不影响这一轮往下走，但这两笔账得有人认。' + rows.join('') + '</div>';
 }
 
 /**
@@ -6147,6 +6298,8 @@ function casesPanelOptions() {
     frozen: !!state.frozen,
     stale: staleFreeze(),
     confirm: true,
+    // 覆盖核对那两枚计数跟着这一份方案走（引擎在检查阶段算好发回来的）
+    coverage: state.coverage,
   };
 }
 
@@ -6246,7 +6399,14 @@ const TRACE_KINDS = {
   CHANGED: '偷偷改期望',
 };
 
-/** 重新生成出来、等着放行的那批测试代码。 */
+/**
+ * 重新生成出来、等着放行的那批测试代码。
+ *
+ * <p>措辞里<b>不能</b>再说「没有被执行」：从这一批起，生成的代码先过一道编译核对
+ * （引擎跑一次入口脚本，看有没有结论，见 {@code TestAgent.generate}），
+ * 编不过就自动再生成一版，到上限把原始错误摆在这里。要人记住的是另一件事：
+ * 那一遍<b>不是</b>验收证据——谁错了仍由人判，跑测试要等「放行」之后点「下一轮」。
+ */
 function regenBlockHtml(regen) {
   if (!regen) {
     return '';
@@ -6259,10 +6419,12 @@ function regenBlockHtml(regen) {
       : '<div class="regen-path">正文没能读回来，去磁盘上看 '
           + escapeHtml(regen.directory || '') + '/</div>';
   return '<div class="regen">'
-      + '<div class="regen-head"><b>重新生成的测试代码（还没跑）</b>'
+      + '<div class="regen-head"><b>重新生成的测试代码（还没验收）</b>'
       + '<span class="regen-path">' + escapeHtml(regen.directory || '') + '/</span></div>'
-      + '<div class="tests-note">它只被生成、没有被执行：在你点「放行」之前不会自动重跑，'
-      + '产品代码也一个字节都没动。</div>'
+      + '<div class="tests-note">它已经被引擎执行过一遍，<b>只为核对能不能编译、能不能跑出结论</b>：'
+      + '那一遍不是验收（谁错了还是由你判），在你点「放行」之前也不会自动重跑，'
+      + '产品代码一个字节都没动。</div>'
+      + regenProblemHtml(regen.problem)
       + regenTraceHtml(regen.trace)
       + body
       + '<div class="regen-actions">'
@@ -6271,6 +6433,28 @@ function regenBlockHtml(regen) {
           : '<button type="button" data-act="release">放行这批测试代码</button>'
               + '<span class="hint">放行之后才能点「下一轮」把失败回喂给开发。</span>')
       + '</div></div>';
+}
+
+/**
+ * 这批新代码<b>编不过</b>时那一块。
+ *
+ * <p>为什么非要摆出来：旧口径下「重新生成」连跑都不跑，于是人收到一句「已重新生成」，
+ * 而手里是一批根本跑不起来的代码——一轮白跑被当成了进展。
+ * 判据与那句话由引擎给（{@code TestAgent.CompileProblem}），界面只负责翻译成人话。
+ */
+function regenProblemHtml(problem) {
+  if (!problem) {
+    return '';
+  }
+  const output = outputTail(problem.output, 25);
+  return '<div class="tests-note wire-bad-note">' + escapeHtml(problem.text || '')
+      + '这一批放行之后照样跑不起来——先换一版（放行之后可以再点「测试代码错了」），'
+      + '或者自己去改这批产物。</div>'
+      + (output
+          ? '<div class="fail-output-head">脚本原始输出（尾部 '
+              + output.split('\n').length + ' 行，完整的那份在 .specflow/logs 里）：</div>'
+              + '<pre class="fail-output">' + escapeHtml(output) + '</pre>'
+          : '');
 }
 
 /**
@@ -6299,17 +6483,23 @@ function regenTraceHtml(trace) {
 }
 
 /**
- * 动作行：四个动作 + 一个通用出口。
+ * 动作行：四个动作 + 一个通用出口 + 「全选」。
  *
  * <p>它们按「人怎么判断」命名，而不是按「系统怎么做」：① 开发 AI 错了 → 下一轮（回喂）；
  * ② 测试代码错了 → 重新生成；③ 不重要/误报 → 标记已知失败；④ 接受。
  * 「我的设计错了」<b>不在这儿</b>——设计错了要改的是需求本身，界面上给一个按钮
  * 是骗人的（点它什么都不会发生），只留通用的「中断 / 恢复到初始」（十五.6）。
+ *
+ * <p>「全选」是这一批加的：失败清单默认只勾<b>人已经判过「是开发错」</b>的那几条
+ * （{@link defaultPicks}），而十条八条全过一遍再逐条点，是这类界面上最烦的一步。
+ * 它是<b>勾选</b>的开关，不是动作：点它不发任何请求。
  */
 function testsActionsHtml(report, cases, picked, known, opts) {
   const busy = opts.busy === 'regenerate';
   const held = !!(opts.regenerated && !opts.regenerated.released);
   const count = picked.size;
+  const failing = pickableIndexes(report);
+  const allPicked = failing.length > 0 && failing.every(index => picked.has(index));
   const next = count
       ? '下一轮（回喂选中的 ' + count + ' 条）'
       : '下一轮（先勾要修的用例）';
@@ -6317,6 +6507,11 @@ function testsActionsHtml(report, cases, picked, known, opts) {
       ? '先处理上面那批重新生成的测试代码：看过之后点「放行」'
       : '你觉得是开发 AI 错了：把勾中的失败用例一次性回喂给开发，然后跑一轮';
   return '<div class="pending-actions">'
+      + (failing.length
+          ? '<button type="button" class="ghost" data-act="pick-all"'
+              + ' title="把失败清单里这几条全部勾上（或全部取消）：它只改勾选，不发请求">'
+              + (allPicked ? '取消全选' : '全选') + '</button>'
+          : '')
       + '<button type="button" data-act="next-round"' + (count && !held ? '' : ' disabled')
       + ' title="' + escapeHtml(nextTitle) + '">' + escapeHtml(next) + '</button>'
       + (busy
@@ -6338,6 +6533,40 @@ function testsActionsHtml(report, cases, picked, known, opts) {
       + '<span class="hint">只有「下一轮」会把失败回喂给开发；'
       + '「测试代码错了」只换测试代码，不会自动重跑。</span>'
       + '</div>';
+}
+
+/** 失败清单里能勾的那几个用例编号，升序去重——「全选」与默认勾选共用它。 */
+function pickableIndexes(report) {
+  const found = new Set();
+  for (const failure of (report && report.failures) || []) {
+    const index = numbersIn(failure.testCase)[0];
+    if (index !== undefined) {
+      found.add(index);
+    }
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+/**
+ * 默认勾哪几条。
+ *
+ * <p>只勾<b>人已经判过「开发 AI 错了」（CODE）</b>的那些：那是他自己上一轮下的判断，
+ * 而这一轮点开失败清单时他要做的正是「接着修那几条」。默认全勾等于替他认下所有失败，
+ * 默认全不勾又等于让他把同一件事再点一遍。
+ *
+ * <p>纯函数、单独钉住：默认勾错的表现很安静——用户点「下一步」时才发现少喂了一条，
+ * 而那时一次模型调用已经花出去了。
+ */
+function defaultPicks(report, known) {
+  const verdicts = known || new Map();
+  return new Set(pickableIndexes(report).filter(index => verdicts.get(index) === VERDICT.CODE));
+}
+
+/** 「全选 / 取消全选」：都勾上了就清空，否则全勾上。 */
+function toggleAllPicks(report, picked) {
+  const failing = pickableIndexes(report);
+  const all = failing.length > 0 && failing.every(index => picked.has(index));
+  return all ? new Set() : new Set(failing);
 }
 
 /**
@@ -6363,17 +6592,31 @@ function testsPanelHtml(raw, cases, opts = {}) {
     body += '<div class="fail-list">'
         + report.failures.map(failure => failRowHtml(failure, list, picked, known)).join('')
         + '</div>';
+    // 原始证据摆在紧挨着失败清单的地方：日志尾部固定摊开（不折进 details），
+    // 测试代码正文在每条用例的细节里（方案面板那一块）。分工是「一行结论 + 现场原话」
+    const tail = outputTail(report.output);
+    if (tail) {
+      body += '<div class="fail-output-head">脚本原始输出（尾部 ' 
+          + tail.split('\n').length + ' 行；完整的那份在 '
+          + escapeHtml(report.directory || '.specflow/logs') + ' 那一带，也在下面那个折叠块里）：</div>'
+          + '<pre class="fail-output">' + escapeHtml(tail) + '</pre>';
+    }
   } else {
     body += '<div class="empty">' + escapeHtml(report.exit === 0
         ? '这一次没有失败用例。'
         : '它非 0 退出，却没打印出任何失败用例——见下面的原始输出。') + '</div>';
   }
 
+  // 回喂与「它没有改动」：这一轮是怎么来的、它到底做没做，两句话都要在结果面板上看得见
+  body += refeedNote(opts.result);
+  body += noChangeNote(opts.result);
+
   // 用例清单这边也给一份通过率：失败清单是「哪几条没过」，通过率是「一共验了几条」。
   // 少了后者，一次只跑了三条用例的运行会被读成满分
   if (list.length) {
     body += '<div class="rate-row">'
-        + '<span class="rate">总通过率 <b>' + rateOfAll(list, report) + '</b></span></div>';
+        + '<span class="rate">总通过率 <b>' + rateOfAll(list, report) + '</b></span>'
+        + coverageRates(opts.coverage) + '</div>';
   }
 
   body += regenBlockHtml(opts.regenerated);
@@ -6439,6 +6682,9 @@ function testsPanelFor(state1) {
     regenerated: state1.regenerated,
     pending: !!(state1.pending && state1.pending.present),
     actions: true,
+    // 回喂的下落与「它有没有真改」：两条都跟着这一次的终态事件走（引擎算的）
+    result: state1.lastResult,
+    coverage: state1.coverage,
   });
 }
 
@@ -6480,6 +6726,7 @@ function insertTestsPanel() {
   if (old) {
     old.remove();
   }
+  seedPicks();
   const html = testsPanelFor(state);
   if (!html) {
     return;
@@ -6497,15 +6744,33 @@ function insertTestsPanel() {
 }
 
 /**
+ * 默认勾选：<b>只勾人判过「是开发错」的那几条</b>（十五.6 第一条路 + 这一批的口径）。
+ *
+ * <p>为什么要一次性铺、而不是每次重画都按判决算一遍：用户手改过勾选之后，
+ * 任何一次重画（跑完一轮、待处置面板翻牌）都会把他改的抹掉。
+ * {@code picksSeeded} 就是「这一份失败清单已经铺过了」这件事——换一份清单才重新铺
+ * （新的一次运行、或者从留档里读了另一条记录）。
+ */
+function seedPicks() {
+  if (state.picksSeeded) {
+    return;
+  }
+  state.picksSeeded = true;
+  state.picked = defaultPicks(testsReport(state.tests), state.known);
+}
+
+/**
  * 「下一轮」：把勾中的失败用例<b>一次性</b>回喂给开发，然后跑一轮。
  *
- * <p>回喂不是新接口，而是一条内联上下文（见 {@link putRefeedContext}）：
- * 用户在「上下文依赖」里看得见它、能改能删，留档里也带着它——
- * 藏进请求体的某个字段里，「它到底按什么改的」事后就没人答得出来了。
+ * <p><b>回喂从这一批起由引擎做</b>（十五.6 第一条路终于有了落点）：界面只发<b>编号</b>
+ * （{@code refeed: [7,8]}），内容由引擎从上一轮那条留档里按十五.7 的固定模板拼——
+ * 用例的语义、期望 vs 实际、失败类型、涉及的目标文件，<b>不含测试代码与断言</b>。
+ * 界面自己拼一段文本塞进「上下文依赖」是上一版的做法，它的毛病是：
+ * 那段话进不了留档（事后答不出「它按什么改的」），而且「已回喂」这个标签是假的。
  */
 async function nextRound() {
   if (!state.picked.size) {
-    notice('warn', '先勾上要回喂给开发的用例（每条失败左边那个勾选框）。');
+    notice('warn', '先勾上要回喂给开发的用例（每条失败左边那个勾选框，或者点「全选」）。');
     return;
   }
   if (state.regenerated && !state.regenerated.released) {
@@ -6517,16 +6782,15 @@ async function nextRound() {
   // 先把「开发 AI 错了」这个判断写进留档，再开这一轮：它回答的是
   // 「这几条当时是谁判的、判成了什么」，而它比这一轮的运行记录更需要留下来——
   // 下一轮跑完之后，屏幕上那份失败清单就换成新的一份了。
-  // 写不进去只提示一句，不拦着这一轮：用户点的是「接着修」，而回喂的那段话照样在上下文里
+  // 写不进去只提示一句，不拦着这一轮：用户点的是「接着修」，而回喂照旧会发出去
   const recorded = await markVerdict(VERDICT.CODE, picked);
   if (!recorded) {
-    notice('warn', '这几条判断没能写进留档（这一轮照跑；回喂的内容还在「上下文依赖」里）。');
+    notice('warn', '这几条判断没能写进留档（这一轮照跑；回喂的编号照样发得出去）。');
   }
-  putRefeedContext(refeedText(picked, caseListForTests(), state.tests, [...state.selected]));
-  const started = await postRun('/api/run');
+  const started = await postRun('/api/run', picked);
   if (started) {
-    notice('ok', '已把选中的 ' + count + ' 条失败回喂给开发（在「上下文依赖」里看得见），'
-        + '这一轮跑完再看结果。');
+    notice('ok', '已把选中的 ' + count + ' 条失败回喂给开发（内容由引擎按固定模板拼，'
+        + '这一轮跑完在结果里看得见它到底改没改）。');
   }
 }
 
@@ -6576,12 +6840,20 @@ async function regenerateTests() {
       sources: data.sources || {},
       // 这批新代码接上线了没有：没接上就在这一块里标出来（拿去跑会被拒绝执行）
       trace: data.trace || null,
+      // 编译核对没过时那一档（标着「它的代码编不过」+ 原始错误）：
+      // 拿到了就说明这一批**不能**放行，提示语也要跟着说实话
+      problem: data.problem || null,
       released: false,
     };
     state.actionBusy = '';
     refreshResult();
-    notice('ok', '已重新生成一批测试代码（' + state.regenerated.directory
-        + '/）：它没有被执行，先看一遍再点「放行」。');
+    notice(state.regenerated.problem ? 'error' : 'ok',
+        state.regenerated.problem
+            ? '重新生成了一版，但它编不过（' + state.regenerated.directory
+                + '/）：原始错误在上面；这一批拿去跑还是跑不起来，先换一版'
+            : '已重新生成一批测试代码（' + state.regenerated.directory
+                + '/）：它被引擎跑过一遍只为核对能不能编译（那一遍不是验收），'
+                + '先看一遍再点「放行」。');
   } catch (e) {
     state.actionBusy = '';
     refreshResult();
@@ -6676,6 +6948,10 @@ async function onTestAction(act) {
     case 'regenerate': return regenerateTests();
     case 'known': return markKnown();
     case 'release': return releaseRegenerated();
+    case 'pick-all':
+      // 它不打开运行、也不写留档：只改勾选（「全选」是个开关，不是动作）
+      pickAll();
+      return undefined;
     case 'accept':
     case 'interrupt':
       // 这两个是既有的处置动作：改动的归宿只有「留下」和「撤回」两种，
@@ -6686,7 +6962,7 @@ async function onTestAction(act) {
   }
 }
 
-/** 把失败清单那一块接上（收起/展开、勾选框、动作按钮）。 */
+/** 把失败清单那一块接上（收起/展开、勾选框、全选、动作按钮）。 */
 function wireTests(box) {
   const section = box.querySelector('.pending.tests');
   if (!section) {
@@ -6696,6 +6972,22 @@ function wireTests(box) {
     check.onchange = () => togglePick(Number(check.dataset.pick), check.checked);
   }
   wirePanel(box, open => { state.testsOpen = open; }, act => onTestAction(act));
+}
+
+/**
+ * 「全选 / 取消全选」：把失败清单里的编号一次性勾上或清空，然后整块重画。
+ *
+ * <p>为什么重画而不是像 {@link togglePick} 那样只更新那一枚按钮：它一次改的是<b>所有</b>
+ * 勾选框，逐个同步反而更容易漏。重画之后焦点会掉，所以重画完把焦点还给那枚按钮——
+ * 键盘用户点一下「全选」不该被扔回页面顶部。
+ */
+function pickAll() {
+  state.picked = toggleAllPicks(testsReport(state.tests), state.picked);
+  refreshResult();
+  const button = document.querySelector('#result [data-act="pick-all"]');
+  if (button) {
+    button.focus();
+  }
 }
 
 // ---------- 待处置的改动 ----------
@@ -7049,7 +7341,9 @@ const STATUS_TEXT = {
   // 这一档说的是「验过了，没全过」，所以绝不能并进上面那句「编译校验通过」
   TESTS_FAILED: ['mid', '改动已写入、编译通过，但测试没全过：改动留着你判断'],
   FAILED: ['bad', '失败：已回滚到运行前'],
-  NEEDS_ENVIRONMENT: ['bad', '这不是改代码能解决的：依赖或环境问题，已回滚到运行前'],
+  // 环境起不来是**停下等人**，不是回滚：改动与测试产物都留着进「待处置」，
+  // 所以这句话必须说清磁盘现在什么样（旧文案写的是「已回滚到运行前」，已经不是事实了）
+  NEEDS_ENVIRONMENT: ['bad', '环境起不来：改动未回滚，等你处置'],
   CANCELLED: ['mid', '已中断：改动已回滚到运行前'],
   NEEDS_CONTEXT: ['mid', '模型要求补充信息，未改动任何文件'],
   // 不是失败：磁盘上一个字节都没动，挂起的那次留档也还在，改回清单再来一次就行

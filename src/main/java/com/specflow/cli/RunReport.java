@@ -45,8 +45,11 @@ final class RunReport {
             }
             case NEEDS_ENVIRONMENT -> {
                 Console.fail("不是改代码能解决的（%d 轮）：%s", result.attempts(), result.detail());
-                Console.detail("磁盘状态已回滚到运行前");
-                Console.detail("请按上面的提示处理依赖或环境，然后重跑");
+                // 磁盘的去留不在这里替它下结论：同是这一档，开发阶段的编译校验是回滚的，
+                // 而测试阶段那两条硬判据（环境起不来 / 超时）是留着的（见 TestOutcome.hard）——
+                // 写死一句「已回滚」就说错了其中一次。当前状态在 detail 的最后一句里
+                Console.detail("磁盘上那份改动按上面最后一句处置；留着就 specflow accept，"
+                        + "撤掉就 specflow rollback（两种都是 0）");
             }
             case CANCELLED -> {
                 Console.warn("已中断（完成 %d 轮）", result.attempts());
@@ -64,7 +67,7 @@ final class RunReport {
 
     /**
      * 退出码：0 成功 · 1 失败（已回滚）· 2 模型要求补充信息（磁盘未动）· 3 人工中断（已回滚）·
-     * 4 卡在环境/依赖上（已回滚，需要人去处理）· 5 上一次的改动还没处置（磁盘未动）·
+     * 4 卡在环境/依赖上（要不要回滚见结论里那句话，需要人去处理）· 5 上一次的改动还没处置（磁盘未动）·
      * 6 上一次留下的施工单对不上现在的清单（磁盘未动）· 7 测试没全过（改动还在磁盘上）。
      *
      * <p>中断单独给一个码，是为了让 CI 能区分「它自己做不到」和「是我叫停的」；

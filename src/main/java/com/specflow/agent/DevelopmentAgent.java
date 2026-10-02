@@ -26,6 +26,7 @@ import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.template.TemplateRegistry;
 import com.specflow.tests.ExecutionLocation;
+import com.specflow.tests.Refeed;
 import com.specflow.tests.TestAgent;
 import com.specflow.tests.TestOutcome;
 import com.specflow.tests.TestReport;
@@ -46,6 +47,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 开发 Agent——整套引擎的编排者。
@@ -144,6 +146,14 @@ public final class DevelopmentAgent {
     private final PatchStrategies strategies = PatchStrategies.defaults();
     private final PatchApplier applier;
 
+    /**
+     * 这一次「环境预热」的结果。
+     *
+     * <p>开发阶段一开跑就异步去起环境，测试阶段来取。它只在这一个运行的线程上被赋值与读取
+     * （写发生在测试阶段那一刻、读也在那一刻之后），所以不需要同步。
+     */
+    private Warmup warmup = Warmup.none();
+
     public DevelopmentAgent(Path projectRoot, ProjectConfig project, TemplateRegistry templates,
                             LlmClient llm, List<Verifier> verifiers) {
         this(projectRoot, project, templates, llm, verifiers, AgentListener.NOOP);
@@ -199,7 +209,22 @@ public final class DevelopmentAgent {
      * @param approved 已确认的方案；为 {@code null} 表示跳过检查直接开发
      */
     public AgentResult run(Spec spec, PlanReview approved) {
-        AgentResult result = execute(spec, approved, null);
+        return run(spec, approved, Refeed.none());
+    }
+
+    /**
+     * 带「已确认的实现方案」和一段「上一轮的测试失败」执行一次开发任务。
+     *
+     * <p>方案来自检查阶段，是人看过、点过确认的那一份。把它回喂给开发阶段有两个作用：
+     * 一是让模型别重新想一遍（想出来的可能不是你看过的那份），
+     * 二是让它按图施工，代码和方案对不上时更容易被发现。
+     *
+     * @param approved 已确认的方案；为 {@code null} 表示跳过检查直接开发
+     * @param refeed   上一轮测试没过、且被人判定「是产品代码的问题」的那几条（十五.6 第一条路）。
+     *                 {@link Refeed#none()} 表示这次不是「下一轮」，提示词里不多那一段
+     */
+    public AgentResult run(Spec spec, PlanReview approved, Refeed refeed) {
+        AgentResult result = execute(spec, approved, null, refeed);
         listener.finished(result);
         return result;
     }
@@ -218,7 +243,8 @@ public final class DevelopmentAgent {
      */
     public AgentResult resume(Spec spec, PlanReview approved, String modelSaid, boolean force,
                               List<PlanStep> recordedSteps) {
-        AgentResult result = execute(spec, approved, new Resume(modelSaid, force, recordedSteps));
+        AgentResult result = execute(spec, approved, new Resume(modelSaid, force, recordedSteps),
+                Refeed.none());
         listener.finished(result);
         return result;
     }
@@ -240,7 +266,7 @@ public final class DevelopmentAgent {
         }
     }
 
-    private AgentResult execute(Spec spec, PlanReview approved, Resume resume) {
+    private AgentResult execute(Spec spec, PlanReview approved, Resume resume, Refeed refeed) {
         // 上一次的改动还在等人表态：磁盘上那份是好的，但没经过人确认。
         // 在它之上再叠一轮，等于让人在一个自己没看过的状态上继续施工。
         List<WorkspaceSnapshot> undisposed = WorkspaceSnapshot.undisposed(pathResolver, snapshotRoot());
@@ -258,6 +284,10 @@ public final class DevelopmentAgent {
             return AgentResult.planOutdated(stale);
         }
 
+        // 环境预热：开发要跑好几分钟，而把容器叫起来只要几十秒（十五.5）。
+        // 一开跑就异步起，测试阶段要用时它多半已经好了；起不来也不影响开发
+        warmup = Warmup.start(settings, environment);
+
         List<ChatMessage> messages = new ArrayList<>();
         // 施工单从哪来，是「这次运行和别人不一样」的唯一一处输入差异；定下来就先说出去，
         // 界面才能一次画出「一共几步」。它同时决定提示词用哪一档协议、要不要叮嘱它别再来要东西，
@@ -272,7 +302,7 @@ public final class DevelopmentAgent {
                 noNeedContext
                         ? PatchProtocol.INSTRUCTIONS_WITHOUT_NEED_CONTEXT
                         : PatchProtocol.INSTRUCTIONS)));
-        messages.add(ChatMessage.user(userMessage(spec, approved, noNeedContext)));
+        messages.add(ChatMessage.user(userMessage(spec, approved, noNeedContext, refeed)));
         if (resume != null) {
             messages.add(ChatMessage.assistant(resume.modelSaid()));
             messages.add(ChatMessage.user(resumePrompt(resume.force(), confirmedPlan)));
@@ -476,7 +506,8 @@ public final class DevelopmentAgent {
         }
 
         // 编译过了不等于做对了：检查阶段给过用例清单，就把它们真的跑一遍（十五.2）。
-        // 这一步还没 markPending，所以「环境问题要立刻停、回滚」在这里是一条干净的路
+        // 这一步还没 markPending，所以「跑不起来 / 测试没过」各种收场都要自己决定快照的去留
+        // （从这一批起两种收场都是 markPending：改动留着等人处置）
         //
         // 进测试之前再问一次停止：这一段最长五分钟，进去就停不下来（见 TestScriptVerifier
         // 的时限与 AgentListener.testsStarted）。刚按过停止却还要等五分钟，
@@ -491,14 +522,23 @@ public final class DevelopmentAgent {
             tests = testPhase(spec, approved);
         } catch (EnvProblem problem) {
             // 环境起不来：这就是十五.5 里那一档「立刻停 + 原始错误 + 待办」。
-            // 落成环境问题的测试结论，下面那段通用的收场会照着它回滚并把原因交给人——
+            // 落成环境问题的测试结论，下面那段收场会**留下现场**并把原因交给人——
             // 绝不把它当成「测试代码写错了」
             log.warn("测试环境没弄成：{}", problem.detail());
             tests = TestReport.environmental(0, problem.detail());
         }
         if (tests != null && tests.environmental()) {
-            log.warn("测试跑不起来（环境问题）：{}", tests.detail());
-            closeRun(snapshot, true, rounds, "测试跑不起来（环境问题）");
+            // 「命令/环境压根起不来」这一档（引擎亲见的硬判据）：停下、把原始错误交给人，
+            // 但**不回滚、不删产物**——用户 2026-10-02 拍板：改动留在磁盘上进「待处置」，
+            // 由他决定保留还是撤回。旧口径是连同产品改动一起回滚、测试产物整批删掉，
+            // 于是人手里什么都没剩（既要重做改动，也看不到它当时写成什么样）。
+            // 脚本自己打一行 BLOCKED 说的「跑不起来」不在这里——见 TestReport 的判定顺序
+            log.warn("测试跑不起来（环境起不来），改动未回滚，等人处置：{}", tests.detail());
+            if (snapshot != null) {
+                // 快照改名 = 进「待处置」：留着它，人才能在界面上保留或撤回这份改动。
+                // 这一步和下面测试没过那一档是同一个动作，所以不能再走 closeRun（那会回滚）
+                snapshot.markPending();
+            }
             return AgentResult.needsEnvironment(rounds, lastChanges, withTests(lastResults, tests),
                     tests.detail());
         }
@@ -508,9 +548,11 @@ public final class DevelopmentAgent {
             snapshot.markPending();
         }
         if (tests != null && !tests.passed()) {
-            // 有失败用例：不回滚（改动可能是对的，错的可能是用例），也不回喂（本批不自动回喂）。
-            // 磁盘上那份改动和平时一样进「待处置」，等用户看完失败清单再决定
-            log.info("测试没全过，改动留在磁盘上等人处置");
+            // 有失败用例：<b>一律不回滚、不自动回喂</b>——改动可能是对的，错的可能是用例，
+            // 而机器判不了是谁的错（十五.9）。磁盘上那份改动和平时一样进「待处置」，
+            // 测试产物照旧留在 tools/ 里，等用户看完失败清单自己决定走哪条路。
+            // 回喂要等人点「下一轮」（那时才带上 refeed，见 Refeed）
+            log.info("测试没全过，改动留在磁盘上等人处置（判定：{}）", tests.worst());
             return AgentResult.testsFailed(rounds, lastChanges, withTests(lastResults, tests),
                     tests.detail());
         }
@@ -527,8 +569,13 @@ public final class DevelopmentAgent {
      * <p>它<b>不改产品代码、不重试、不回喂</b>。失败清单交给人：谁错了机器判不了，
      * 硬判就会逼出「为了过一条写错的用例，把正确代码改成错的」（十四.3 那条教训）。
      *
-     * <p><b>环境在这一段里管</b>（十五.5）：进测试之前先确认环境活着，勾了集成测试就先跑一次
-     * reset，把连接信息喂给测试代码；环境起不来就落成「环境问题」，立刻停 + 原始错误 + 待办。
+     * <p>跑不起来（环境起不来 / 超时）时它把结论交出去，收场在 {@link #execute} 那一侧：
+     * 从这一批起<b>一律不回滚、不删产物</b>，改动与现场原样留着等人处置。
+     *
+     * <p><b>环境在这一段里管</b>（十五.5）：进测试之前先把手头这套环境认下来——开发一开跑
+     * 引擎就异步去起它了（见 {@link Warmup}），这里等它完事；好了就跑一次 reset 把连接信息
+     * 喂给测试代码，没好则<b>只记一笔「环境不可用」</b>，这次跳过集成、单元回退宿主照跑。
+     * 产品代码改动不受影响：环境起不来是这台机器的事，不是这次改动的结论。
      * <b>测试脚本跑在哪</b>也在这一段定：环境活着 → 单元与集成都进容器，否则都回退宿主
      * （十五.5，执行位置只由 {@link ExecutionLocation} 一处判）。
      *
@@ -543,14 +590,24 @@ public final class DevelopmentAgent {
         listener.testsStarted(approved.cases().size());
         Map<String, String> variables = null;
         EnvRegistration registration = null;
+        // 这一次真的按哪个档跑：勾了集成、但环境怎么也起不来时，退成只跑单元（十五.5 的回退口径）。
+        // 退档不静默：下面那条环境登记与时间线上都会写着「环境不可用」
+        TestSettings planned = settings;
         try {
             if (settings.integration()) {
-                // 环境问题在这一步就会现形：没声明、没初始化、容器不在、reset 跑挂了。
-                // 一条都不该由模型负责，所以不往下走，直接按环境问题收场
-                registration = environment == null ? null : environment.reset();
-                if (environment != null) {
-                    variables = environment.variables();
-                    listener.environmentChanged(registration);
+                String unavailable = warmup.failure();
+                if (unavailable != null) {
+                    log.warn("测试环境不可用，这次跳过集成测试：{}", unavailable);
+                    listener.environmentChanged(unavailableEnvironment(unavailable));
+                    planned = TestSettings.UNIT_ONLY;
+                } else {
+                    // 起好了也要 reset：十五.5 的口径是「每次跑前只重置数据」。它失败的收场也是
+                    // 环境问题（resize 命令写错了要人来改），所以照旧不往下走
+                    registration = environment == null ? null : environment.reset();
+                    if (environment != null) {
+                        variables = environment.variables();
+                        listener.environmentChanged(registration);
+                    }
                 }
             }
         } catch (EnvProblem problem) {
@@ -564,7 +621,7 @@ public final class DevelopmentAgent {
             // 这一次在哪儿跑（容器 / 宿主）只在这一处问：环境活着就进容器，
             // 用不了（没 Docker、没初始化、容器关了）就回退宿主——回退这件事会写进结果与留档
             outcome = new TestAgent(projectRoot, project, templates, llm)
-                    .run(spec, approved.cases(), settings, variables,
+                    .run(spec, approved.cases(), planned, variables,
                             ExecutionLocation.of(environment));
         } catch (EnvProblem problem) {
             // 环境问题是这一段的刹车信号：它和「测试代码写错了」是两码事，
@@ -579,6 +636,106 @@ public final class DevelopmentAgent {
         }
         listener.testsFinished(outcome);
         return outcome;
+    }
+
+    /**
+     * 「环境不可用」那一条登记（十五.5 的回退口径）。
+     *
+     * <p>为什么走环境登记这条通道：它同时出现在时间线上和留档的 {@code environment} 那一栏，
+     * 而「这次其实没进容器、集成也没跑」是用户事后必须能看见的事——
+     * 悄悄降级会让一份只验了一半的结果看起来像全验过了。
+     */
+    private static EnvRegistration unavailableEnvironment(String reason) {
+        return new EnvRegistration(EnvRegistration.State.NOT_READY, "", "", "", List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(),
+                "环境不可用（" + reason + "）：这次跳过集成测试，单元测试回退到宿主上跑；"
+                        + "产品改动不受影响，环境弄好之后再跑一次就能验集成的部分");
+    }
+
+    /**
+     * 开发阶段一开始就异步去起环境——<b>预热</b>。
+     *
+     * <p>为什么值得这么做：开发要跑好几分钟（每步一次模型调用），而 {@code up -d --wait} + init
+     * 只要几十秒（实测 32.9 秒，其中约 30 秒是在等依赖的健康检查）。串起来做，用户就要在
+     * 测试阶段之前干等这几十秒；并行起来，轮到测试时它多半已经好了。
+     *
+     * <p>三条纪律：
+     * <ul>
+     *   <li><b>只在勾了集成、而且声明了环境时才起</b>（十五.5：没勾就完全不碰环境，连 docker 都不探）；</li>
+     *   <li><b>已经就绪的直接用</b>：容器是常驻复用的，再 up 一次只会白等一轮健康检查；</li>
+     *   <li><b>起不来不影响开发</b>：它是这台机器的事，不是这次改动的结论——
+     *       失败只落成一句「环境不可用」，产品改动照旧进「待处置」。</li>
+     * </ul>
+     *
+     * <p>用一条<b>守护线程</b>而不是线程池：它只服务这一次运行，跑完即弃；扔进公共池会让
+     * 「谁在后台起容器」变成一个跨越整个进程的状态，而这个类是按运行装配的。
+     */
+    private static final class Warmup {
+
+        /** 没预热（没勾集成 / 没声明环境 / 已经就绪）。 */
+        private static final Warmup NONE = new Warmup(null, null);
+
+        private final Thread thread;
+        private final AtomicReference<String> problem;
+
+        private Warmup(Thread thread, AtomicReference<String> problem) {
+            this.thread = thread;
+            this.problem = problem;
+        }
+
+        static Warmup none() {
+            return NONE;
+        }
+
+        /**
+         * 起一条后台线程去 {@code up()}；立刻返回，不等它。
+         *
+         * <p>三个前置判断都在<b>起线程之前</b>做完：它们要么不花钱（settings），
+         * 要么必须串行（{@code status()} 会去探 docker），扔进后台只会让「到底起没起」
+         * 变成一件要等的事。
+         */
+        static Warmup start(TestSettings settings, TestEnvironment environment) {
+            if (settings == null || !settings.integration() || environment == null
+                    || !environment.declared() || environment.status().usable()) {
+                return NONE;
+            }
+            AtomicReference<String> problem = new AtomicReference<>();
+            Thread thread = new Thread(() -> {
+                try {
+                    environment.up();
+                } catch (RuntimeException e) {
+                    // EnvProblem 的 detail 里就是「卡在哪条命令、原始错误、怎么办」；
+                    // 别的异常只留一句话——这里不是报错的地方，报错的地方是测试阶段
+                    problem.set(e instanceof EnvProblem envProblem
+                            ? envProblem.detail() : String.valueOf(e.getMessage()));
+                }
+            }, "specflow-env-warmup");
+            thread.setDaemon(true);
+            thread.start();
+            return new Warmup(thread, problem);
+        }
+
+        /**
+         * 等它完事，返回「为什么没起来」；起来了（或者压根没预热）返回 {@code null}。
+         *
+         * <p>等它而不是「没好的话就算了」：集成测试要的正是这套环境，而 {@code up()}
+         * 自己带着 10 分钟的时限（拉镜像也算在里面）。轮到测试时它通常早就完了，
+         * 真正会等的情况是「这几步改动特别快」。
+         */
+        String failure() {
+            if (thread == null) {
+                return null;
+            }
+            try {
+                thread.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                // 等待被打断（人工中断那条路）：按「没起来」处理，让测试阶段回退宿主跑完这一轮，
+                // 而不是把一个异常扔到上面去——拦截中断本来就在轮与步之间做
+                return "预热被中断";
+            }
+            return problem.get();
+        }
     }
 
     /**
@@ -709,8 +866,9 @@ public final class DevelopmentAgent {
         List<ChatMessage> probe = new ArrayList<>();
         probe.add(ChatMessage.system(assembler.systemMessage(spec, templates, StepsProtocol.INSTRUCTIONS)));
         // 「现生成施工单」和「检查过、已确认」是互斥的两条路：走到这里就说明没有已确认的单子，
-        // 所以这一份用户消息照旧留着「信息确实不足」那个出口
-        probe.add(ChatMessage.user(userMessage(spec, approved, false)));
+        // 所以这一份用户消息照旧留着「信息确实不足」那个出口。
+        // 这里也不带回喂那一段：施工单是「怎么改」的图，和「上回落了哪条用例」无关
+        probe.add(ChatMessage.user(userMessage(spec, approved, false, Refeed.none())));
 
         for (int attempt = 1; attempt <= STEP_GENERATION_TRIES; attempt++) {
             String response = llm.complete(probe);
@@ -980,18 +1138,25 @@ public final class DevelopmentAgent {
      *                      老的那句话里「或者信息确实不足」是个隐藏的出口——它和提示词里那段
      *                      「缺料就直说」是一对，去了后一半就得连它一起去掉
      */
-    private String userMessage(Spec spec, PlanReview approved, boolean noNeedContext) {
+    private String userMessage(Spec spec, PlanReview approved, boolean noNeedContext, Refeed refeed) {
         String message = assembler.userMessage(spec, templates);
-        if (approved == null || approved.render().isEmpty()) {
-            return message;
+        if (approved != null && !approved.render().isEmpty()) {
+            String how = noNeedContext
+                    ? "除非遇到硬性障碍（要动目标清单之外的文件），否则按这张方案做，不要另起一套；"
+                            + "按施工单做，不要再要求补充信息——该给的上下文已经给全了。"
+                    : "除非遇到硬性障碍（要动目标清单之外的文件、或者信息确实不足），"
+                            + "否则按这张方案做，不要另起一套。";
+            message = message + "\n## 已确认的实现方案（已由人确认，请按它实现）\n" + how + "\n\n"
+                    + approved.render() + "\n";
         }
-        String how = noNeedContext
-                ? "除非遇到硬性障碍（要动目标清单之外的文件），否则按这张方案做，不要另起一套；"
-                        + "按施工单做，不要再要求补充信息——该给的上下文已经给全了。"
-                : "除非遇到硬性障碍（要动目标清单之外的文件、或者信息确实不足），"
-                        + "否则按这张方案做，不要另起一套。";
-        return message + "\n## 已确认的实现方案（已由人确认，请按它实现）\n" + how + "\n\n"
-                + approved.render() + "\n";
+        // 「上一轮的测试失败」<b>一律排在最后</b>：顺序是「需求 → 施工单 → 这一段的失败」。
+        // 它是这一轮的**动因**（用户看完失败清单点下来的），排在最前面会盖过需求本身，
+        // 排在施工单前面又会让模型以为要先改代码再对单子。放在最后，它才是「按这份单子做，
+        // 顺带把这几条修掉」——而这正是十五.6 第一条路要它做的事
+        if (refeed != null && refeed.present()) {
+            message = message + "\n" + refeed.text();
+        }
+        return message;
     }
 
     /**

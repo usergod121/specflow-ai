@@ -382,18 +382,21 @@ class RealDockerEnvironmentTest {
         assertThat(leftovers.networks()).isEmpty();
     }
 
-    // ---------- 4. 引擎那一侧的收场（环境问题 → 立刻停 + 回滚） ----------
+    // ---------- 4. 引擎那一侧的收场（环境问题 → 立刻停 + 保留现场 + 原始错误） ----------
 
     /**
-     * 环境问题走到引擎那一侧：状态是 {@code NEEDS_ENVIRONMENT}、磁盘回滚、
+     * 环境问题走到引擎那一侧：状态是 {@code NEEDS_ENVIRONMENT}、<b>改动不回滚</b>、
      * 原始错误原样交给人——而不是回喂给模型让它改代码。
      *
      * <p>这次用的是一次<b>真的 reset 失败</b>：环境先正常起来（真容器），
      * 然后往 {@code env.yaml} 里塞一条一定失败的重置命令——引擎每次跑测试前都要 reset，
      * 那一句会带着 docker 的退出码原样冒上来。
+     *
+     * <p><b>「不改动磁盘」是用户 2026-10-02 拍板的那一条</b>：硬判据只停下，产品改动与测试产物
+     * 都留着进「待处置」。旧口径在这里会把 {@code Foo.java} 恢复原样，于是人手里什么都没剩。
      */
     @Test
-    @DisplayName("真环境问题走到引擎：状态是「需要环境」、磁盘回滚、原始错误在结论里")
+    @DisplayName("真环境问题走到引擎：状态是「需要环境」、改动未回滚、docker 的原始错误在结论里")
     void surfacesARealEnvironmentProblemThroughTheAgent() throws IOException {
         requireDocker();
         requireImages("busybox:latest");
@@ -425,24 +428,30 @@ class RealDockerEnvironmentTest {
         assertThat(result.status())
                 .as("结论：%s", result.detail())
                 .isEqualTo(com.specflow.agent.AgentResult.Status.NEEDS_ENVIRONMENT);
-        assertThat(result.detail()).contains("环境问题").contains("reset-exploded");
+        assertThat(result.detail())
+                .contains("环境起不来").contains("reset-exploded")
+                .as("硬判据只停下：这句话要说清改动还在、等谁处置")
+                .contains("改动未回滚").contains("等你处置");
         assertThat(Files.readString(root.resolve("Foo.java")))
-                .as("环境问题整轮回滚：磁盘回到运行前")
-                .isEqualTo("class Foo { int a = 1; }\n");
+                .as("改动留在磁盘上等人处置——不再被机器收掉")
+                .isEqualTo("class Foo { int a = 2; }\n");
         assertThat(namesOf(environment.composeProject()))
                 .as("重置失败不收环境（容器是好的，坏的只是那条命令）")
                 .isNotEmpty();
     }
 
     /**
-     * 没初始化就勾集成：引擎当场停，说的是「先初始化」而不是去怪代码。
+     * 没初始化就勾集成：<b>引擎自己把它起起来</b>（预热），不再当场拦人。
      *
-     * <p>这条在真 docker 上的价值是确认「不会去起任何东西」：一条残留都不该冒出来。
+     * <p>旧行为是整次运行被拒（界面上 409），用户得先去点「初始化测试环境」、等半分钟，
+     * 再回来点运行。现在开发一开跑就异步起环境（十五.5 的那套 up -d --wait + init），
+     * 轮到测试时它多半已经好了——而这是一台真 docker 上唯一能证明「它真起来了」的地方。
      */
     @Test
-    @DisplayName("没初始化就勾集成（真 docker）：立刻停、零残留")
-    void refusesIntegrationBeforeInitialization() throws IOException {
+    @DisplayName("没初始化就勾集成（真 docker）：引擎先把它起起来，不再拦人")
+    void prewarmsTheEnvironmentInsteadOfRefusing() throws IOException {
         requireDocker();
+        requireImages("busybox:latest");
         declare("""
                 image: "busybox:latest"
                 """);
@@ -458,9 +467,16 @@ class RealDockerEnvironmentTest {
                 new com.specflow.tests.TestSettings(true), environment)
                 .run(spec(), planWithCases());
 
-        assertThat(result.status()).isEqualTo(com.specflow.agent.AgentResult.Status.NEEDS_ENVIRONMENT);
-        assertThat(result.detail()).contains("环境问题").contains("初始化");
-        assertNothingLeft(environment.composeProject());
+        assertThat(environment.status().usable())
+                .as("预热真的把容器起起来了：%s", namesOf(environment.composeProject())).isTrue();
+        assertThat(result.status())
+                .as("不再按「需要环境」停下：%s", result.detail())
+                .isNotEqualTo(com.specflow.agent.AgentResult.Status.NEEDS_ENVIRONMENT);
+        // 假模型给的是产品补丁、没有测试产物：测试阶段会在「产物只能写在 tools/ 下」那道闸上被拒，
+        // 而那是正常结果——产品改动照旧留在磁盘上等人处置（这一档不回滚）
+        assertThat(Files.readString(root.resolve("Foo.java")))
+                .as("产品改动留着：环境这一摊的事不改动它的归宿")
+                .isEqualTo("class Foo { int a = 2; }\n");
     }
 
     // ---------- 2c. 收场与清库（真容器） ----------
@@ -592,7 +608,8 @@ class RealDockerEnvironmentTest {
                         List.of(), 1, 1,
                         VerificationResult.failed("测试脚本", "run", "一条没过"),
                         List.of(), List.of(new TestOutcome.CaseResult(1, false)), List.of()),
-                null, null, null, null, List.of());
+                // 覆盖核对、回喂、「它没有改动」：这一条只关心收场怎么删产物，三笔都留空
+                null, null, null, null, List.of(), null, null, null);
     }
 
     // ---------- 辅助：真 docker 查询 ----------

@@ -3,6 +3,7 @@ package com.specflow.history;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.specflow.exception.SpecflowException;
 import com.specflow.review.PlanReview;
+import com.specflow.tests.Refeed;
 import com.specflow.util.ProjectFiles;
 
 import java.io.IOException;
@@ -135,10 +136,7 @@ public final class RunStore {
      * 不需要另存一个「挂起中」的标记，也就不会出现标记和记录对不上的情况。
      */
     public Optional<RunRecord> suspended() {
-        List<RunRecord> records = readAll();
-        return !records.isEmpty() && NEEDS_CONTEXT.equals(records.get(0).status())
-                ? Optional.of(records.get(0))
-                : Optional.empty();
+        return latest().filter(record -> NEEDS_CONTEXT.equals(record.status()));
     }
 
     /**
@@ -150,8 +148,19 @@ public final class RunStore {
      * 屏幕上那份清单本来就是最新一次跑出来的。
      */
     public String latestId() {
-        List<RunRecord> records = readAll();
-        return records.isEmpty() ? "" : records.get(0).id();
+        return latest().map(RunRecord::id).orElse("");
+    }
+
+    /**
+     * 最新那条记录本身；一条都没有时是空的。
+     *
+     * <p>「最新那条」只有这一处算（{@link #latestId()} 与 {@link #suspended()} 都走它）：
+     * 读盘 + 取第一条写三遍的话，日后「哪条算最新」的口径一改，就会有一处漏改——
+     * 而漏的那处不会报错，只会安安静静地看错一条记录。
+     */
+    public Optional<RunRecord> latest() {
+        // readAll() 已按文件名（= 时间戳）倒序，所以第一条就是最新那条
+        return readAll().stream().findFirst();
     }
 
     /**
@@ -169,6 +178,56 @@ public final class RunStore {
             count++;
         }
         return count;
+    }
+
+    /**
+     * 把「人勾中的那几条失败」变成这一轮真正要喂给开发的那一段（十五.7 的固定模板）。
+     *
+     * <p>原料全在<b>上一轮那条留档</b>里（用例清单、失败清单、目标文件），所以拼法挂在
+     * 「读留档」这一层：界面只发编号（{@code refeed: [7,8]}）、命令行只写编号（{@code --refeed 7,8}），
+     * 内容一律由引擎从事实里拼。<b>这是两条路唯一的一份实现</b>——谁在自己那边拼一段文本，
+     * 谁就在把「回喂了什么」交给一个可以旧、可以被改坏的调用方（实测过界面上「已回喂」是假的：
+     * 引擎里根本没有这条路）。
+     *
+     * <p>勾中的编号在上一轮那份清单里找不到时<b>不拦</b>：人点的是「这几条要修」，
+     * {@link Refeed#of} 会把找不到的那几条如实标出来（「清单里没有这一条」）——
+     * 为一次对不上号拒绝整轮，代价比喂一条带说明的记录大得多。
+     *
+     * @param picked 人勾中的用例编号；空表示这一次不是「下一轮」（{@link Refeed#none()}）
+     * @throws IllegalStateException 勾了编号、但上一轮压根没有可回喂的失败清单
+     */
+    public Refeed refeed(List<Integer> picked) {
+        if (picked == null || picked.isEmpty()) {
+            return Refeed.none();
+        }
+        RunRecord latest = tested();
+        return Refeed.of(latest.testCases(), latest.tests(), latest.targets(), picked);
+    }
+
+    /**
+     * 上一轮失败清单里的<b>全部</b>失败用例编号（升序）——命令行上的 {@code --refeed all} 就是它。
+     *
+     * <p>判据和界面上的「全选」同一个：失败清单里报出来的那些编号。界面上那枚按钮在界面里算，
+     * 命令行在引擎里算，两边都不许另想一套「哪些算失败」。
+     *
+     * @throws IllegalStateException 上一轮压根没有可回喂的失败清单
+     */
+    public List<Integer> failingCases() {
+        return tested().tests().failingCases();
+    }
+
+    /**
+     * 上一轮那条留档，前提是它<b>跑过测试</b>——没有测试结论就没有可回喂的东西。
+     *
+     * <p>拒绝而不是「喂一段空的」：一次什么都没喂进去的运行看起来和正常的运行一模一样，
+     * 而用户点「下一轮」要的正是那几条失败，白跑一轮的代价比一句拒绝大得多。
+     */
+    private RunRecord tested() {
+        RunRecord latest = latest().orElse(null);
+        if (latest == null || latest.tests() == null) {
+            throw new IllegalStateException("没有可回喂的失败清单：上一轮没有跑过测试。");
+        }
+        return latest;
     }
 
     /**

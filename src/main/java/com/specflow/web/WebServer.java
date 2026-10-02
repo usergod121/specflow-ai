@@ -537,13 +537,15 @@ public final class WebServer implements AutoCloseable {
     /**
      * 检查阶段：同步返回一份实现方案。
      *
-     * <p>分成三块发出去：{@code plan} 是模型说的，{@code audit} 是机器查出来的
-     * 「方案执行不了的地方」，{@code stepAudit} 是机器查出来的「施工单执行不了的地方」。
-     * 界面上只有那两块 {@code audit} 有资格拦人——模型的自评只配当提示。
+     * <p>分成四块发出去：{@code plan} 是模型说的，{@code audit} 是机器查出来的
+     * 「方案执行不了的地方」，{@code stepAudit} 是机器查出来的「施工单执行不了的地方」，
+     * {@code coverage} 是机器数出来的「哪条验收标准一条用例都没覆盖」。
+     * 界面上只有那两块 {@code audit} 有资格拦人——模型的自评只配当提示，
+     * 覆盖那两个计数连拦人都不配（用例是证据，不是门槛）。
      *
-     * <p>两块审查<b>都要发</b>：它们在界面上是两个闸门（一处是「这些文件改不了」，
-     * 另一处是「这几步做不了」），少发一块，那一条硬拦就一声不响地失效了——
-     * 引擎照判、留档照写，只有用户看不到，而两边的测试各自都还是绿的。
+     * <p>四块<b>都要发</b>：它们在界面上是四个位置（两处闸门 + 通过率旁边那两个计数），
+     * 少发一块，那一条核对就一声不响地失效了——引擎照判、留档照写，只有用户看不到，
+     * 而两边的测试各自都还是绿的。
      */
     private void review(OpenProject project, HttpExchange exchange) throws IOException {
         RunRequest request = Http.readJson(exchange, RunRequest.class);
@@ -553,7 +555,7 @@ public final class WebServer implements AutoCloseable {
         project.requireOpen();
         ReviewOutcome outcome = project.runs().review(request);
         Http.sendJson(exchange, 200, Map.of("plan", outcome.plan(), "audit", outcome.audit(),
-                "stepAudit", outcome.stepAudit()));
+                "stepAudit", outcome.stepAudit(), "coverage", outcome.coverage()));
     }
 
     /**

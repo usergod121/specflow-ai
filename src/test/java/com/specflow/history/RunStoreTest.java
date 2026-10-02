@@ -76,8 +76,9 @@ class RunStoreTest {
         return new RunRecord(id, "2026-01-01T00:00", status, null, "改点东西", List.of(),
                 List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of(),
                 List.of(), null, List.of(), null, null,
-                // 判决、收场、重新生成过哪几份产物：都是跑完之后人写的那几笔，直接造时留空
-                null, null, null, List.of());
+                // 判决、收场、重新生成过哪几份产物：都是跑完之后人写的那几笔，直接造时留空。
+                // 覆盖核对、回喂、「它没有改动」这三笔同理：这一条不涉及测试阶段
+                null, null, null, List.of(), null, null, null);
     }
 
     @Test

@@ -26,8 +26,10 @@ import com.specflow.spec.Spec;
 import com.specflow.spec.VerifySpec;
 import com.specflow.template.TemplateRegistry;
 import com.specflow.tests.EntryScripts;
+import com.specflow.tests.Refeed;
 import com.specflow.tests.TestOutcome;
 import com.specflow.tests.TestSettings;
+import com.specflow.util.SafePathResolver;
 import com.specflow.verify.CompileVerifier;
 import com.specflow.verify.VerificationContext;
 import com.specflow.verify.VerificationResult;
@@ -75,6 +77,17 @@ class DevelopmentAgentTest {
     /** 系统提示词里那个产物目录：测试产物的路径带时间戳，只有从这里读得到。 */
     private static final java.util.regex.Pattern ARTIFACT_DIRECTORY =
             java.util.regex.Pattern.compile("tools/\\d{8}-\\d{6}(-\\d+)?");
+
+    /**
+     * 系统提示词里那几个<b>入口脚本</b>的完整路径（宿主上是 {@code run.cmd}、容器里是 {@code run.sh}）。
+     *
+     * <p>协议里把它写得明明白白，假模型照读就是了——按本机平台写死的话，
+     * 「环境就绪、脚本进容器跑」那条路会交出一份 {@code run.cmd}，而引擎要的是 {@code run.sh}。
+     * 文件名本身只含 ASCII，所以这个正则在中文提示词里也认得出（示例里那个
+     * {@code tools/<时间戳>/测试文件名} 因为带中文，不会被匹配到）。
+     */
+    private static final java.util.regex.Pattern ENTRY_PATH =
+            java.util.regex.Pattern.compile("tools/\\d{8}-\\d{6}(-\\d+)?/[A-Za-z0-9._-]+\\.(cmd|sh)");
 
     @BeforeEach
     void setUp() throws IOException {
@@ -441,6 +454,97 @@ class DevelopmentAgentTest {
         assertThat(llm.patches().get(0).get(1).content()).doesNotContain("已确认的实现方案");
     }
 
+    // ---------- 回喂给开发（十五.6 第一条路） ----------
+
+    /**
+     * 回喂那一段的位置：<b>需求 → 施工单 → 上一轮的测试失败</b>。
+     *
+     * <p>顺序不是排版问题：排在最前会盖过需求本身，排在施工单前面又会让它以为先改代码再对单子。
+     * 放在最后，它才是「按这份单子做，顺带把这几条修掉」——而这正是这条路的全部意思。
+     */
+    @Test
+    @DisplayName("回喂那一段拼在最后：需求 → 施工单 → 上一轮的测试失败")
+    void appendsRefeedAfterThePlan() {
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(0, "PASS | 1"));
+        PlanReview approved = planWithCases();
+        Refeed refeed = refeed();
+
+        agent(llm, new ScriptedVerifier(passed())).run(TestSpecs.spec(List.of("Foo.java")),
+                approved, refeed);
+
+        String userMessage = llm.patches().get(0).get(1).content();
+        assertThat(userMessage).contains("## 需求").contains("已确认的实现方案").contains(Refeed.HEADING);
+        assertThat(userMessage.indexOf("## 需求"))
+                .isLessThan(userMessage.indexOf("已确认的实现方案"));
+        assertThat(userMessage.indexOf("已确认的实现方案"))
+                .as("回喂在施工单之后").isLessThan(userMessage.indexOf(Refeed.HEADING));
+    }
+
+    @Test
+    @DisplayName("没有回喂时提示词里不多那一段（每一轮都带着它就成了噪声）")
+    void omitsRefeedSectionWhenNotRefeeding() {
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(0, "PASS | 1"));
+
+        agent(llm, new ScriptedVerifier(passed())).run(TestSpecs.spec(List.of("Foo.java")),
+                planWithCases());
+
+        assertThat(llm.patches().get(0).get(1).content()).doesNotContain(Refeed.HEADING);
+    }
+
+    /**
+     * 「它没有改动」这一笔要落进留档。
+     *
+     * <p>实测里那一轮回喂，模型把文件<b>原样再交了一遍</b>（写入内容与旧版逐字相同、
+     * diff 为空），而留档只写着「已写入 1 个文件」——和真改过长得一模一样，
+     * 人点完「下一轮」看不出它其实什么都没做。判据是引擎算的（{@link Refeed#unchanged}）。
+     */
+    @Test
+    @DisplayName("回喂之后它没改动：留档里明写「它没有改动」")
+    void recordsThatTheModelChangedNothing() {
+        Spec spec = TestSpecs.spec(List.of("Foo.java"));
+        PlanReview approved = planWithCases();
+        // 交回来的内容与原文逐字相同：diff 会是空的（实测里它就是这么干的）
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 1;"),
+                artifactsPatch(0, "PASS | 1"));
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        Refeed refeed = refeed();
+
+        new DevelopmentAgent(root, ProjectConfig.DEFAULT, TemplateRegistry.empty(), llm,
+                List.of(new ScriptedVerifier(passed())),
+                RunRecorder.start(store, spec, approved, AgentListener.NOOP, refeed))
+                .run(spec, approved, refeed);
+
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+        assertThat(record.refeed()).as("回喂了哪几条、原文是什么，都要留档").isNotNull();
+        assertThat(record.refeed().cases()).containsExactly(1);
+        assertThat(record.refeed().text()).contains(Refeed.HEADING).contains("用例 1");
+        assertThat(record.unchanged()).as("它这一轮一个字节都没改").isTrue();
+    }
+
+    /** 回喂确实是产品代码真改了：不许标成「它没有改动」。 */
+    @Test
+    @DisplayName("回喂之后它真改了：不留「它没有改动」这一笔")
+    void doesNotClaimUnchangedWhenTheModelDidChange() {
+        Spec spec = TestSpecs.spec(List.of("Foo.java"));
+        PlanReview approved = planWithCases();
+        ScriptedLlm llm = new ScriptedLlm(patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(0, "PASS | 1"));
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        Refeed refeed = refeed();
+
+        new DevelopmentAgent(root, ProjectConfig.DEFAULT, TemplateRegistry.empty(), llm,
+                List.of(new ScriptedVerifier(passed())),
+                RunRecorder.start(store, spec, approved, AgentListener.NOOP, refeed))
+                .run(spec, approved, refeed);
+
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+        assertThat(record.unchanged()).as("这一处 diff 是真的，不能标成没改").isFalse();
+    }
+
     // ---------- 测试阶段：生成 → 跑脚本 → 看退出码 ----------
 
     @Test
@@ -467,22 +571,73 @@ class DevelopmentAgentTest {
     }
 
     /**
-     * 环境问题这一档和「测试没过」是两种收场：脚本压根没跑起来，磁盘上的改动也就没有
-     * 任何证据支撑，必须整轮回滚、把原始错误交给人——和编译那边判「缺依赖」是同一条路。
+     * 脚本自己说的「跑不起来」和「引擎亲见的环境起不来」是两种收场。
+     *
+     * <p>那一档（{@link #refusesIntegrationWithoutAnEnvironment}）要回滚；而这一档
+     * <b>只停下等人</b>：实测里脚本拿一句 {@code BLOCKED} 盖住了自己的编译错误，
+     * 旧实现无条件采信，整次回滚——编译通过的产品改动被撤掉、测试产物被删掉，
+     * 用户两个都看不到。现在：产物留着、改动留在磁盘上等人处置。
      */
     @Test
-    @DisplayName("测试跑不起来（环境问题）：整轮回滚，把原始错误交给人")
-    void rollsBackWhenTestsCannotRun() {
+    @DisplayName("脚本说跑不起来（BLOCKED）：不回滚、不删产物，只停下等人")
+    void doesNotRollBackWhenTheScriptSaysBlocked() {
+        // 三份同样的回复：跑不出来会**自动重试到上限**（这一批的第 6 条规则），
+        // 每一版都花一次真实调用，所以桩也得按版数给
         ScriptedLlm llm = new ScriptedLlm(
                 patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(2, "BLOCKED | javac not found"),
+                artifactsPatch(2, "BLOCKED | javac not found"),
                 artifactsPatch(2, "BLOCKED | javac not found"));
 
         AgentResult result = agent(llm, new ScriptedVerifier(passed()))
                 .run(TestSpecs.spec(List.of("Foo.java")), planWithCases());
 
-        assertThat(result.status()).isEqualTo(AgentResult.Status.NEEDS_ENVIRONMENT);
-        assertThat(read("Foo.java")).isEqualTo(ORIGINAL);
-        assertThat(result.detail()).contains("javac not found").contains("环境问题");
+        assertThat(result.status()).as("停在「测试没过」这一档：改动留着等人处置")
+                .isEqualTo(AgentResult.Status.TESTS_FAILED);
+        assertThat(read("Foo.java")).as("它说的话不足以把编译通过的产品改动撤掉")
+                .contains("int a = 2;");
+        assertThat(result.detail()).contains("javac not found").contains("脚本自己说它没跑起来");
+        assertThat(root.resolve("tools")).as("产物留着：人要看得见它写成什么样").exists();
+    }
+
+    /**
+     * <b>环境预热起不来不影响开发</b>（§18 的第 7 条）。
+     *
+     * <p>声明了环境、docker 却用不了时，旧行为是整次运行被拒（界面上 409），用户白等一轮。
+     * 现在：异步预热起不来就只记一句「环境不可用」，这次跳过集成、单元回退宿主照跑，
+     * 产品改动照旧留着等人处置——环境是这台机器的事，不是这次改动的结论。
+     */
+    @Test
+    @DisplayName("环境起不来不影响开发：记一句「环境不可用」，跳过集成、单元回退宿主")
+    void keepsGoingWhenTheEnvironmentCannotWarmUp() throws IOException {
+        Path declaration = root.resolve(EnvConfigLoader.relativePath());
+        Files.createDirectories(declaration.getParent());
+        Files.writeString(declaration, """
+                image: "x:1"
+                """);
+        Spec spec = TestSpecs.spec(List.of("Foo.java"));
+        PlanReview approved = planWithCases();
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                artifactsPatch(0, "PASS | 1"));
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        // docker 探得到、但 up 那条命令没有桩（等于「这台机器上起不来」）：预热会在毫秒级失败
+        FakeEnvironmentRunner runner = new FakeEnvironmentRunner("sf-whatever-app-1", false);
+
+        AgentResult result = new DevelopmentAgent(root, ProjectConfig.DEFAULT,
+                TemplateRegistry.empty(), llm, List.of(new ScriptedVerifier(passed())),
+                RunRecorder.start(store, spec, approved, AgentListener.NOOP),
+                new TestSettings(true), new TestEnvironment(root, runner)).run(spec, approved);
+
+        assertThat(result.status()).as("环境没起来不是这次改动的结论").isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(read("Foo.java")).contains("int a = 2;");
+        assertThat(result.verifications()).anySatisfy(verification ->
+                assertThat(verification.command()).as("回退宿主这件事要写在结果里").contains("宿主"));
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+        assertThat(record.environment()).as("留档里记着「环境不可用」这一笔").isNotNull();
+        assertThat(record.environment().detail())
+                .contains("环境不可用").contains("跳过集成").contains("回退到宿主");
     }
 
     /**
@@ -534,28 +689,48 @@ class DevelopmentAgentTest {
     // ---------- 测试环境（十五.5） ----------
 
     /**
-     * 勾了集成测试却没有环境声明：在<b>测试阶段</b>当场停下，而且算环境问题。
+     * 勾了集成测试却没有环境声明：在<b>测试阶段</b>当场停下，算环境问题，而且<b>不回滚</b>。
      *
      * <p>它不能算「测试代码写错了」——坏的不是模型写的东西，是这台机器上没有那套环境。
      * 分错档的代价不对称：判成测试代码问题，用户会去改一份本来就对的代码。
+     *
+     * <p>「不回滚」是用户 2026-10-02 拍板的那一条：硬判据（环境起不来 / 超时）同样<b>只停下</b>，
+     * 改动留在磁盘上进「待处置」、测试产物留在 {@code tools/} 里，由他决定保留还是撤回。
+     * 旧口径是机器替人把改动收掉，于是人手里什么都没剩——而机器判错方向的代价不对称。
      */
     @Test
-    @DisplayName("勾了集成测试但项目没声明环境：按环境问题收场，原始错误与待办都在")
+    @DisplayName("勾了集成测试但项目没声明环境：按环境问题收场，改动未回滚、进「待处置」")
     void refusesIntegrationWithoutAnEnvironment() {
         ScriptedLlm llm = new ScriptedLlm(
                 patch("int a = 1;", "int a = 2;"),
                 artifactsPatch(0, "PASS | 1"));
+        Spec spec = TestSpecs.spec(List.of("Foo.java"));
+        PlanReview approved = planWithCases();
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
 
         AgentResult result = new DevelopmentAgent(root, ProjectConfig.DEFAULT,
                 TemplateRegistry.empty(), llm, List.of(new ScriptedVerifier(passed())),
-                AgentListener.NOOP, new TestSettings(true), TestEnvironment.of(root))
-                .run(TestSpecs.spec(List.of("Foo.java")), planWithCases());
+                RunRecorder.start(store, spec, approved, AgentListener.NOOP),
+                new TestSettings(true), TestEnvironment.of(root)).run(spec, approved);
 
         assertThat(result.status()).isEqualTo(AgentResult.Status.NEEDS_ENVIRONMENT);
-        assertThat(result.detail()).contains("环境问题").contains("env.yaml");
-        assertThat(read("Foo.java")).as("环境问题整轮回滚").isEqualTo(ORIGINAL);
+        assertThat(result.detail())
+                .contains("环境起不来").contains("env.yaml")
+                .as("界面与留档读的都是这句话：它必须说清磁盘现在什么样")
+                .contains("改动未回滚").contains("等你处置");
+        assertThat(read("Foo.java")).as("硬判据只停下，不回滚")
+                .contains("int a = 2;");
         assertThat(root.resolve("tools")).as("没进到生成那一步，产物目录一个都不该有")
                 .doesNotExist();
+        // 「待处置」不是一句口号：快照改了名，界面上那枚「接受 / 中断」才有东西可依
+        assertThat(WorkspaceSnapshot.undisposed(new SafePathResolver(root),
+                root.resolve(SnapshotConfig.DEFAULT_DIR)))
+                .as("改动进了「待处置」：用户能保留也能撤回").hasSize(1);
+        RunRecord record = store.list().stream().findFirst().map(RunRecord.Summary::id)
+                .map(store::load).orElseThrow();
+        assertThat(record.status()).isEqualTo("NEEDS_ENVIRONMENT");
+        assertThat(record.detail()).as("留档里同样写着「未回滚」——事后翻记录的人只有它")
+                .contains("环境起不来").contains("改动未回滚");
     }
 
     /**
@@ -563,11 +738,17 @@ class DevelopmentAgentTest {
      *
      * <p>这条链上最容易漏的是「连接信息没送进去」——那样模型只能猜，而猜出来的连接串
      * 在换一台机器时全错（十五.5：它永远不用猜）。
+     *
+     * <p>这套假环境的容器名<b>故意不是这个 compose 项目的</b>：这样执行位置回退宿主
+     * （脚本会真的在本机跑一遍，拿到 PASS | 1），而「真的在容器里跑」由
+     * {@code RealDockerEnvironmentTest} 用真容器验。桩报「就绪」的话，引擎会把脚本
+     * 包成 {@code docker compose exec} 去执行，而这一步没有可注入的桩——那验的就不是
+     * 这一条的事了。
      */
     @Test
     @DisplayName("集成测试：先重置数据，再把连接信息交给测试代码，脚本按集成入口跑")
     void runsIntegrationAfterResettingTheEnvironment() throws IOException {
-        // 一套假的环境：探得到 docker、已经有 compose 文件、重置命令成功
+        // 一套假的环境：探得到 docker、up 起得来、已经有 compose 文件、重置命令成功
         Path envDir = root.resolve(ComposeFile.ROOT).resolve("20260930-120000");
         Files.createDirectories(envDir);
         Files.writeString(envDir.resolve(ComposeFile.NAME), "services: {}\n");
@@ -580,7 +761,7 @@ class DevelopmentAgentTest {
                 reset:
                   - "python -m clean-db"
                 """);
-        FakeEnvironmentRunner runner = new FakeEnvironmentRunner("sf-" + root.getFileName() + "-app-1");
+        FakeEnvironmentRunner runner = new FakeEnvironmentRunner("sf-not-this-project-app-1");
 
         ScriptedLlm llm = new ScriptedLlm(
                 patch("int a = 1;", "int a = 2;"),
@@ -595,6 +776,8 @@ class DevelopmentAgentTest {
         assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
         assertThat(runner.ran("exec -T app sh -c python -m clean-db"))
                 .as("每次跑之前都要重置数据，不能省").isTrue();
+        assertThat(llm.system()).as("连接信息原样进提示词：它永远不用猜")
+                .contains("DB_HOST").contains("db");
         // 集成入口脚本确实被跑了（假模型按协议写了它，引擎要认那个文件）
         assertThat(result.verifications()).anySatisfy(verification ->
                 assertThat(verification.verifier()).isEqualTo("测试脚本"));
@@ -1469,6 +1652,22 @@ class DevelopmentAgentTest {
         }
     }
 
+    /**
+     * 一份「上一轮测试失败」的回喂内容：引擎按十五.7 的固定模板拼出来的那一段。
+     *
+     * <p>直接用 {@link Refeed#of} 拼，而不是在测试里手写一段文案——这样测的是
+     * 「引擎拼出来的东西被放进了提示词、也被落了档」，而不是测试自己编的那句话。
+     */
+    private static Refeed refeed() {
+        TestOutcome tests = new TestOutcome("tools/20260101-000000",
+                List.of("tools/20260101-000000/run.cmd"), 1, 1,
+                VerificationResult.failed("测试脚本", "run.cmd", "退出码 1"),
+                List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.ASSERTION, "1",
+                        "a == 2", "a == 1", "代码错了")),
+                List.of(new TestOutcome.CaseResult(1, false)), List.of());
+        return Refeed.of(planWithCases().cases(), tests, List.of("Foo.java"), List.of(1));
+    }
+
     private DevelopmentAgent agent(LlmClient llm, Verifier verifier) {
         return new DevelopmentAgent(root, ProjectConfig.DEFAULT, TemplateRegistry.empty(),
                 llm, List.of(verifier));
@@ -1615,10 +1814,16 @@ class DevelopmentAgentTest {
         }
 
         /**
-         * 填掉回复里的那两个占位符。
+         * 填掉回复里的那几个占位符。
          *
          * <p>测试产物的目录带时间戳，用例写不出它——而真模型是从系统提示词里读到这个目录的，
-         * 假模型照做才像真的。占位符只在这两处替换，别的回复原样返回。
+         * 假模型照做才像真的。占位符只在这几处替换，别的回复原样返回。
+         *
+         * <p><b>入口脚本的名字也从提示词里读</b>，不按本机平台写死：这次脚本在哪儿跑决定它叫
+         * {@code run.cmd} 还是 {@code run.sh}（宿主 / 容器，见 {@code ExecutionLocation}），
+         * 而协议里把这两个路径写得明明白白。写死的话，「环境就绪、脚本进容器跑」那条路
+         * 会收到一份 {@code run.cmd}，引擎要的是 {@code run.sh}——整批产物被拒，
+         * 而报出来的原因是「没给入口脚本」（测试自己的错，不是被测代码的）。
          */
         private static String fill(String response, List<ChatMessage> messages) {
             if (!response.contains("{{")) {
@@ -1630,9 +1835,25 @@ class DevelopmentAgentTest {
                 throw new IllegalStateException("系统提示词里没有产物目录：\n" + system);
             }
             String dir = matcher.group();
+            List<String> entries = entryPaths(system);
+            if (entries.isEmpty()) {
+                throw new IllegalStateException("系统提示词里没有入口脚本的路径：\n" + system);
+            }
             return response.replace("{{DIR}}", dir)
-                    .replace("{{ENTRY}}", dir + "/" + EntryScripts.name())
-                    .replace("{{ITENTRY}}", dir + "/" + EntryScripts.integrationName());
+                    .replace("{{ENTRY}}", entries.get(0))
+                    .replace("{{ITENTRY}}", entries.size() > 1 ? entries.get(1) : entries.get(0));
+        }
+
+        /** 提示词里点名的入口脚本路径，按出现顺序去重：第一份是单元、第二份是集成。 */
+        private static List<String> entryPaths(String system) {
+            java.util.List<String> found = new java.util.ArrayList<>();
+            java.util.regex.Matcher matcher = ENTRY_PATH.matcher(system);
+            while (matcher.find()) {
+                if (!found.contains(matcher.group())) {
+                    found.add(matcher.group());
+                }
+            }
+            return found;
         }
 
         /** 认这次调用要的是不是「只产施工单」的那份协议。 */
@@ -1650,6 +1871,22 @@ class DevelopmentAgentTest {
         /** 只要补丁的那几次调用——断言「第几轮」时该数的是它们。 */
         List<List<ChatMessage>> patches() {
             return patches;
+        }
+
+        /**
+         * 最近一次调用收到的系统提示词。
+         *
+         * <p>「连接信息有没有送进去」「入口脚本叫什么」这两件事都只能从它看——
+         * 它们不在补丁里，而在发给模型的那一段话里。
+         */
+        String system() {
+            List<ChatMessage> last = calls.get(calls.size() - 1);
+            for (ChatMessage message : last) {
+                if (ChatMessage.SYSTEM.equals(message.role())) {
+                    return message.content();
+                }
+            }
+            return "";
         }
     }
 
@@ -1767,11 +2004,24 @@ class DevelopmentAgentTest {
                 new com.specflow.env.FakeCommandRunner();
 
         FakeEnvironmentRunner(String container) {
+            this(container, true);
+        }
+
+        /**
+         * @param upWorks 起环境那条命令成不成。给 {@code false} 就是「这台机器上起不来」——
+         *                预热失败那一档（环境不可用、跳过集成）只有它能造出来
+         */
+        FakeEnvironmentRunner(String container, boolean upWorks) {
             delegate.ok("version", "fake docker 1.0")
                     .ok("ps -a", container)
                     .ok("volume ls", container.replace("-app-1", "_data"))
                     .ok("network ls", container.replace("-app-1", "_default"))
                     .ok("exec -T app", "");
+            if (upWorks) {
+                // 预热那条路（开发一开跑就异步起环境）：up 起得来，否则
+                // 「先重置数据」那一条测的就不是重置，而是「环境不可用」那一档了
+                delegate.ok("up -d --wait", "");
+            }
         }
 
         boolean ran(String fragment) {

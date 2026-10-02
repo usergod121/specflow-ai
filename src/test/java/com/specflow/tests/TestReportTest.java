@@ -12,9 +12,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 分档的判据与逐条用例的账。
  *
- * <p>这是本批里唯一「机器自己下判断」的地方，所以每条判据都要有个反向的例子钉在旁边：
- * 判成环境问题会<b>回滚</b>（把编译通过的改动一起撤掉），判成测试代码问题只是标一下。
- * 判错的代价不对称，规则就得写窄。
+ * <p>这是本批里唯一「机器自己下判断」的地方，所以每条判据都要有个反向的例子钉在旁边。
+ * 这一批把分档降了级：<b>只有两条硬判据是机器说了算的</b>——命令/环境起不来、超时；
+ * 其余每一档（脚本说跑不起来、断言没过、它的代码编不过）都只摆事实，<b>不停机、不回滚、
+ * 不自动回喂</b>。判错的代价不对称（实测：一次误判把编译通过的产品改动和测试代码一起收掉），
+ * 规则就得写窄。
  */
 @DisplayName("测试结果分档")
 class TestReportTest {
@@ -66,11 +68,15 @@ class TestReportTest {
 
     /**
      * 这一条是「与产品代码错分开标记」的落点：非 0 退出、却一行 FAIL 都没有，
-     * 说明它压根没跑到断言——多半是测试代码自己编译不过。
+     * 说明它压根没跑到断言——多半是它写的测试代码编不过。
+     *
+     * <p>它<b>不是</b>环境问题（不回滚），也<b>不是</b>断言没过（人不用去翻产品代码），
+     * 而引擎亲见的事实只有一件：<b>一条用例的结论都没跑出来</b>。所以标签按现象写，
+     * 不替它判「编译不过」这个原因。
      */
     @Test
-    @DisplayName("非 0 退出但一行 FAIL 都没有 → 测试代码问题，不是产品代码错")
-    void treatsSilentFailureAsTestCodeProblem() {
+    @DisplayName("非 0 退出但一条结论都没有 → 「它的代码编不过」，不是产品代码错、也不回滚")
+    void treatsNoConclusionAsUnrunnable() {
         TestOutcome outcome = conclude(1, """
                 Check.java:12: error: cannot find symbol
                   symbol: method findByCode(java.lang.String)
@@ -78,43 +84,54 @@ class TestReportTest {
                 """);
 
         assertThat(outcome.failures()).singleElement().satisfies(failure -> {
-            assertThat(failure.kind()).isEqualTo(TestOutcome.Failure.Kind.TEST_CODE);
+            assertThat(failure.kind()).isEqualTo(TestOutcome.Failure.Kind.UNRUNNABLE);
+            assertThat(failure.kind().label()).isEqualTo("它的代码编不过");
             assertThat(failure.actual()).contains("cannot find symbol");
         });
-        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.TEST_CODE);
-        assertThat(outcome.detail()).contains("测试代码本身").contains("不是产品代码");
+        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.UNRUNNABLE);
+        assertThat(outcome.environmental()).as("这不是「环境起不来」，不许连累回滚").isFalse();
+        assertThat(outcome.detail()).contains("它的代码编不过")
+                .contains("一条用例的结论都没跑出来");
     }
 
     /**
-     * 「测试代码引用了不存在的 API」不能收进环境问题：那会触发回滚。
+     * 「测试代码引用了不存在的 API」不能收进硬判据：那一档会触发回滚。
      * 编译器的原话长得就像缺东西，所以这条要单独钉住。
      */
     @Test
-    @DisplayName("测试代码里的「程序包不存在 / 找不到符号」不算环境问题")
+    @DisplayName("测试代码里的「程序包不存在 / 找不到符号」不算环境起不来")
     void compileErrorsAreNotEnvironment() {
         assertThat(TestReport.environmentEvidence("Check.java:3: error: 程序包 com.demo 不存在")).isNull();
         assertThat(TestReport.environmentEvidence("error: cannot find symbol")).isNull();
         TestOutcome outcome = conclude(1, "Check.java:3: error: 程序包 com.demo 不存在\n");
         assertThat(outcome.environmental()).isFalse();
-        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.TEST_CODE);
+        assertThat(outcome.hardStopped()).isFalse();
+        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.UNRUNNABLE);
     }
 
+    /**
+     * 脚本打的那句 {@code BLOCKED} 是<b>它的说法</b>，引擎只转述。
+     *
+     * <p>实测里它把「我写的测试代码编不过」也写成了 {@code BLOCKED}，而旧实现无条件采信，
+     * 于是整次回滚：编译通过的产品改动被撤掉、测试产物被删掉，用户两个都看不到。
+     */
     @Test
-    @DisplayName("脚本打印 BLOCKED 就是环境问题：它自己说连跑都没跑起来")
-    void readsBlockedLineAsEnvironment() {
+    @DisplayName("脚本打印 BLOCKED：只记它的说法，不停机、不回滚")
+    void readsBlockedLineAsTheScriptsOwnWord() {
         TestOutcome outcome = conclude(2,
                 "BLOCKED | 没有找到 pytest，装上再跑：pip install pytest\n");
 
         assertThat(outcome.failures()).singleElement().satisfies(failure -> {
-            assertThat(failure.kind()).isEqualTo(TestOutcome.Failure.Kind.ENVIRONMENT);
+            assertThat(failure.kind()).isEqualTo(TestOutcome.Failure.Kind.BLOCKED);
             assertThat(failure.actual()).contains("没有找到 pytest");
         });
-        assertThat(outcome.environmental()).isTrue();
-        assertThat(outcome.detail()).contains("环境问题");
+        assertThat(outcome.environmental()).as("它说的话不等于引擎亲见的环境起不来").isFalse();
+        assertThat(outcome.hardStopped()).isFalse();
+        assertThat(outcome.detail()).contains("脚本自己说它没跑起来").contains("改动没有回滚");
     }
 
     @Test
-    @DisplayName("输出里有「命令不存在 / 连不上」也算环境问题（脚本忘了打印 BLOCKED 时的兜底）")
+    @DisplayName("输出里有「命令不存在 / 连不上」也只算它的说法（脚本忘了打印 BLOCKED 时的兜底）")
     void readsEnvironmentEvidenceFromOutput() {
         assertThat(TestReport.environmentEvidence("'javac' 不是内部或外部命令，也不是可运行的程序"))
                 .contains("不是内部或外部命令");
@@ -124,7 +141,70 @@ class TestReportTest {
                 .contains("Connection refused");
 
         TestOutcome outcome = conclude(1, "'mvn' 不是内部或外部命令，也不是可运行的程序\n");
-        assertThat(outcome.environmental()).isTrue();
+        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.BLOCKED);
+        assertThat(outcome.environmental()).as("字样是猜的，不是引擎亲见的那一档").isFalse();
+    }
+
+    /**
+     * 这一批最要紧的一条：<b>机器说了算的只有两条</b>——环境起不来、超时。
+     * 其余每一档都可能是机器看走眼，而判错的代价是「把改动收掉，人手里什么都不剩」。
+     *
+     * <p>而<b>停机不等于回滚</b>：这两档同样只说「别再往下跑了」，磁盘上的改动与测试产物
+     * 都留着等人处置（用户 2026-10-02 拍板）。所以这两条各自还要钉住那句收场话——
+     * 界面与留档读的都是它，它不说清「未回滚」，人就不知道去「待处置」里找那份改动。
+     */
+    @Test
+    @DisplayName("硬判据只有两条：引擎亲见的起不来与超时；其余各档一律不停机")
+    void onlyTwoKindsAreHard() {
+        TestOutcome engineSawIt = TestReport.conclude(
+                new TestScriptVerifier.ScriptResult(VerificationResult.failed("测试脚本", "run.cmd",
+                        "入口脚本起不来：Cannot run program", VerificationResult.Kind.ENVIRONMENT),
+                        TestScriptVerifier.NO_EXIT_CODE), "tools/x", List.of(), 1);
+        assertThat(engineSawIt.hardStopped()).isTrue();
+        assertThat(engineSawIt.environmental()).isTrue();
+        assertThat(engineSawIt.detail())
+                .as("硬判据那一档的收场话：停下 + 现场留着等人处置")
+                .contains("环境起不来").contains("改动未回滚").contains("等你处置")
+                .contains("入口脚本起不来");
+
+        TestOutcome timedOut = TestReport.conclude(
+                new TestScriptVerifier.ScriptResult(VerificationResult.failed("测试脚本", "run.cmd",
+                        "超过 300 秒未结束", VerificationResult.Kind.TIMEOUT),
+                        TestScriptVerifier.NO_EXIT_CODE), "tools/x", List.of(), 1);
+        assertThat(timedOut.hardStopped()).isTrue();
+        assertThat(timedOut.environmental()).as("超时不走「环境问题」那条路").isFalse();
+        assertThat(timedOut.detail())
+                .as("超时同样不回滚、现场留着").contains("没回滚").contains("等你处置");
+
+        assertThat(conclude(2, "BLOCKED | 连不上库\n").hardStopped())
+                .as("脚本说的跑不起来不是硬判据").isFalse();
+        assertThat(conclude(1, "FAIL | 1 | a | b | 代码错了\n").hardStopped()).isFalse();
+        assertThat(conclude(1, "error: cannot find symbol\n").hardStopped())
+                .as("它的代码编不过也不停机：那正是要自动重试的那一档").isFalse();
+        assertThat(TestReport.rejected(1, "路径越界").hardStopped()).isFalse();
+    }
+
+    /**
+     * 自动重试那一条判据（见 {@code TestAgent}）就落在这个方法上：
+     * <b>脚本跑了、交了退出码，却一条用例的结论都没报出来</b>。
+     * 三条缺一不可，每一条漏掉都会让重试花在错的地方。
+     */
+    @Test
+    @DisplayName("「一条结论都没报出来」：退出码拿得到、没有结论、也没命中硬判据")
+    void detectsRunsThatReportedNothing() {
+        assertThat(TestReport.ranWithoutConclusions(conclude(1, "error: cannot find symbol\n")))
+                .as("跑完了、非 0 退出、一条结论都没有").isTrue();
+        assertThat(TestReport.ranWithoutConclusions(conclude(1, "BLOCKED | 连不上库\n")))
+                .as("脚本说自己跑不起来，同样是「没有结论」").isTrue();
+        assertThat(TestReport.ranWithoutConclusions(conclude(1, "FAIL | 1 | a | b | 代码错了\n")))
+                .as("交了结论：能跑但没过，那是交给人那一档，不自动重跑").isFalse();
+        assertThat(TestReport.ranWithoutConclusions(conclude(0, "PASS | 1\n")))
+                .as("过了的更不用重试").isFalse();
+        assertThat(TestReport.ranWithoutConclusions(TestReport.rejected(1, "路径越界")))
+                .as("脚本压根没被执行（退出码拿不到）：那是「没跑」，不是「跑不起来」").isFalse();
+        assertThat(TestReport.ranWithoutConclusions(conclude(0, "all passed\n")))
+                .as("退出 0 却一条都没报：它连结论都没给，也要重来一版").isTrue();
+        assertThat(TestReport.ranWithoutConclusions(null)).isFalse();
     }
 
     /**
@@ -191,15 +271,16 @@ class TestReportTest {
     }
 
     @Test
-    @DisplayName("退出码 0 但打了 BLOCKED 行：算环境问题，不是通过")
-    void zeroExitWithBlockedLineIsEnvironment() {
+    @DisplayName("退出码 0 但打了 BLOCKED 行：不算通过，但按「它的说法」记，不停机")
+    void zeroExitWithBlockedLineIsNotAPass() {
         TestOutcome outcome = TestReport.conclude(
                 new TestScriptVerifier.ScriptResult(
                         VerificationResult.passed("测试脚本", "run.cmd", "BLOCKED | javac not found\n"), 0),
                 "tools/20260930-120000", List.of(), 1);
 
         assertThat(outcome.passed()).isFalse();
-        assertThat(outcome.environmental()).isTrue();
+        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.BLOCKED);
+        assertThat(outcome.hardStopped()).isFalse();
     }
 
     /**
@@ -223,7 +304,7 @@ class TestReportTest {
     }
 
     @Test
-    @DisplayName("脚本压根起不来（引擎看见的）也是环境问题，原话要带着")
+    @DisplayName("脚本压根起不来（引擎看见的）才是硬判据：原话要带着")
     void keepsEngineSideEnvironmentFailure() {
         TestOutcome outcome = TestReport.conclude(
                 new TestScriptVerifier.ScriptResult(VerificationResult.failed("测试脚本",
@@ -378,6 +459,20 @@ class TestReportTest {
             assertThat(failure.expected()).isEqualTo("期望值");
             assertThat(failure.actual()).isEmpty();
         });
+    }
+
+    @Test
+    @DisplayName("有 FAIL 行就按断言没过记：哪怕它下面跟了一行 BLOCKED")
+    void failLineWinsOverBlockedLine() {
+        TestOutcome outcome = conclude(1, """
+                FAIL | 1 | 期望 | 实际 | 代码错了
+                BLOCKED | 后半段连不上库
+                """);
+
+        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.ASSERTION);
+        assertThat(outcome.failures()).singleElement()
+                .satisfies(failure -> assertThat(failure.kind())
+                        .isEqualTo(TestOutcome.Failure.Kind.ASSERTION));
     }
 
     @Test

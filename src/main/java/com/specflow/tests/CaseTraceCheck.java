@@ -26,7 +26,9 @@ import java.util.regex.Pattern;
  * <ol>
  *   <li>{@link Kind#MISSING 漏实现}：清单上有、代码里没扫到（锚点只写了一半也算：只有 CASE 没有 expect）；</li>
  *   <li>{@link Kind#EXTRA 清单外乱写}：代码里有、清单上没有；</li>
- *   <li>{@link Kind#DUPLICATE 重复实现}：同一个编号出现了多次；</li>
+ *   <li>{@link Kind#DUPLICATE 重复实现}：<b>同一个文件里</b>同一个编号出现了多次。
+ *       跨文件不算：单元与集成各写一遍是正常的（实测里最容易撞上的就是这一条，
+ *       而它一撞上整批测试就不跑了）；</li>
  *   <li>{@link Kind#CHANGED 偷偷改期望}：代码里的 expect 与清单的期望，归一化空白后逐字不等。</li>
  * </ol>
  * 任何一条不通过，这批测试就<b>不跑</b>：调用方拿 {@link Report#ok()} 拒绝执行，把差异摆给人看，
@@ -201,9 +203,20 @@ public final class CaseTraceCheck {
                 continue;
             }
             links.add(new Link(index, first.file(), first.line()));
-            if (spots.size() > 1) {
-                findings.add(new Finding(Kind.DUPLICATE, index, first.show(),
-                        "用例 " + index + " 出现了 " + spots.size() + " 次：" + locations(spots)));
+            // 重复<b>按文件判</b>：同一个编号出现在不同文件里不算重复。
+            // 单元与集成本来就是两条路，同一条用例在两边各写一遍是正常的写法（十五.4 的两个入口），
+            // 而旧实现把「整批产物里出现两次」一律判成重复——真模型实测里最容易撞上的就是这一条，
+            // 撞上的后果是「整批测试一次都不跑」，代价远大于它挡住的那些真重复。
+            // 真正要挡的是「同一个文件里把同一条用例写了两遍」：那才会出现
+            // 一处过一处不过、谁也说不清该信哪个的局面。
+            for (Map.Entry<String, List<Spot>> inFile : byFile(spots).entrySet()) {
+                if (inFile.getValue().size() <= 1) {
+                    continue;
+                }
+                findings.add(new Finding(Kind.DUPLICATE, index, inFile.getValue().get(0).show(),
+                        "用例 " + index + " 在同一个文件 " + inFile.getKey() + " 里出现了 "
+                                + inFile.getValue().size() + " 次：" + locations(inFile.getValue())
+                                + "（同一个文件里一条用例只该有一处断言）"));
             }
             for (String written : anchors.expects) {
                 // 清单里没写期望时不做比较：没有「照抄」的对象，判它改了期望是替清单背锅
@@ -311,5 +324,18 @@ public final class CaseTraceCheck {
             out.append(out.length() == 0 ? "" : "、").append(spot.show());
         }
         return out.toString();
+    }
+
+    /**
+     * 这些锚点按文件分组，文件顺序按第一次出现的位置（结论因此是稳定的）。
+     *
+     * <p>判重只看组内：判据是「同一个文件里出现了几次」，跨文件多少次都不算（见 {@link Kind#DUPLICATE}）。
+     */
+    private static Map<String, List<Spot>> byFile(List<Spot> spots) {
+        Map<String, List<Spot>> grouped = new LinkedHashMap<>();
+        for (Spot spot : spots) {
+            grouped.computeIfAbsent(spot.file(), key -> new ArrayList<>()).add(spot);
+        }
+        return grouped;
     }
 }
