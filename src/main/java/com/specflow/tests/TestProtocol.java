@@ -368,7 +368,35 @@ public final class TestProtocol {
                 + "PASS（过了）或 FAIL（没过）里——引擎靠它对回清单，也算得出「验了几条」。"
                 + "脚本报出来的编号必须是这一栏里的编号：报了清单上没有的编号，引擎会把它"
                 + "单独报成「清单外用例」，既不算通过也不算没过。\n"
-                + "另外，上面第 3 条那行锚点里的 expect 要照抄这里的「期望什么」原文。");
+                + "另外，上面第 3 条那行锚点里的 expect 要照抄这里的「期望什么」原文。\n"
+                // 「怎么测」是第二段补的，说清它和期望的来历不同：期望在看过代码之前就定死了
+                // （那正是它可信的原因），怎么测是看过这次改动之后补的
+                + "「怎么测」那一栏是看过这次改动之后补的（第二段）；「期望什么」是需求那边定下来的，"
+                + "一个字都没跟着代码改过——别拿现在的实现去改它。");
+        return out.toString();
+    }
+
+    /**
+     * <b>第一段</b>定下来的那几栏，发给第二段看。
+     *
+     * <p>它<b>没有「怎么测」</b>：在第二段之前那一栏本来就是空的（第一段还没看过代码，
+     * 写出来的「怎么测」只能是它照着脑子里的实现猜的）。把它印成表头反而会诱导模型
+     * 顺手填一栏上去，而第二段的产物只该是那一栏。
+     *
+     * <p>为什么连「要测什么 / 期望什么 / 验收标准」一起再给它一遍、而不只给编号：
+     * 它要<b>照抄期望</b>，那就有个「照抄的对象」必须摆在眼前——只给编号，它只能凭记忆写，
+     * 而机器会逐字比。这个比较是这一段唯一不能出错的地方。
+     */
+    public static String firstStageList(List<PlanReview.TestCase> cases) {
+        StringBuilder out = new StringBuilder("## 第一段定下来的清单（期望照抄这里的原文）\n")
+                .append("编号").append(" | ").append("要测什么").append(" | ").append("分级")
+                .append(" | ").append("期望什么").append(" | ").append("对应哪条验收标准").append('\n');
+        for (PlanReview.TestCase testCase : cases) {
+            out.append(testCase.index()).append(" | ").append(testCase.what()).append(" | ")
+                    .append(testCase.level().label()).append(" | ").append(testCase.expected())
+                    .append(" | ").append(testCase.acceptance()).append('\n');
+        }
+        out.append("\n你只补「怎么测」那一栏，行格式是：编号 | 怎么测 | 期望（照抄上面这一栏）。\n");
         return out.toString();
     }
 }

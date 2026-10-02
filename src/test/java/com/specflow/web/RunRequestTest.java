@@ -78,6 +78,8 @@ class RunRequestTest {
         return RunRequest.of(null, "改点东西", null, null, null, List.of("Foo.java"),
                 null, null, null, true, 6, maxRounds, null,
                 // 回喂编号：这一条不是「下一轮」，所以是空的
+                List.of(),
+                // 停用编号同理：这一次一条都没停用
                 List.of());
     }
 
@@ -92,7 +94,7 @@ class RunRequestTest {
     void carriesRefeedIndexes() {
         assertThat(request(null).pickedRefeed()).isEmpty();
         assertThat(RunRequest.of(null, "x", null, null, null, List.of("Foo.java"),
-                null, null, null, true, 6, 3, null, List.of(8, 2, 8, 0, -1)).pickedRefeed())
+                null, null, null, true, 6, 3, null, List.of(8, 2, 8, 0, -1), null).pickedRefeed())
                 .containsExactly(2, 8);
     }
 

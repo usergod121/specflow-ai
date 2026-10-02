@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.stream.Stream;
@@ -205,6 +206,15 @@ public final class RunStore {
             return Refeed.none();
         }
         RunRecord latest = tested();
+        // 停用的用例不参与回喂：它已经退出所有分母了，再把它喂给开发就是拿一件不算数的事
+        // 去换一轮真实的模型调用。拦在这一处而不是默默滤掉——用户勾的是它，
+        // 悄悄少喂一条的下一轮看起来和正常的一模一样（与下面那道逐项校验同一个道理）
+        List<Integer> stopped = stopped(latest, picked);
+        if (!stopped.isEmpty()) {
+            throw new IllegalStateException("回喂被拦下：用例 " + join(stopped)
+                    + " 被你停用了，停用的用例不参与回喂——"
+                    + "要么先恢复它，要么把勾选里这几条去掉，再点「下一轮」。");
+        }
         List<String> problems = Refeed.problems(latest.testCases(), latest.tests(), picked);
         if (!problems.isEmpty()) {
             throw new IllegalStateException("回喂被拦下：这几条对不上上一轮冻结的那份用例清单——"
@@ -221,10 +231,90 @@ public final class RunStore {
      * <p>判据和界面上的「全选」同一个：失败清单里报出来的那些编号。界面上那枚按钮在界面里算，
      * 命令行在引擎里算，两边都不许另想一套「哪些算失败」。
      *
+     * <p><b>被停用的那几条不算</b>：它们已经退出分母，回喂给开发只会让模型去修一件用户
+     * 明确说过「别再算了」的事——而 {@code all} 的本意是「上次红着的那些全都要修」。
+     *
      * @throws IllegalStateException 上一轮压根没有可回喂的失败清单
      */
     public List<Integer> failingCases() {
-        return tested().tests().failingCases();
+        RunRecord latest = tested();
+        Set<Integer> off = latest.disabledIndexes();
+        return latest.tests().failingCases().stream()
+                .filter(index -> !off.contains(index))
+                .toList();
+    }
+
+    /**
+     * 停用 / 恢复几条用例，把这件事<b>写进留档</b>。
+     *
+     * <p>用户的原话是「删掉它」，而这里实现成<b>可恢复的停用</b>：
+     * 停用同样让它退出所有分母（通过率、溯源、回喂、覆盖核对），但留档里留下了
+     * 「谁、什么时候、对哪几条做了什么」，人随时能把它拿回来。删除是不可逆的——
+     * 清单是冻结的，删掉之后既解释不了「当时为什么少了一条」，
+     * 也没法在下一次检查里把这件事讲清楚。
+     *
+     * <p>为什么要写进<b>这一次运行</b>的留档而不是一个全局状态文件：停用是冲着
+     * 「那一轮冻结的那份清单」说的（编号只在那份清单里有意义，与回喂同一套口径）。
+     * 记在别处，翻旧记录时就会拿今天的停用状态去解释当时的通过率。
+     *
+     * <p>流水式记录（见 {@code RunRecord.CaseSwitch}）：停用记一条、恢复也记一条，
+     * 当下状态从流水里折出来——只留一个状态字段的话，「这几条曾经被谁停过又恢复过」
+     * 就查无实据了。
+     *
+     * @param id       哪一次运行；空串表示「界面上正看着的那一次」，按最新那条落
+     * @param indices  这次动的用例编号
+     * @param disabled {@code true} = 停用，{@code false} = 恢复
+     * @return 写回去之后的那条记录（界面按它的流水重画那一栏）
+     * @throws SpecflowException 记录不存在、或者编号不在那一轮冻结的清单里
+     */
+    public RunRecord disable(String id, List<Integer> indices, boolean disabled) {
+        String target = id == null || id.isBlank() ? latestId() : id.strip();
+        if (target.isEmpty()) {
+            throw new SpecflowException("一条运行记录都没有：先跑一次，才有可停用的用例清单");
+        }
+        RunRecord record = load(target);
+        List<Integer> wanted = indices == null ? List.of() : indices.stream()
+                .filter(index -> index != null && index > 0)
+                .distinct()
+                .sorted()
+                .toList();
+        if (wanted.isEmpty()) {
+            throw new SpecflowException("没说是哪几条用例：请求里 cases 是空的");
+        }
+        // 编号必须在那一轮冻结的清单里：记一条清单上没有的编号，等于在留档里
+        // 留一个指向空处的记号，而它以后会被当成「这条被停用过」
+        List<Integer> known = record.testCases() == null ? List.of()
+                : record.testCases().stream().map(PlanReview.TestCase::index).toList();
+        List<Integer> unknown = wanted.stream().filter(index -> !known.contains(index)).toList();
+        if (!unknown.isEmpty()) {
+            throw new SpecflowException("用例 " + join(unknown) + " 不在这次运行冻结的用例清单里"
+                    + (known.isEmpty() ? "（那一次压根没有用例清单）"
+                            : "（清单上是第 " + join(known) + " 条）")
+                    + "：先看清屏幕上那份清单再停用");
+        }
+        RunRecord updated = record.withCaseSwitches(RunRecord.CaseSwitch.append(record.caseSwitches(),
+                wanted, disabled, LocalDateTime.now().toString()));
+        save(updated);
+        return updated;
+    }
+
+    /** 这批编号里，有哪几条此刻是停用着的（升序）。 */
+    private static List<Integer> stopped(RunRecord record, List<Integer> picked) {
+        Set<Integer> off = record.disabledIndexes();
+        return picked.stream()
+                .filter(index -> index != null && off.contains(index))
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    /** 编号写成「1、2、3」（错话里要用，界面那一侧另有一份同样的写法）。 */
+    private static String join(List<Integer> indexes) {
+        StringBuilder out = new StringBuilder();
+        for (Integer index : indexes) {
+            out.append(out.length() == 0 ? "" : "、").append(index);
+        }
+        return out.toString();
     }
 
     /**

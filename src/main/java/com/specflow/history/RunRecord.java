@@ -11,8 +11,11 @@ import com.specflow.spec.ContextItem;
 import com.specflow.tests.Refeed;
 import com.specflow.tests.TestOutcome;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * 一次运行的完整留档。
@@ -84,6 +87,13 @@ import java.util.Locale;
  * @param unchanged 回喂之后<b>它到底改没改</b>：这一轮有回喂、而产品改动一处差异都没有时为
  *                 {@code true}（「它没有改动」）。不是回喂的运行里没有这一项——普通运行没改文件
  *                 是另一件事，不该顶着这句话出现在结果面板上
+ * @param caseSwitches <b>谁在什么时候停用了哪几条用例</b>（用户口头语是「删掉它」，
+ *                 但这里记的是可恢复的停用）。它是一份<b>追加的流水</b>，不是「当前状态」：
+ *                 停用与恢复各记一条，当下的状态由 {@link #disabledIndexes()} 从流水里折出来。
+ *                 为什么非要留这一栏：停用会让一条用例<b>退出所有分母</b>
+ *                 （通过率、溯源、回喂、覆盖核对都不再算它），事后翻记录的人必须答得出
+ *                 「当时是谁、为什么这几条不见了」——只留一个状态字段，恢复过的那几条就查无实据。
+ *                 老记录里没有这一项，读出来是 {@code null}（= 一条都没停用过）
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record RunRecord(
@@ -112,8 +122,115 @@ public record RunRecord(
         List<Line> timeline,
         AcceptanceCoverage.Report coverage,
         Refeed refeed,
-        Boolean unchanged
+        Boolean unchanged,
+        List<CaseSwitch> caseSwitches
 ) {
+
+    /**
+     * 一次「停用 / 恢复」的动作。
+     *
+     * <p><b>为什么是可恢复的停用，而不是删掉。</b>用户的原话是「删掉它」，但真正想表达的
+     * 是「这条别再算了」——而删除是不可逆的：清单是冻结的，删掉一条之后既没有依据说清
+     * 「当时为什么少了一条」，也没法把它拿回来。停用把这两件事都保住：它退出所有分母、
+     * 不参与回喂、引擎也不再要求它被实现，而人随时可以恢复。
+     * 这也是留档里那条流水存在的理由（见 {@code caseSwitches}）。
+     *
+     * @param index    用例编号（和 {@code testCases} 对得上）
+     * @param disabled {@code true} = 这一步是停用，{@code false} = 恢复
+     * @param by       谁做的。本机工具没有登录这一回事（{@link #actor()}），
+     *                 操作系统账号是最诚实的那一个「谁」
+     * @param at       什么时候，ISO 格式
+     */
+    public record CaseSwitch(int index, boolean disabled, String by, String at) {
+
+        public CaseSwitch {
+            by = by == null ? "" : by.strip();
+            at = at == null ? "" : at;
+        }
+
+        /**
+         * 本机这台工具没有登录概念——它就是一个人在自己机器上用的东西。
+         * 与其编一个「当前用户」出来，不如照实记操作系统账号：它至少是可核对的。
+         */
+        public static String actor() {
+            String name = System.getProperty("user.name", "");
+            return name == null || name.isBlank() ? "（不知道是谁）" : name;
+        }
+
+        /**
+         * 往流水尾部追加几步动作，返回新的流水。
+         *
+         * <p>两条规矩：<b>只追加、不改写</b>（恢复也要留一条，否则「谁什么时候停用过它」
+         * 就没了）；<b>同一条用例最后一步已经是这个状态时不重复记</b>——
+         * 界面重画一次就多一条流水的话，真正的动作会被噪声埋掉。
+         *
+         * @param existing 已有的流水（可能是 {@code null}）
+         * @param indices  这一次动的用例编号
+         * @param at       这次动作的时刻
+         */
+        public static List<CaseSwitch> append(List<CaseSwitch> existing, List<Integer> indices,
+                                              boolean disabled, String at) {
+            List<CaseSwitch> log = new ArrayList<>();
+            if (existing != null) {
+                existing.stream().filter(item -> item != null).forEach(log::add);
+            }
+            if (indices == null) {
+                return List.copyOf(log);
+            }
+            String now = at == null ? "" : at;
+            String by = actor();
+            for (Integer index : new TreeSet<>(indices)) {
+                if (index == null || index <= 0 || stateOf(log, index) == disabled) {
+                    continue;
+                }
+                log.add(new CaseSwitch(index, disabled, by, now));
+            }
+            return List.copyOf(log);
+        }
+
+        /**
+         * 从流水里折出「此刻还停用着的编号」。
+         *
+         * <p>折出来而不是另存一个状态字段：两份数据迟早对不上，而对不上的表现是
+         * 「界面上停着、引擎里没停」——那会让一条用例既不进分母、又照样被要求实现。
+         */
+        public static Set<Integer> disabledIn(List<CaseSwitch> log) {
+            Set<Integer> off = new TreeSet<>();
+            if (log == null) {
+                return off;
+            }
+            for (CaseSwitch item : log) {
+                if (item == null) {
+                    continue;
+                }
+                if (item.disabled()) {
+                    off.add(item.index());
+                } else {
+                    off.remove(item.index());
+                }
+            }
+            return off;
+        }
+
+        /** 这条用例此刻是不是停着（流水里最后一次动作说了算）。 */
+        private static boolean stateOf(List<CaseSwitch> log, int index) {
+            return disabledIn(log).contains(index);
+        }
+    }
+
+    public RunRecord {
+        caseSwitches = caseSwitches == null ? null : List.copyOf(caseSwitches);
+    }
+
+    /**
+     * 此刻还停用着的用例编号。
+     *
+     * <p>它才是分母口径的唯一来源：通过率、溯源连线、回喂、覆盖核对四处都问它。
+     * 老记录里那一栏是 {@code null}，折出来就是空集合——「老记录里一条都没停用过」。
+     */
+    public Set<Integer> disabledIndexes() {
+        return CaseSwitch.disabledIn(caseSwitches);
+    }
 
     /**
      * 人对<b>一条失败用例</b>的判断（十五.6）。
@@ -287,7 +404,15 @@ public record RunRecord(
         return new RunRecord(id, startedAt, status, template, prompt, acceptance, context,
                 requirementId, targets, attempts, detail, missing, changes, steps, planSteps,
                 stepsSource, testCases, tests, environment, newVerdicts, newSettlement,
-                newRegenerated, timeline, coverage, refeed, unchanged);
+                newRegenerated, timeline, coverage, refeed, unchanged, caseSwitches);
+    }
+
+    /** 换「谁什么时候停用了哪几条」那一栏（追加式流水，见 {@link CaseSwitch}）。 */
+    public RunRecord withCaseSwitches(List<CaseSwitch> newCaseSwitches) {
+        return new RunRecord(id, startedAt, status, template, prompt, acceptance, context,
+                requirementId, targets, attempts, detail, missing, changes, steps, planSteps,
+                stepsSource, testCases, tests, environment, verdicts, settlement,
+                regenerated, timeline, coverage, refeed, unchanged, newCaseSwitches);
     }
 
     /** 换「每一条失败用例怎么判的」那一栏。 */

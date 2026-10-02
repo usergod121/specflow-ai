@@ -37,6 +37,14 @@ import java.util.Map;
  *                     空 = 这一次不是「下一轮」。引擎按它从<b>上一轮那条运行留档</b>里
  *                     取出失败清单，照十五.7 的固定模板拼成一段放进提示词，
  *                     并把这一段写进新的留档——「它到底按什么改的」必须答得出来
+ * @param disabled     <b>被停用的那几条用例编号</b>（完整的一份集合，不是增量）。
+ *                     停用是用户要的「删掉它」，实现成可恢复的停用：这些用例不进任何分母
+ *                     （通过率、溯源连线、回喂、覆盖核对），引擎也不再要求它们被实现。
+ *                     界面在<b>还没有留档</b>的时候（第一次检查之后、还没跑过）只能把它记在
+ *                     自己手里，于是跟着这次请求发过来，由引擎写进这一次的留档
+ *                     （谁、什么时候——就是发起这次运行的账号与时刻）。
+ *                     跑过一次之后，界面上的停用动作直接落在留档上（见 {@code RunStore.disable}）。
+ *                     空 = 一条都没停用
  */
 @JsonIgnoreProperties(ignoreUnknown = false)
 public record RunRequest(
@@ -53,7 +61,8 @@ public record RunRequest(
         Integer maxRetry,
         Integer maxRounds,
         Boolean integration,
-        List<Integer> refeed
+        List<Integer> refeed,
+        List<Integer> disabled
 ) {
 
     private static final int DEFAULT_MAX_RETRY = VerifySpec.DEFAULT_MAX_RETRY;
@@ -73,7 +82,8 @@ public record RunRequest(
             @JsonProperty("maxRetry") Integer maxRetry,
             @JsonProperty("maxRounds") Integer maxRounds,
             @JsonProperty("integration") Boolean integration,
-            @JsonProperty("refeed") List<Integer> refeed
+            @JsonProperty("refeed") List<Integer> refeed,
+            @JsonProperty("disabled") List<Integer> disabled
     ) {
         return new RunRequest(
                 blankToNull(template),
@@ -89,7 +99,8 @@ public record RunRequest(
                 maxRetry,
                 maxRounds,
                 integration,
-                refeed == null ? List.of() : refeed);
+                refeed == null ? List.of() : refeed,
+                disabled == null ? List.of() : disabled);
     }
 
     /**
@@ -100,6 +111,20 @@ public record RunRequest(
      */
     public List<Integer> pickedRefeed() {
         return refeed == null ? List.of() : refeed.stream()
+                .filter(index -> index != null && index > 0)
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * 这次带着哪几条停用的用例跑；空表示一条都没停用。
+     *
+     * <p>和 {@link #pickedRefeed()} 同一套规矩：去重、排序、丢掉认不出来的编号。
+     * 顺序与重复是界面的自由，而写进留档的那份流水必须是稳定的。
+     */
+    public List<Integer> pickedDisabled() {
+        return disabled == null ? List.of() : disabled.stream()
                 .filter(index -> index != null && index > 0)
                 .distinct()
                 .sorted()
@@ -144,6 +169,8 @@ public record RunRequest(
                 spec.targets(), spec.constraints(), spec.context(), null,
                 spec.verify().compile(), spec.verify().maxRetry(), spec.verify().maxRounds(), null,
                 // 草稿里没有回喂：它是「看了失败清单之后的一次决定」，不是需求的一部分
+                List.of(),
+                // 停用同理：它是人对某一次运行的用例清单做的动作，草稿里没有它的位置
                 List.of());
     }
 

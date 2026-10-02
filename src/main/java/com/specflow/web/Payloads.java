@@ -124,4 +124,36 @@ public final class Payloads {
             return new Judgement(id, cases == null ? List.of() : cases, owner);
         }
     }
+
+    /**
+     * 「停用 / 恢复这几条用例」——用户的原话是「删掉它」（见 {@code RunStore.disable}）。
+     *
+     * <p>和 {@link Judgement} 同一套形状：{@code id} 空着表示「界面上正看着的那一次」
+     * （刷新过页面之后界面手里没有记录 id，而屏幕上那份清单就是最新一次跑出来的）。
+     *
+     * <p>{@code disabled} 缺省当<b>停用</b>：这个接口的名字就是「停用」，而少写一栏
+     * 不该变成「恢复」——那会让一次误发的请求把用户刚停掉的用例又放回分母里。
+     *
+     * @param id       哪一次运行；空串 = 按最新那条落
+     * @param cases    这次动的用例编号
+     * @param disabled {@code true} = 停用，{@code false} = 恢复；不写按停用
+     */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    public record CaseSwitching(
+            String id,
+            List<Integer> cases,
+            Boolean disabled
+    ) {
+        @JsonCreator
+        public static CaseSwitching of(@JsonProperty("id") String id,
+                                       @JsonProperty("cases") List<Integer> cases,
+                                       @JsonProperty("disabled") Boolean disabled) {
+            return new CaseSwitching(id, cases == null ? List.of() : cases, disabled);
+        }
+
+        /** 这一步是停用还是恢复。 */
+        public boolean off() {
+            return disabled == null || disabled;
+        }
+    }
 }

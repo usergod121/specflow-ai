@@ -926,10 +926,22 @@
   .case-item { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
   .case-item[data-state=passed] { border-color: var(--ok-text); }
   .case-item[data-state=failed] { border-color: var(--error-line); }
+  /* chip 与它右边那枚「停用 / 恢复」并排一行：chip 占满剩下的宽度，
+     那枚按钮自己一列。竖着堆的话，每一条用例会占两行，十几条就看不出层次了 */
+  .case-row { display: flex; align-items: stretch; gap: 2px; }
+  /* 停用是一个「让它退出分母」的动作，不是主路径：小字、次要色、平时不抢眼。
+     它必须一直看得见（不能折进细节里）——用户嘴上说的就是「把这条删掉」 */
+  .case-off {
+    flex: none; align-self: center; margin: 0 6px 0 0;
+    padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 5px;
+    background: none; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer;
+  }
+  .case-off:hover { background: var(--hover); color: var(--text); }
+  .case-off:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   /* chip 本体是个 button：键盘用户 tab 得到、回车打得开。
      它是「看一眼细节」的入口，不是主路径，所以按次要按钮的底色来，不用强调色填充 */
   .case-chip {
-    display: flex; align-items: baseline; gap: 8px; width: 100%;
+    display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0;
     padding: 6px 10px; border: 0; border-radius: 5px;
     background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left;
     font-weight: 400;
@@ -963,6 +975,25 @@
   .rate.trace { border-style: dashed; }
   .rate.trace.bad { background: var(--error); border-color: var(--error-line); color: var(--error-text); }
   .rate.trace.bad b { color: var(--error-text); }
+
+  /* 停用的那一条整体退到背景里，但**看得见**：它随时可以恢复，
+     藏起来（或者拿掉）就等于做成了不可逆的删除。
+     这几条排在「未连线要红」那些规则**后面**（同样的选择器权重，后面的赢）：
+     停用之后它既不该红着说「它没接上线」，也不该顶着错误色的边框——
+     引擎已经不要求它被实现了，红着只会让人以为出了错 */
+  .case-item[data-disabled=true] {
+    border-color: var(--line-strong); border-style: dashed; background: none;
+  }
+  .case-item[data-disabled=true] .case-chip { color: var(--muted); }
+  .case-item[data-disabled=true] .case-chip .wire .state {
+    color: var(--muted-weak); font-weight: 400;
+  }
+  .stage-note { margin-top: 4px; }
+  /* 「已停用 N」那一枚：它讲的是分母口径，不是错误，所以不用红底 */
+  .rate.disabled { border-style: dashed; background: none; }
+  .fail[data-disabled=true] { opacity: .75; }
+  .fail[data-disabled=true] .fail-kind { color: var(--muted); }
+  .fail[data-disabled=true] .fail-kind.known { background: none; border-color: var(--line-strong); }
 
   .case-detail { padding: 2px 10px 10px; }
   /* 细节里每一行都是「标签 + 内容」：标签定宽，几行才对得齐 */
@@ -1623,6 +1654,12 @@ const state = {
   picked: new Set(),    // 失败清单里勾上「要回喂给开发」的用例编号
   picksSeeded: false,   // 默认勾选已经铺过一次了没有（见 seedPicks：只铺一次，别覆盖用户的手动勾选）
   known: new Map(),     // 用例编号 → 人的判断（CODE/TEST/KNOWN），落档在运行记录里（见 markVerdict）
+  // 被停用的用例编号：它们不进任何分母（通过率、溯源、回喂、覆盖核对），引擎也不再要求实现。
+  // 留档里是那条追加式流水（caseSwitches），这里是从它折出来的当下状态（见 disabledOf）。
+  // 为什么要在界面这一侧也留一份：**第一次检查之后、还没跑过**的时候没有留档可写，
+  // 停用只能先记在这儿，跟着这次运行的请求进引擎（payload 里的 disabled），
+  // 由引擎在那一刻写进这一次的留档
+  disabled: new Set(),
   regenerated: null,    // 重新生成出来、等着放行的那批测试代码
   actionBusy: '',       // 正在做的那个动作（'' = 没有）；'regenerate' = 正在重新生成测试代码
   viewRecord: null,     // 历史面板正在看的那条留档：点开某条用例的细节时按它重画
@@ -3351,6 +3388,11 @@ function payload(refeed) {
   if (refeed && refeed.length) {
     body.refeed = [...refeed].sort((a, b) => a - b);
   }
+  // 停用着的那几条跟着这一次请求走：**还没有留档**的时候（第一次检查之后没跑过）
+  // 界面这一侧是它唯一的去处，而引擎要靠它把这几条排除在分母之外、并写进这次的留档
+  if (state.disabled.size) {
+    body.disabled = [...state.disabled].sort((a, b) => a - b);
+  }
   if (currentTemplate()) body.template = currentTemplate().name;
   // 检查阶段确认过的方案随运行一起发回去，让模型按图施工。
   // 施工单要带上界面上改过的那一份：引擎照 approvedPlan.steps 施工，
@@ -3793,6 +3835,9 @@ async function review() {
   state.stepsSource = '';
   state.stepStates = new Map();
   state.stepDetail = null;
+  // 停用的那几条同理：编号只对**上一份**清单有意义，留着它们会把新清单里
+  // 同号的用例莫名其妙地排除在分母之外（与回喂那套「编号只在冻结清单里有意义」同一个道理）
+  state.disabled = new Set();
   // 换了一份方案，上一次那次「仍然继续」的放行不能跟着过来
   state.forced = false;
   renderPlan();
@@ -3831,6 +3876,8 @@ function renderPlan() {
       state.stepStates = new Map();
       state.stepsEdited = false;
       state.forced = false;
+      // 停用那几条是冲着这份清单说的：清单都不要了，记号也跟着走
+      state.disabled = new Set();
       renderPlan();
     };
     head.appendChild(discard);
@@ -4829,7 +4876,11 @@ function renderRunDetail(record) {
   const cases = record.testCases || [];
   const casesHtml = casesPanelHtml(cases, report, { detail: state.caseOpen, confirm: false,
     // 覆盖核对也在留档里：历史里那两个计数要和当时界面上看到的一样
-    coverage: record.coverage || null });
+    coverage: record.coverage || null,
+    // 历史详情**只给看不给动**：停用/恢复动的是此刻这份清单，而屏幕上摆的是另一次运行的
+    // 结论。所以 disabled 传 null（= 不画那枚按钮），只把当时的分母口径与那条流水画出来
+    disabled: null,
+    frozenFrom: record.caseSwitches || null });
   if (casesHtml) {
     const holder = document.createElement('div');
     holder.innerHTML = casesHtml;
@@ -4843,6 +4894,9 @@ function renderRunDetail(record) {
     // 当时人把这几条判成了什么：它现在就写在留档里（verdicts）。
     // 不摆出来的话，事后翻记录的人只会看到一片红，然后以为那一次是失败的
     known: verdictsOf(record),
+    // 当时的分母口径也在留档里：通过率要按那时候停用了哪几条来还原，
+    // 否则历史里的比例和当时屏幕上看到的不是同一个数
+    disabled: disabledOf(record),
     // 回喂与「它没有改动」同样在留档里：那一次它到底按什么改的、改没改，
     // 正是「隔几天回来看记录」时最想问的问题
     result: record,
@@ -5518,6 +5572,12 @@ function applyRunDetail(record) {
     // 而屏幕上这份失败清单就是这条记录跑出来的——所以这个 id 必须留下来
     state.recordId = record.id;
   }
+  // 停用那一栏也在留档里（一条追加式流水）：刷新过页面、或者翻历史时，
+  // 通过率的分母口径靠它才画得出来——它不在界面这一侧存着，`/api/run` 那次请求
+  // 里带的那一份只是「还没有留档时」的临时落脚点
+  if (record && record.caseSwitches) {
+    state.disabled = disabledOf(record);
+  }
   // 人写下的那几笔（判决、收场）也在留档里：刷新一次之后要照样看得见，
   // 否则那些判断看起来从没发生过——它们现在是留档的一部分，不再只是界面上的记号
   if (record && record.verdicts) {
@@ -5670,6 +5730,44 @@ function verdictsOf(record) {
   return map;
 }
 
+/**
+ * 留档里那条「停用 / 恢复」的流水，折成「此刻还停用着的编号」。
+ *
+ * <p>为什么要折、而不是让留档直接存一个状态：流水答得出「谁在什么时候停用过哪几条」，
+ * 而状态字段答不出来——恢复过一次之后，那件事就查无实据了。折法只有这一处：
+ * 界面和服务端（{@code RunRecord.CaseSwitch.disabledIn}）各判一套的话，
+ * 迟早出现「界面上停着、引擎里没停」——那会让一条用例既不进分母、又照样被要求实现。
+ *
+ * <p>老记录里没有这一栏（那时还没有停用这个动作）：折出来是空集合。
+ */
+function disabledOf(record) {
+  const off = new Set();
+  for (const item of (record && record.caseSwitches) || []) {
+    if (!item || item.index === undefined) continue;
+    if (item.disabled) off.add(Number(item.index));
+    else off.delete(Number(item.index));
+  }
+  return off;
+}
+
+/**
+ * 分母口径：这些用例里<b>还活着</b>的那几条。
+ *
+ * <p>通过率、溯源连线、能不能回喂——凡是要「算比例」的地方都从它出发，
+ * 而停用的那些两边都不算（分子分母一起去掉）：用户停用一条用例的意思就是
+ * 「这条别再算了」，把它留在分母里会让人看到一个永远到不了 100% 的比例。
+ */
+function liveCases(cases, disabled) {
+  const off = disabled || new Set();
+  return (cases || []).filter(one => !off.has(Number(one.index)));
+}
+
+/** 这条用例被停用了没有。 */
+function isDisabledCase(index, disabled) {
+  const off = disabled || new Set();
+  return off.has(Number(index));
+}
+
 /** 留档里那一栏（{@code settlement}）的那一行结论：怎么收的场、当时带着几条失败。 */
 function settlementText(settlement) {
   if (!settlement || !settlement.choice) {
@@ -5718,9 +5816,13 @@ function tierRate(tier, report) {
  * <p>空档照写 0/0 而不是省略：省掉它，用户就分不清「这一档一条都没有」和
  * 「界面没把这一档画出来」。1 级为空也照常通过——那份清单里根本没有必须过的用例，
  * 谁也不该觉得这一趟白跑了。
+ *
+ * <p>{@code disabled} 是<b>分母口径</b>：停用的用例分子分母一起拿掉
+ * （「必须过 3/3 · 已停用 2」里那个 2 就是这么来的）。它有默认值，是为了让「没有停用
+ * 这回事」的调用点（老代码、纯逻辑测试）一个字都不用改。
  */
-function casePassRate(cases, report) {
-  return caseTiers(cases).map(tier => {
+function casePassRate(cases, report, disabled = new Set()) {
+  return caseTiers(liveCases(cases, disabled)).map(tier => {
     const rate = tierRate(tier, report);
     return tier.label + ' ' + rate.passed + '/' + rate.total;
   }).join(' · ');
@@ -5868,7 +5970,7 @@ function testsReport(raw) {
 }
 
 /** 结果面板那一行摘要：成了没有、几条没过、产物在哪。 */
-function testsSummaryText(report, cases) {
+function testsSummaryText(report, cases, disabled = new Set()) {
   const parts = [];
   if (report.exit === null) {
     parts.push('没拿到退出码');
@@ -5877,7 +5979,12 @@ function testsSummaryText(report, cases) {
   }
   parts.push(report.failures.length ? '失败 ' + report.failures.length + ' 条' : '没有失败用例');
   if (cases && cases.length) {
-    parts.push(casePassRate(cases, report));
+    parts.push(casePassRate(cases, report, disabled));
+    // 停用那几条在分母之外：不说一句，「3/3」会被读成「一共只有 3 条」
+    const off = (disabled || new Set()).size;
+    if (off) {
+      parts.push('已停用 ' + off);
+    }
   }
   parts.push(report.directory ? '产物 ' + report.directory + '/' : '产物已清掉');
   return parts.join(' · ');
@@ -5917,27 +6024,38 @@ function guessHtml(opinion) {
  * @param verdicts 用例编号 → 人的判断（CODE/TEST/KNOWN）。判过的那些行改成那条判断的说法，
  *                 并把「不重要」那几条画成虚线灰框——它们已经不算数了，还挂着红色只会让人再判一次
  */
-function failRowHtml(failure, cases, picked, verdicts) {
+function failRowHtml(failure, cases, picked, verdicts, disabled = new Set(), canSwitch = false) {
   const [kindCls, kindLabel] = failureKind(failure.kind);
   const source = failureSource(failure.kind);
   const index = numbersIn(failure.testCase)[0];
   const one = index === undefined ? null : caseByIndex(cases, index);
   const owner = index === undefined ? undefined : verdicts.get(index);
   const known = owner === VERDICT.KNOWN;
+  const off = index !== undefined && disabled.has(Number(index));
   const title = index === undefined
       ? '（这条失败不属于某一条用例）'
       : '用例 ' + index + (one ? '：' + caseChipText(one) : '（清单里没有这一条）');
+  // 停用的用例不给勾：它已经退出分母、也不参与回喂（引擎会当场拦下）。
+  // 勾选框照旧画、只是禁掉，比整块拿掉好——「这里本来有个勾」本身就是信息
   const check = index === undefined ? ''
       : '<input type="checkbox" data-pick="' + index + '"'
-          + (picked.has(index) ? ' checked' : '') + ' aria-label="把这条回喂给开发">';
+          + (picked.has(index) ? ' checked' : '') + (off ? ' disabled' : '')
+          + ' aria-label="把这条回喂给开发">';
   return '<div class="fail" data-case="' + (index === undefined ? '' : index) + '"'
-      + ' data-known="' + known + '">'
+      + ' data-known="' + known + '" data-disabled="' + off + '">'
       + '<div class="fail-head">' + check
       + '<span class="fail-case">' + escapeHtml(title) + '</span>'
-      + '<span class="fail-kind ' + (known || owner ? 'known' : kindCls) + '">'
-      + escapeHtml(owner ? verdictLabel(owner) : kindLabel) + '</span>'
+      + '<span class="fail-kind ' + (off ? 'known' : (known || owner ? 'known' : kindCls)) + '">'
+      + escapeHtml(off ? '已停用' : (owner ? verdictLabel(owner) : kindLabel)) + '</span>'
       // 这一档是算出来的还是猜的，紧挨着标签说：机器下结论的那一档最容易被当成结论读
-      + (source ? '<span class="fail-source">' + escapeHtml(source) + '</span>' : '')
+      + (source && !off ? '<span class="fail-source">' + escapeHtml(source) + '</span>' : '')
+      // 每条失败旁边就能停用它（用户说的「删掉它」）：层级上它是次要动作，
+      // 和上面那枚「不重要 / 误报」不是一回事——那个只是记号，这个会让它退出所有分母
+      + (canSwitch && index !== undefined
+          ? '<button type="button" class="case-off" data-off-case="' + index + '" title="'
+              + escapeHtml(off ? RECOVER_HINT : DISABLE_HINT) + '">' + (off ? '恢复' : '停用')
+              + '</button>'
+          : '')
       + '</div>'
       + failPairHtml('期望', failure.expected)
       + failPairHtml('实际', failure.actual)
@@ -6015,21 +6133,33 @@ function caseCodeHtml(report, directory) {
       + '所以整批给你看</span></div></details>';
 }
 
-/** 一条用例展开之后那块细节。 */
-function caseDetailHtml(one, report) {
+/**
+ * 一条用例展开之后那块细节。
+ *
+ * <p><b>两栏各标着它是哪一段的产物。</b>期望是<b>第一段</b>（检查阶段）定下来的：
+ * 那时只给了需求、验收标准与施工单，一行代码都没有。怎么测是<b>第二段</b>补的：
+ * 代码写完、这次改动的 diff 出来了之后才有依据。分开标不只是好看——它解释的是
+ * 「为什么这份期望可信」：它在看过代码之前就定死了，而第二段一个字都不许改
+ * （机器把模型照抄回来的期望与第一段逐字核过，对不上就整批打回来）。
+ */
+function caseDetailHtml(one, report, off) {
   const outcome = caseOutcome(report, one.index);
   const failure = failureOf(report, one.index);
   const trace = caseTrace(report, one.index);
   const line = (k, v) => '<div class="case-line"><span class="k">' + k + '</span>'
       + '<span class="v">' + escapeHtml(v) + '</span></div>';
+  const how = String((one && one.how) || '').trim();
   let html = '<div class="case-detail" data-detail="' + Number(one.index) + '">'
       + line('要测什么', one.what || '（这条没写要测什么）')
-      + line('怎么测', one.how || '（这条没写怎么测）')
+      + line('怎么测', how || '（第二段还没补：它要等代码写完、这次改动的 diff 出来）')
       + line('期望', one.expected || '（这条没写期望值）')
       + line('对应验收', one.acceptance || '（没写）')
-      + line('连线', trace.state === 'wired' ? '✅ 已连线：' + trace.where : trace.text)
-      + line('上一次', CASE_OUTCOME_TEXT[outcome] || '');
-  if (failure) {
+      + line('来历', '期望与分级来自第一段（只看需求、验收标准与施工单，那时还没有代码）；'
+          + '怎么测来自第二段（看过这次改动的 diff 之后补的，期望一个字都没改）')
+      + line('连线', off ? '（已停用：引擎不再要求它被实现）'
+          : (trace.state === 'wired' ? '✅ 已连线：' + trace.where : trace.text))
+      + line('上一次', off ? '（已停用：它不进通过率的分母）' : (CASE_OUTCOME_TEXT[outcome] || ''));
+  if (failure && !off) {
     html += line('失败原因', failureKind(failure.kind)[1]);
   }
   html += caseCodeHtml(report, report && report.directory);
@@ -6071,19 +6201,36 @@ const UNWIRED_HINT = '这条用例没接上测试代码：引擎会拒绝运行�
     + '走「测试代码错了 → 重新生成」把锚点补上';
 
 /**
- * 一条用例：一个 chip + （点开时）它的细节。
+ * 停用那一档的两句话。
+ *
+ * <p>为什么要把后果写全：停用不是「先不看了」，它会让这条用例<b>退出所有分母</b>——
+ * 通过率、溯源连线、回喂、覆盖核对都不再算它，引擎也不再要求它被实现。
+ * 用户口头语是「删掉它」，而这里做的是可恢复的停用；把「还能恢复」写在按钮上，
+ * 他才不会以为这是一次删除。
+ */
+const DISABLE_HINT = '停用这条用例：它不再进通过率的分母、不参与回喂、覆盖核对也不算它，'
+    + '引擎也不再要求它被实现。随时可以恢复，留档里记着时间。';
+const RECOVER_HINT = '恢复这条用例：它立刻照旧进分母、参与回喂与覆盖核对。';
+
+/**
+ * 一条用例：一个 chip + 右边那枚「停用 / 恢复」+（点开时）它的细节。
  *
  * <p>chip 上是三件事：口语化的「要测什么 + 怎么测」（第一行）、对应哪条验收标准与
  * 测试代码落在哪一行、以及连上了没有（第二行），加右边那个这次跑出来的记号。
  */
-function caseItemHtml(one, report, detailAt) {
+function caseItemHtml(one, report, detailAt, disabled = new Set()) {
   const index = Number(one.index);
   const outcome = caseOutcome(report, index);
   const trace = caseTrace(report, index);
   const acceptance = caseAcceptance(one);
+  const off = isDisabledCase(index, disabled);
   const expanded = detailAt !== null && detailAt !== undefined && Number(detailAt) === index;
   return '<div class="case-item" data-case="' + index + '" data-state="' + outcome
-      + '" data-trace="' + trace.state + '">'
+      + '" data-trace="' + trace.state + '" data-disabled="' + off + '"'
+      // 「怎么测」是第二段补的：这一栏空着 = 第二段还没跑到（或者那一条没补上）。
+      // 单独一个记号，是因为它和「没验过」完全不同——一个是还没到时候，一个是没验
+      + ' data-how="' + (String(one.how || '').trim() ? 'filled' : 'pending') + '">'
+      + '<div class="case-row">'
       + '<button type="button" class="case-chip" data-case="' + index + '"'
       + ' aria-expanded="' + (expanded ? 'true' : 'false') + '">'
       + '<span class="num">' + index + '</span>'
@@ -6092,17 +6239,23 @@ function caseItemHtml(one, report, detailAt) {
       + '<span class="wire">'
       + '<span class="acc" title="' + escapeHtml(acceptance) + '">'
       + escapeHtml(acceptance) + '</span>'
-      + (trace.where
+      + (trace.where && !off
           ? '<span class="where" title="' + escapeHtml('测试代码：' + trace.where) + '">'
               + escapeHtml(trace.where) + '</span>'
           : '')
-      + '<span class="state" title="'
-      + escapeHtml(trace.state === 'unwired' ? UNWIRED_HINT : trace.text) + '">'
-      + escapeHtml(trace.text) + '</span>'
+      + '<span class="state" title="' + escapeHtml(off
+          ? DISABLE_HINT : (trace.state === 'unwired' ? UNWIRED_HINT : trace.text)) + '">'
+      + escapeHtml(off ? '已停用' : trace.text) + '</span>'
       + '</span></span>'
-      + '<span class="mark">' + escapeHtml(CASE_OUTCOME_MARKS[outcome]) + '</span>'
+      + '<span class="mark">' + escapeHtml(off ? '' : CASE_OUTCOME_MARKS[outcome]) + '</span>'
       + '</button>'
-      + (expanded ? caseDetailHtml(one, report) : '')
+      // 「停用 / 恢复」跟着每一条用例走，但不是主路径：它是次要的小按钮，摆在 chip 右边，
+      // 和「看细节」那一大片点击区隔开（点错「停用」的代价是这条用例从此不进分母）
+      + (disabled === null ? '' : '<button type="button" class="case-off" data-off-case="'
+          + index + '" title="' + escapeHtml(off ? RECOVER_HINT : DISABLE_HINT) + '">'
+          + (off ? '恢复' : '停用') + '</button>')
+      + '</div>'
+      + (expanded ? caseDetailHtml(one, report, off) : '')
       + '</div>';
 }
 
@@ -6115,7 +6268,10 @@ function caseItemHtml(one, report, detailAt) {
  * @param report 这次的测试结果（还没跑过时传 null）
  * @param opts   detail = 展开哪一条用例的细节（编号，null = 都收起）；
  *               confirm = 底下要不要那枚「确认（冻结）」按钮（历史面板里不要——
- *               那里看的是一次已经结束的运行，冻不冻它都没有意义了）
+ *               那里看的是一次已经结束的运行，冻不冻它都没有意义了）；
+ *               disabled = 此刻停用着的编号集合（{@code null} = 这一处<B>不画</B>停用/恢复那个按钮：
+ *               历史详情就是这种场合——那四个动作动的是此刻的清单，历史只该看）；
+ *               frozenFrom = 留档里那条「谁什么时候停用过」的流水（有就在底下说一句）
  */
 function casesPanelHtml(cases, report, opts = {}) {
   const list = cases || [];
@@ -6123,14 +6279,18 @@ function casesPanelHtml(cases, report, opts = {}) {
     return '';
   }
   const detailAt = opts.detail === undefined ? null : opts.detail;
+  const disabled = opts.disabled || new Set();
+  const canSwitch = opts.disabled !== undefined && opts.disabled !== null;
   const tiers = caseTiers(list);
-  const unwired = list.filter(one => caseTrace(report, one.index).state === 'unwired').length;
+  const live = liveCases(list, disabled);
+  const unwired = live.filter(one => caseTrace(report, one.index).state === 'unwired').length;
 
   const rates = tiers.map(tier => {
-    const rate = tierRate(tier, report);
+    const rate = tierRate({ ...tier, items: liveCases(tier.items, disabled) }, report);
     return '<span class="rate ' + tier.cls + (tier.items.length ? '' : ' empty') + '">'
         + escapeHtml(tier.label) + ' <b>' + rate.passed + '/' + rate.total + '</b></span>';
-  }).join('') + traceRateHtml(list, report) + coverageRates(opts.coverage);
+  }).join('') + traceRateHtml(list, report, disabled) + coverageRates(opts.coverage)
+      + disabledRateHtml(disabled);
 
   let body = '';
   for (const tier of tiers) {
@@ -6142,18 +6302,25 @@ function casesPanelHtml(cases, report, opts = {}) {
           + (tier.level === 'MUST' ? '——没有必须过的用例，一样可以往下走' : '') + '</div>';
     }
     body += '<div class="case-list">'
-        + tier.items.map(one => caseItemHtml(one, report, detailAt)).join('') + '</div>';
+        + tier.items.map(one => caseItemHtml(one, report, detailAt,
+            canSwitch ? disabled : null)).join('') + '</div>';
     body += '</div>';
   }
 
   const status = (report && report.cases && report.cases.length) || (report && report.failures.length)
-      ? '这次跑完：' + casePassRate(list, report)
+      ? '这次跑完：' + casePassRate(list, report, disabled)
       : '还没跑过测试：跑一次之后每个 chip 上会写着它过了没有';
   return '<div class="cases">'
       + '<div class="cases-head"><b>这次打算验什么</b>'
       + '<span class="hint">分级只影响标色与先后，不拦人：哪一档没过都只是给你看的</span></div>'
+      // 分母口径固定说一遍：停用的用例不进任何分母，而「3/3」这种数字不写口径就会被读成
+      // 「一共只有 3 条」。这一行是静态的（没有停用时也一样），因为它讲的是这套数字的算法
+      + '<div class="hint">上面的比例都按<b>没停用的用例</b>算（分子分母都不含停用的那几条）：'
+      + '停用是「这条别再算了」，随时能恢复。</div>'
       + '<div class="rate-row">' + rates + '</div>'
       + '<div class="hint">' + escapeHtml(status) + '</div>'
+      + stageNoteHtml(list, canSwitch)
+      + disabledLogHtml(opts.frozenFrom)
       + (unwired ? '<div class="hint wire-bad-note">有 ' + unwired
           + ' 条用例没接上测试代码：这批测试会被引擎拒绝运行，'
           + '点「测试代码错了」重新生成，把锚点补上。</div>' : '')
@@ -6164,22 +6331,84 @@ function casesPanelHtml(cases, report, opts = {}) {
 }
 
 /**
+ * 两段各自的产物，在清单顶上固定说一遍。
+ *
+ * <p>为什么必须写出来：这两栏的来历不同，而界面上它们长得一样。期望是<b>第一段</b>
+ * （检查阶段，只给需求 + 验收标准 + 施工单，一行代码都没有）定下来的；「怎么测」是
+ * <b>第二段</b>（代码写完、有了这次改动的 diff）才补的，而那时期望一个字都不许改。
+ * 不说清这件事，人会把「怎么测」里对实现的描述当成期望的一部分读。
+ */
+function stageNoteHtml(cases, canSwitch) {
+  const pending = (cases || []).filter(one => !String(one.how || '').trim()).length;
+  const total = (cases || []).length;
+  const stage = total - pending;
+  let text = '两段的产物：<b>期望、分级、对应哪条验收</b>来自第一段（检查阶段，'
+      + '只给需求、验收标准与施工单）；<b>怎么测</b>来自第二段（代码写完、看到这次改动的 diff 之后补的）。'
+      + '第二段不许改期望——机器把它的期望与第一段逐字比过，对不上就整批打回来重来。';
+  if (pending) {
+    text += ' 现在有 ' + stage + '/' + total + ' 条补上了「怎么测」，'
+        + '另外 ' + pending + ' 条还空着（第二段还没跑到，或者那几条没补成功）。';
+  }
+  // 停用那个动作只在能动作的场合出现（历史详情只看不动）
+  if (canSwitch) {
+    text += ' 每条用例右边那枚小按钮是「停用 / 恢复」：停用的不进任何分母、也不参与回喂。';
+  }
+  return '<div class="hint stage-note">' + text + '</div>';
+}
+
+/**
+ * 「已停用 N」那一枚 + 它底下那句口径。
+ *
+ * <p>它就是用户要的那句「必须过 3/3 · 已停用 2」里的后半截：不把它摆出来，
+ * 分母比清单短这件事在界面上是看不出来的——人只会觉得「怎么少了一条」。
+ * 没有停用时这一枚不画：画一个恒为 0 的计数只会占地方。
+ */
+function disabledRateHtml(disabled) {
+  const count = (disabled || new Set()).size;
+  if (!count) {
+    return '';
+  }
+  return '<span class="rate disabled" title="'
+      + escapeHtml('停用的用例：' + [...(disabled || new Set())].sort((a, b) => a - b).join('、')
+          + '——它们不进通过率、不进溯源连线、不参与回喂，覆盖核对也不算它们')
+      + '">已停用 <b>' + count + '</b></span>';
+}
+
+/**
+ * 留档里那条停用流水：谁在什么时候停用了哪几条。
+ *
+ * <p>只在历史详情里画（它是留档的一部分）：屏幕上那份清单没法回答「是谁停的」，
+ * 而事后翻记录的人问的正是这个。
+ */
+function disabledLogHtml(log) {
+  const items = (log || []).filter(item => item && item.index !== undefined);
+  if (!items.length) {
+    return '';
+  }
+  return '<div class="hint">停用记录（谁、什么时候）：'
+      + items.map(item => escapeHtml((item.disabled ? '停用 ' : '恢复 ') + '用例 ' + item.index
+          + '（' + (item.by || '不知道是谁') + '，' + (item.at || '没记时间') + '）')).join('；')
+      + '</div>';
+}
+
+/**
  * 溯源那一枚：几条用例真的接上了测试代码。
  *
  * <p>它是这一批新增的那条判据在界面上的落点——「验了几条」和「几条真的接到了代码上」
  * 是两个不同的问题，只给通过率的话，一批一条都没接上的测试看起来也是满分。
  */
-function traceRateHtml(cases, report) {
+function traceRateHtml(cases, report, disabled = new Set()) {
   if (!report) {
     return '';
   }
-  const wired = cases.filter(one => caseTrace(report, one.index).state === 'wired').length;
-  const unwired = cases.length - wired;
+  const live = liveCases(cases, disabled);
+  const wired = live.filter(one => caseTrace(report, one.index).state === 'wired').length;
+  const unwired = live.length - wired;
   return '<span class="rate trace' + (unwired ? ' bad' : '') + '" title="'
       + escapeHtml(unwired
           ? '未连线的用例意味着这批测试不会被运行：引擎在跑之前会核对锚点'
           : '每条用例的测试代码都带上了 CASE 编号与 expect，核对通过')
-      + '">溯源 <b>' + wired + '/' + cases.length + '</b>'
+      + '">溯源 <b>' + wired + '/' + live.length + '</b>'
       + (unwired ? '（' + unwired + ' 条未连线）' : '') + '</span>';
 }
 
@@ -6202,6 +6431,7 @@ function coverageRates(coverage) {
   }
   const uncovered = (coverage.uncovered || []).length;
   const unmapped = (coverage.unmappedMust || []).length;
+  const disabledOnly = (coverage.disabledOnly || []).length;
   const chip = (label, count, why) => '<span class="rate' + (count ? ' bad' : '') + '" title="'
       + escapeHtml(why) + '">' + escapeHtml(label) + ' <b>' + count + '</b></span>';
   return chip('零覆盖验收', uncovered,
@@ -6210,9 +6440,17 @@ function coverageRates(coverage) {
           : '每条验收标准都有用例提到它')
       + chip('无对应验收的必须过用例', unmapped,
       unmapped
-          ? '这几条「必须过」的用例没写对应哪条验收标准：用例 '
+          // 说清「机器把它降成了建议过」：清单上那一条现在画的是「建议过」，
+          // 光说「这几条是必须过」会让人以为是界面画错了（见 AcceptanceCoverage.level 那条硬规则）
+          ? '这几条标了「必须过」却没挂验收标准，机器把它们降成了「建议过」：用例 '
               + (coverage.unmappedMust || []).join('、')
-          : '必须过的用例都写了对应哪条验收标准');
+          : '必须过的用例都写了对应哪条验收标准')
+      // 第三枚：停用的用例不算覆盖，但这件事和「没人管」不是同一句话
+      //（见 AcceptanceCoverage.Report.disabledOnly）——不说清，它看起来就像一条被漏掉的空白
+      + chip('用例被停用后没人管', disabledOnly,
+      disabledOnly
+          ? '这些验收标准本来有用例在管，而管事的那条被停用了：' + (coverage.disabledOnly || []).join('、')
+          : '没有哪条验收标准是因为用例被停用才没人管的');
 }
 
 /**
@@ -6228,7 +6466,8 @@ function coverageProblemsHtml(coverage) {
   }
   const uncovered = coverage.uncovered || [];
   const unmapped = coverage.unmappedMust || [];
-  if (!uncovered.length && !unmapped.length) {
+  const disabledOnly = coverage.disabledOnly || [];
+  if (!uncovered.length && !unmapped.length && !disabledOnly.length) {
     return '';
   }
   const rows = [];
@@ -6240,14 +6479,24 @@ function coverageProblemsHtml(coverage) {
     rows.push('<div class="case-line"><span class="k">零覆盖</span><span class="v">还有 '
         + (uncovered.length - 8) + ' 条没有列出来（一共 ' + uncovered.length + ' 条）</span></div>');
   }
+  // 停用造成的那一栏单独说：**它不是零覆盖**，是人把管事的那条用例停了。
+  // 说成「没人管」会让人以为清单里压根没写过它，然后去重新生成一份用例
+  for (const item of disabledOnly) {
+    rows.push('<div class="case-line"><span class="k">停用后没人管</span><span class="v">'
+        + escapeHtml(item) + '：管这条验收标准的用例被你停用了——'
+        + '要么恢复它，要么另写一条用例来验</span></div>');
+  }
   if (unmapped.length) {
-    rows.push('<div class="case-line"><span class="k">无对应验收</span><span class="v">用例 '
-        + unmapped.join('、') + '：这几条是「必须过」，却没写它对应哪条验收标准</span></div>');
+    rows.push('<div class="case-line"><span class="k">降成建议过</span><span class="v">用例 '
+        + unmapped.join('、') + '：这几条标了「必须过」，却没挂任何一条验收标准——'
+        + '「不过就等于需求没做到」这个分量只有验收标准给得起，所以机器把它们降成了「建议过」'
+        + '（要么给它挂一条验收标准，要么就按建议过算）</span></div>');
   }
   return '<div class="hint wire-bad-note">验收标准 ⇄ 用例清单对不上：'
       + uncovered.length + ' 条验收标准没有任何用例提到，'
-      + unmapped.length + ' 条必须过的用例没写对应哪条验收标准（两个数都该是 0）。'
-      + '不影响这一轮往下走，但这两笔账得有人认。' + rows.join('') + '</div>';
+      + unmapped.length + ' 条标了「必须过」却没挂验收标准（已被降成「建议过」），'
+      + disabledOnly.length + ' 条是因为用例被停用才没人管（三个数都该是 0）。'
+      + '不影响这一轮往下走，但这几笔账得有人认。' + rows.join('') + '</div>';
 }
 
 /**
@@ -6272,13 +6521,35 @@ function casesFootHtml(cases, opts) {
       + '<span class="state">' + escapeHtml(why) + '</span></div>';
 }
 
+/**
+ * 画 chip 用的那份清单。
+ *
+ * <p>为什么不直接用 {@code state.plan.cases}：**第二段**（代码写完、看过这次 diff 之后）
+ * 补的那一栏「怎么测」落在留档与终态事件里（{@code state.testsCases}），而
+ * {@code state.plan.cases} 是用户在检查阶段确认并冻结的那一份——**故意不回写它**：
+ * 冻结指纹（{@code caseSignature}）是按它算的，一改就会要求用户重新确认一遍。
+ *
+ * <p>所以这里只借「怎么测」那一栏，而且只在编号逐个对得上时借（同一份清单）：
+ * 期望、分级、验收标准一律以界面上这份为准。不借的话，跑完一次之后方案面板还写着
+ * 「第二段还没补」，而失败清单里那一条已经补上了——同一件事两处说法不一致。
+ */
+function chipCases() {
+  const list = (state.plan && state.plan.cases) || [];
+  const refined = state.testsCases || [];
+  if (!list.length || refined.length !== list.length
+      || !list.every((one, i) => Number(one.index) === Number(refined[i].index))) {
+    return list;
+  }
+  return list.map((one, i) => ({ ...one, how: refined[i].how || one.how }));
+}
+
 /** 只重画用例清单那一块（#plan 是重画出来的，所以这里可能找不到它）。 */
 function renderCases(focus = false) {
   const box = $('cases');
   if (!box) {
     return;
   }
-  box.innerHTML = casesPanelHtml(state.plan && state.plan.cases, testsReport(state.tests),
+  box.innerHTML = casesPanelHtml(chipCases(), testsReport(state.tests),
       casesPanelOptions());
   wireCases(box);
   // 只有「用户点了 chip」那一次才把焦点还给那个 chip：键盘用户回车展开细节，
@@ -6296,7 +6567,7 @@ function renderCases(focus = false) {
 function casesBlock() {
   const box = document.createElement('div');
   box.id = 'cases';
-  box.innerHTML = casesPanelHtml(state.plan && state.plan.cases, testsReport(state.tests),
+  box.innerHTML = casesPanelHtml(chipCases(), testsReport(state.tests),
       casesPanelOptions());
   wireCases(box);
   return box;
@@ -6310,11 +6581,13 @@ function casesPanelOptions() {
     confirm: true,
     // 覆盖核对那两枚计数跟着这一份方案走（引擎在检查阶段算好发回来的）
     coverage: state.coverage,
+    // 分母口径：停用着的那几条（界面上这份清单不画停用按钮以外的记号，全交给这几个数）
+    disabled: state.disabled,
   };
 }
 
 /**
- * 用例清单那一块的接线：chip 点开细节、底下那枚「确认」。
+ * 用例清单那一块的接线：chip 点开细节、底下那枚「确认」、每条右边那枚「停用 / 恢复」。
  *
  * @param rerender chip 点开之后重画哪儿。主面板里是它自己那一块（{@link renderCases}），
  *                 历史面板里是整块留档详情——两处的容器不是同一个
@@ -6328,10 +6601,67 @@ function wireCases(box, rerender = () => renderCases(true)) {
       rerender();
     };
   }
+  for (const button of box.querySelectorAll('[data-off-case]')) {
+    button.onclick = () => toggleCaseDisabled(Number(button.dataset.offCase));
+  }
   const confirm = box.querySelector('[data-act="confirm"]');
   if (confirm) {
     confirm.onclick = confirmCases;
   }
+}
+
+/**
+ * 停用 / 恢复一条用例（用户的原话是「删掉它」）。
+ *
+ * <p><b>为什么是可恢复的停用、不是删除。</b>用户想表达的是「这条别再算了」，
+ * 而删除是不可逆的：清单是冻结的，删掉之后既解释不了「当时为什么少了一条」，
+ * 也没法把它拿回来。停用同样让它退出所有分母（通过率、溯源、回喂、覆盖核对），
+ * 引擎也不再要求它被实现，而人随时能恢复——留档里那条流水记着谁、什么时候、做了什么。
+ *
+ * <p><b>先落档再改界面</b>（和 markVerdict 同一条纪律）：服务端写不进去就不许改界面，
+ * 否则用户以为停掉了、一刷新又回来了，而中间那一次运行照样把它算进分母。
+ * 还没跑过（没有留档 id）时只能先记在界面这一侧：它跟着这次运行的请求进引擎，
+ * 由引擎在那一刻写进留档。
+ */
+async function toggleCaseDisabled(index) {
+  const off = !state.disabled.has(index);
+  if (canRecordSwitch(index)) {
+    const result = await sendJson('POST', '/api/tests/disable',
+        JSON.stringify({ id: state.recordId, cases: [index], disabled: off }));
+    if (!result.ok) {
+      return;
+    }
+    // 以服务端返回的那条流水为准重画：界面自己加减的话，两边迟早各说各的
+    state.disabled = disabledOf({ caseSwitches: result.payload.caseSwitches });
+  } else {
+    if (off) state.disabled.add(index);
+    else state.disabled.delete(index);
+  }
+  // 停用的用例不该还勾着要回喂给开发：它已经不参与回喂了
+  if (off) state.picked.delete(index);
+  renderCases();
+  refreshResult();
+  notice('ok', off
+      ? '已停用用例 ' + index + '：它不再进通过率的分母、不参与回喂、覆盖核对也不算它，'
+          + '引擎也不再要求它被实现（这一笔写进了这次运行的留档，随时可以恢复）。'
+      : '已恢复用例 ' + index + '：它照旧进分母、参与回喂与覆盖核对。');
+}
+
+/**
+ * 这一条能不能直接落进某条留档。
+ *
+ * <p>判据是「它属于留档里冻的那份清单」：编号只在那份清单里有意义（回喂同一套口径）。
+ * 不判的话有两条歪路：① 刚检查完还没跑过，按旧记录落 —— 引擎会回一句
+ * 「这条不在那次冻结的清单里」，而用户只是想停用它；② 刚重新检查过、清单换了，
+ * 新单子里的编号落进上一轮的留档，事后翻记录的人会看到一条和那次运行无关的停用记录。
+ * 落不了档就先只记在界面上（{@code state.disabled}）：它跟着这次运行的请求进引擎，
+ * 由引擎在那一刻写进**这一次**的留档。
+ */
+function canRecordSwitch(index) {
+  if (!state.recordId) {
+    return false;
+  }
+  return (state.testsCases || []).some(one => Number(one.index) === Number(index));
 }
 
 // ---------- 确认 → 冻结 ----------
@@ -6546,11 +6876,13 @@ function testsActionsHtml(report, cases, picked, known, opts) {
 }
 
 /** 失败清单里能勾的那几个用例编号，升序去重——「全选」与默认勾选共用它。 */
-function pickableIndexes(report) {
+function pickableIndexes(report, disabled = new Set()) {
   const found = new Set();
   for (const failure of (report && report.failures) || []) {
     const index = numbersIn(failure.testCase)[0];
-    if (index !== undefined) {
+    // 停用的用例不给勾：它已经不参与回喂（引擎那一侧也会当场拦下），
+    // 摆在勾选里等于让人去做一件做不到的事
+    if (index !== undefined && !disabled.has(Number(index))) {
       found.add(index);
     }
   }
@@ -6567,14 +6899,15 @@ function pickableIndexes(report) {
  * <p>纯函数、单独钉住：默认勾错的表现很安静——用户点「下一步」时才发现少喂了一条，
  * 而那时一次模型调用已经花出去了。
  */
-function defaultPicks(report, known) {
+function defaultPicks(report, known, disabled = new Set()) {
   const verdicts = known || new Map();
-  return new Set(pickableIndexes(report).filter(index => verdicts.get(index) === VERDICT.CODE));
+  return new Set(pickableIndexes(report, disabled)
+      .filter(index => verdicts.get(index) === VERDICT.CODE));
 }
 
-/** 「全选 / 取消全选」：都勾上了就清空，否则全勾上。 */
-function toggleAllPicks(report, picked) {
-  const failing = pickableIndexes(report);
+/** 「全选 / 取消全选」：都勾上了就清空，否则全勾上。停用的那几条不参与（见 pickableIndexes）。 */
+function toggleAllPicks(report, picked, disabled = new Set()) {
+  const failing = pickableIndexes(report, disabled);
   const all = failing.length > 0 && failing.every(index => picked.has(index));
   return all ? new Set() : new Set(failing);
 }
@@ -6596,11 +6929,16 @@ function testsPanelHtml(raw, cases, opts = {}) {
   const known = opts.known || new Map();
   const open = opts.open !== false;
   const list = cases || [];
+  const disabled = opts.disabled || new Set();
+  // 能不能在失败行上停用：只有「正在看这次运行」的场合可以（历史详情只看不动，
+  // 那里的按钮动的是此刻的清单，而屏幕上摆的是另一次运行的结论）
+  const canSwitch = opts.actions !== false;
 
   let body = '';
   if (report.failures.length) {
     body += '<div class="fail-list">'
-        + report.failures.map(failure => failRowHtml(failure, list, picked, known)).join('')
+        + report.failures.map(failure => failRowHtml(failure, list, picked, known, disabled,
+            canSwitch)).join('')
         + '</div>';
     // 原始证据摆在紧挨着失败清单的地方：日志尾部固定摊开（不折进 details），
     // 测试代码正文在每条用例的细节里（方案面板那一块）。分工是「一行结论 + 现场原话」
@@ -6625,8 +6963,8 @@ function testsPanelHtml(raw, cases, opts = {}) {
   // 少了后者，一次只跑了三条用例的运行会被读成满分
   if (list.length) {
     body += '<div class="rate-row">'
-        + '<span class="rate">总通过率 <b>' + rateOfAll(list, report) + '</b></span>'
-        + coverageRates(opts.coverage) + '</div>';
+        + '<span class="rate">总通过率 <b>' + rateOfAll(list, report, disabled) + '</b></span>'
+        + coverageRates(opts.coverage) + disabledRateHtml(disabled) + '</div>';
   }
 
   body += regenBlockHtml(opts.regenerated);
@@ -6648,7 +6986,8 @@ function testsPanelHtml(raw, cases, opts = {}) {
 
   return '<section class="pending tests" data-open="' + open + '">'
       + '<div class="pending-head"><b>测试结果</b>'
-      + '<span class="pending-summary">' + escapeHtml(testsSummaryText(report, list)) + '</span>'
+      + '<span class="pending-summary">' + escapeHtml(testsSummaryText(report, list, disabled))
+      + '</span>'
       + '<button type="button" class="ghost small pending-toggle" aria-expanded="' + open + '">'
       + (open ? '收起' : '展开') + '</button></div>'
       + '<div class="pending-why">测试不是门槛，是给人看的证据：'
@@ -6657,15 +6996,16 @@ function testsPanelHtml(raw, cases, opts = {}) {
       + '</section>';
 }
 
-/** 整份清单的通过率（过了几条 / 一共几条）。 */
-function rateOfAll(cases, report) {
+/** 整份清单的通过率（过了几条 / 一共几条）。分母同样只算没停用的那些。 */
+function rateOfAll(cases, report, disabled = new Set()) {
+  const live = liveCases(cases, disabled);
   let passed = 0;
-  for (const one of cases || []) {
+  for (const one of live) {
     if (caseOutcome(report, one.index) === 'passed') {
       passed++;
     }
   }
-  return passed + '/' + (cases || []).length;
+  return passed + '/' + live.length;
 }
 
 /**
@@ -6700,6 +7040,8 @@ function testsPanelFor(state1) {
     regenerated: state1.regenerated,
     pending: !!(state1.pending && state1.pending.present),
     actions: true,
+    // 分母口径：停用的那几条不进分子分母，也勾不动（见 pickableIndexes）
+    disabled: state1.disabled,
     // 回喂的下落与「它有没有真改」：两条都跟着这一次的终态事件走（引擎算的）
     result: state1.lastResult,
     coverage: state1.coverage,
@@ -6774,7 +7116,8 @@ function seedPicks() {
     return;
   }
   state.picksSeeded = true;
-  state.picked = defaultPicks(testsReport(state.tests), state.known);
+  // 停用的那几条不铺：它们已经不参与回喂（引擎也会当场拦下勾中的停用编号）
+  state.picked = defaultPicks(testsReport(state.tests), state.known, state.disabled);
 }
 
 /**
@@ -6980,7 +7323,7 @@ async function onTestAction(act) {
   }
 }
 
-/** 把失败清单那一块接上（收起/展开、勾选框、全选、动作按钮）。 */
+/** 把失败清单那一块接上（收起/展开、勾选框、全选、动作按钮、每条失败旁边的停用）。 */
 function wireTests(box) {
   const section = box.querySelector('.pending.tests');
   if (!section) {
@@ -6988,6 +7331,11 @@ function wireTests(box) {
   }
   for (const check of section.querySelectorAll('[data-pick]')) {
     check.onchange = () => togglePick(Number(check.dataset.pick), check.checked);
+  }
+  // 停用/恢复：和用例清单那一边是同一个动作（同一个接口、同一份留档），
+  // 只是入口在失败行上——人正是在这里看着一条红的，顺手就能说「这条别再算了」
+  for (const button of section.querySelectorAll('[data-off-case]')) {
+    button.onclick = () => toggleCaseDisabled(Number(button.dataset.offCase));
   }
   wirePanel(box, open => { state.testsOpen = open; }, act => onTestAction(act));
 }
@@ -7000,7 +7348,7 @@ function wireTests(box) {
  * 键盘用户点一下「全选」不该被扔回页面顶部。
  */
 function pickAll() {
-  state.picked = toggleAllPicks(testsReport(state.tests), state.picked);
+  state.picked = toggleAllPicks(testsReport(state.tests), state.picked, state.disabled);
   refreshResult();
   const button = document.querySelector('#result [data-act="pick-all"]');
   if (button) {
@@ -7378,6 +7726,12 @@ function renderResult(result) {
   // 已经有一份时不覆盖：事件里那份带着测试代码正文，留档里那份没有（见 applyRunDetail）
   if (result.tests && !state.tests) {
     state.tests = result.tests;
+  }
+  // 第二段补完的那份清单也跟着终态事件到（引擎放在 payload.testCases 里）：
+  // 它带回了每一条的「怎么测」。不接这一句，用户要么刷新页面、要么翻历史详情
+  // 才看得到第二段的产物——而「两段各自产出了什么」正是这一批要看得见的东西
+  if (result.testCases && result.testCases.length) {
+    state.testsCases = result.testCases;
   }
   const [kind, text] = STATUS_TEXT[result.status] || ['bad', result.status];
   const box = $('result');

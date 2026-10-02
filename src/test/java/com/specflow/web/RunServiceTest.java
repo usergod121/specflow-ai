@@ -375,7 +375,7 @@ class RunServiceTest {
             RunService service = new RunService(root, project, root.resolve(".specflow/templates"));
 
             RunRequest request = RunRequest.of(null, "把 a 改成 2", null, null, null,
-                    List.of("Foo.java"), null, null, null, null, 0, 1, null, List.of(2));
+                    List.of("Foo.java"), null, null, null, null, 0, 1, null, List.of(2), null);
             service.start(request);
             awaitIdle(service);
             service.shutdown();
@@ -417,7 +417,7 @@ class RunServiceTest {
         RunService service = service();
 
         RunRequest request = RunRequest.of(null, "把 a 改成 2", null, null, null,
-                List.of("Foo.java"), null, null, null, null, 0, 1, null, List.of(2));
+                List.of("Foo.java"), null, null, null, null, 0, 1, null, List.of(2), null);
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.start(request))
                 .isInstanceOf(IllegalStateException.class)
@@ -441,7 +441,7 @@ class RunServiceTest {
         RunService service = service();
 
         RunRequest request = RunRequest.of(null, "把 a 改成 2", null, null, null,
-                List.of("Foo.java"), null, null, null, null, 0, 1, null, List.of(1));
+                List.of("Foo.java"), null, null, null, null, 0, 1, null, List.of(1), null);
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.start(request))
                 .isInstanceOf(IllegalStateException.class)
@@ -510,7 +510,7 @@ class RunServiceTest {
             ReviewOutcome copied = service.review(RunRequest.of(null, "把 a 改成 2",
                     List.of("A1：加完之后 a 等于 2"), null, null,
                     List.of("src/main/java/demo/Foo.java"), null, null, null, null, null, null,
-                    null, List.of()));
+                    null, List.of(), null));
             assertThat(copied.coverage().uncoveredCount())
                     .as("照抄原文：一条都不该报（假红会让人去改一份本来就对的东西）").isZero();
             assertThat(copied.coverage().unmappedMustCount()).isZero();
@@ -518,7 +518,7 @@ class RunServiceTest {
             ReviewOutcome stale = service.review(RunRequest.of(null, "把 a 改成 2",
                     List.of("A1：加完之后 a 等于 2"), null, null,
                     List.of("src/main/java/demo/Foo.java"), null, null, null, null, null, null,
-                    null, List.of()));
+                    null, List.of(), null));
             assertThat(stale.coverage().uncoveredCount())
                     .as("照抄的是上一版验收文本：当场报零覆盖（实测那一次是 5/5）").isEqualTo(1);
             assertThat(stale.coverage().uncovered()).containsExactly("A1：加完之后 a 等于 2");
@@ -562,7 +562,7 @@ class RunServiceTest {
 
             ReviewOutcome outcome = service.review(RunRequest.of(null, "加一个接口", null, null, null,
                     List.of("src/main/java/demo/Foo.java"), null, null, null, null, null, null,
-                    null, List.of()));
+                    null, List.of(), null));
             service.shutdown();
 
             assertThat(outcome.plan().steps()).as("施工单解析出来了").hasSize(3);
@@ -610,7 +610,7 @@ class RunServiceTest {
 
             Map<String, Object> payload = service.regenerateTests(RunRequest.of(null, "把 a 改成 2",
                     null, null, null, List.of("Foo.java"), null, null, planWithCases(),
-                    null, null, null, null, List.of()));
+                    null, null, null, null, List.of(), null));
             service.shutdown();
 
             assertThat(model.calls()).as("三版都跑不出结论，就换了三版").isEqualTo(3);

@@ -11,6 +11,7 @@ import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
 import com.specflow.spec.ContextItem;
 import com.specflow.spec.Spec;
+import com.specflow.tests.CaseHowStage;
 import com.specflow.tests.Refeed;
 import com.specflow.tests.TestOutcome;
 import com.specflow.verify.VerificationResult;
@@ -21,6 +22,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 一边把进度转给下游，一边把它记成一份运行留档。
@@ -126,13 +128,33 @@ public final class RunRecorder implements AgentListener {
      */
     private EnvRegistration environment;
 
+    /**
+     * 这次运行<b>带着哪几条停用的用例</b>开工（谁、什么时候）。
+     *
+     * <p>它在开工那一刻就定下来了（界面把手上那份集合随请求发过来），所以照 {@link #refeed}
+     * 的样子在构造时收着、写记录时一并落档。留档里没有这一栏，事后的人就只能看到
+     * 「通过率的分母比清单短」——而那是这一批要回答的第一个问题：分母里少了哪几条、谁停的。
+     */
+    private final List<RunRecord.CaseSwitch> caseSwitches;
+
+    /**
+     * <b>第二段</b>补完之后的用例清单（见 {@code CaseHowStage}）；没走到第二段时是 {@code null}。
+     *
+     * <p>它和 {@link #approved} 的差别只有一栏：「怎么测」是看了这次改动的 diff 之后补的，
+     * 而期望、分级、验收标准一个字都不许改（机器逐字核过，见 {@code CaseHowStage}）。
+     * 留档里留下的必须是补完之后那一份：界面上的 chip 要说得出
+     * 「这条的期望来自第一段、怎么测来自第二段」。
+     */
+    private List<PlanReview.TestCase> refinedCases;
+
     private RunRecorder(RunStore store, AgentListener delegate, Spec spec, PlanReview approved,
-                        Refeed refeed) {
+                        Refeed refeed, List<RunRecord.CaseSwitch> caseSwitches) {
         this.store = store;
         this.delegate = delegate;
         this.spec = spec;
         this.approved = approved;
         this.refeed = refeed == null ? Refeed.none() : refeed;
+        this.caseSwitches = caseSwitches == null ? List.of() : List.copyOf(caseSwitches);
         LocalDateTime now = LocalDateTime.now();
         this.id = STAMP.format(now);
         this.startedAt = now.toString();
@@ -153,7 +175,21 @@ public final class RunRecorder implements AgentListener {
      */
     public static RunRecorder start(RunStore store, Spec spec, PlanReview approved,
                                     AgentListener delegate, Refeed refeed) {
-        return new RunRecorder(store, delegate, spec, approved, refeed);
+        return new RunRecorder(store, delegate, spec, approved, refeed, List.of());
+    }
+
+    /**
+     * 带「这次带着哪几条停用的用例」的那一版：界面提交的运行都走它。
+     *
+     * <p>单独一个重载而不是改掉上面那个签名：CLI 那条路（{@code RunCommand} / {@code ContinueCommand}）
+     * 没有停用这个概念，让它多传一个空表只是给它添一处没意义的参数。
+     *
+     * @param caseSwitches 开工时那份停用流水（谁、什么时候、哪几条）
+     */
+    public static RunRecorder start(RunStore store, Spec spec, PlanReview approved,
+                                    AgentListener delegate, Refeed refeed,
+                                    List<RunRecord.CaseSwitch> caseSwitches) {
+        return new RunRecorder(store, delegate, spec, approved, refeed, caseSwitches);
     }
 
     // ---------- 记录并转发 ----------
@@ -286,6 +322,31 @@ public final class RunRecorder implements AgentListener {
         delegate.workspaceRestored(round, reason);
     }
 
+    /**
+     * <b>第二段</b>补好了每一条的「怎么测」。
+     *
+     * <p>记两笔：清单换成本次运行真正用的那一份（期望与分级一个字都没改，机器核过），
+     * 以及那句话进时间线——「补了几条、哪几条没补上、有没有出现过想改期望被拦下」
+     * 都要留在留档里。不记的话，事后翻记录只看得到「怎么测」这一栏空着，
+     * 分不清是没验、还是第二段没补成功。
+     *
+     * <p><b>交给它的用例是「活着的」那几条</b>（停用的不进测试阶段，也就没有「怎么测」要补），
+     * 而录制器手里那份 {@code approved} 是<b>完整</b>的。所以这里按编号把这一栏并回去
+     * （见 {@code CaseHowStage.merge}），并把并完的那一份转发给下游：留档与界面于是都拿完整清单——
+     * 少并这一步，被停用的用例会从留档里消失，「恢复」再也按不回来（那是不可逆的删除）。
+     */
+    @Override
+    public void casesRefined(List<PlanReview.TestCase> cases, String note) {
+        if (cases != null) {
+            this.refinedCases = CaseHowStage.merge(
+                    approved == null ? List.of() : approved.cases(), cases);
+        }
+        if (note != null && !note.isBlank()) {
+            record(round, "info", note);
+        }
+        delegate.casesRefined(this.refinedCases != null ? this.refinedCases : cases, note);
+    }
+
     @Override
     public void finished(AgentResult result) {
         // 拒绝开工的那一次（施工单已经对不上现在的清单）不留档。
@@ -308,30 +369,44 @@ public final class RunRecorder implements AgentListener {
     }
 
     private void persist(AgentResult result) {
+        // 清单用第二段补完之后那一份（有的话）：期望与验收标准与冻结的那份逐字相同，
+        // 差别只有「怎么测」——而那一栏正是第二段唯一的产物，界面要说得出来它是哪来的。
+        // 它已经是**完整**那份（见 casesRefined：第二段的产物按编号并回了冻结清单）：
+        // 拿只有活着的用例那份当留档，被停用的用例就会从留档里消失，停用也就恢复不了了
+        List<PlanReview.TestCase> cases = refinedCases != null ? refinedCases
+                : (approved == null ? List.of() : approved.cases());
         RunRecord record = new RunRecord(id, startedAt, result.status().name(), spec.template(),
                 spec.prompt(), spec.acceptance(), contextOf(spec), spec.trace().requirementId(),
                 spec.targets(), result.attempts(), result.detail(),
                 approved == null ? List.of() : approved.missing(),
                 changesOf(result.changes()), stepsOf(result), planSteps, stepsSource,
-                approved == null ? List.of() : approved.cases(), tests, environment,
+                cases, tests, environment,
                 // 判决、收场、重新生成过哪几份产物，都是**跑完之后**人写的（见 RunStore.judge /
                 // settle / regenerated）；这里给 null，留档里于是没有这几项——
                 // 「没人判过」和「判了一个空表」是两件事
                 null, null, null,
                 List.copyOf(timeline),
                 // 覆盖核对：拿需求里的验收标准与这次那份清单数一遍。它和判决一样是**算出来的**，
-                // 跟着记录走，界面在通过率旁边固定显示的那两个计数就是它
-                AcceptanceCoverage.check(spec.acceptance(),
-                        approved == null ? List.of() : approved.cases()),
+                // 跟着记录走，界面在通过率旁边固定显示的那几个计数就是它。
+                // 停用的用例要一起传进去：它们不参与分母，而「管这条验收标准的用例被停用了」
+                // 与「一条用例都没覆盖」是两句不同的话（见 AcceptanceCoverage.Report）
+                AcceptanceCoverage.check(spec.acceptance(), cases, disabledIn()),
                 refeed.present() ? refeed : null,
                 // 「它没有改动」：只有这一轮真回喂了才给这个结论（见 Refeed.unchanged）
-                refeed.present() ? Refeed.unchanged(refeed, result.changes()) : null);
+                refeed.present() ? Refeed.unchanged(refeed, result.changes()) : null,
+                // 谁在什么时候停用了哪几条（开工那一刻的那份集合，见 caseSwitches）
+                caseSwitches.isEmpty() ? null : caseSwitches);
         try {
             store.save(record);
             log.debug("运行记录已写入 {}", store.directory().resolve(id));
         } catch (RuntimeException e) {
             log.warn("运行记录写入失败，不影响本次结果：{}", e.getMessage());
         }
+    }
+
+    /** 这次开工时停用着的那几条用例编号。 */
+    private Set<Integer> disabledIn() {
+        return RunRecord.CaseSwitch.disabledIn(caseSwitches);
     }
 
     private static List<RunRecord.Change> changesOf(List<PatchApplier.FileChange> changes) {

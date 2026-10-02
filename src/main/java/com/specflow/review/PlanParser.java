@@ -155,7 +155,7 @@ public final class PlanParser {
     // ---------- 用例清单 ----------
 
     /**
-     * 每行一条：{@code 编号 | 要测什么 | 怎么测 | 分级 | 期望什么 | 对应哪条验收标准}。
+     * 每行一条：{@code 编号 | 要测什么 | 分级 | 期望什么 | 对应哪条验收标准}。
      *
      * <p>和施工单同一套宽容度，也同样<b>不静默丢</b>：字段没写全的行整行当作「要测什么」。
      * 理由在测试阶段那一侧更硬——清单是<b>生成测试代码的唯一依据</b>，
@@ -191,6 +191,12 @@ public final class PlanParser {
      * <p>只有一栏时按「整句话就是要测什么」处理（和施工单同一个坑：硬按编号栏去认，
      * 会把整句话当成编号丢进 index）。编号写错、漏写、重复都不影响清单顺序——
      * 界面按行序排，编号只在「失败清单对回哪一条」时当键用，缺了就按行号补一个。
+     *
+     * <p><b>六栏是老的写法，五栏是现在的（第一段不再写「怎么测」）。</b>两种都要认，
+     * 而且必须按栏数分道：用户自己的模板（{@code .specflow/templates}）里可能还写着六栏，
+     * 「怎么测」会被模型老实填在第 3 栏。只按五栏认的话，从第 3 栏起整体错位一格——
+     * 分级会读到「怎么测」那句话、期望会读到「必须过」，每一栏都是隔壁的内容，
+     * 这比读不出来糟得多（{@code trimPipes} 那个坑是同一类）。
      */
     private PlanReview.TestCase testCase(String[] parts, int fallbackIndex) {
         if (parts.length == 1) {
@@ -198,10 +204,18 @@ public final class PlanParser {
                     PlanReview.TestCase.Level.UNKNOWN, "", "");
         }
         int index = number(field(parts, 0));
-        return new PlanReview.TestCase(index > 0 ? index : fallbackIndex,
-                field(parts, 1), field(parts, 2),
-                PlanReview.TestCase.Level.parse(field(parts, 3)),
-                field(parts, 4), field(parts, 5));
+        int number = index > 0 ? index : fallbackIndex;
+        if (parts.length >= 6) {
+            return new PlanReview.TestCase(number, field(parts, 1), field(parts, 2),
+                    PlanReview.TestCase.Level.parse(field(parts, 3)),
+                    field(parts, 4), field(parts, 5));
+        }
+        return new PlanReview.TestCase(number, field(parts, 1),
+                // 第一段不写「怎么测」（那时还没看过代码，写了也是照脑子里的实现猜的），
+                // 这一栏留给第二段：代码写完、有了这次 diff 之后才补（见 CaseHowStage）
+                "",
+                PlanReview.TestCase.Level.parse(field(parts, 2)),
+                field(parts, 3), field(parts, 4));
     }
 
     // ---------- 施工单 ----------

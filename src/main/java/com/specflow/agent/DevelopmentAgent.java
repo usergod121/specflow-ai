@@ -27,6 +27,7 @@ import com.specflow.spec.Spec;
 import com.specflow.template.TemplateRegistry;
 import com.specflow.tests.ExecutionLocation;
 import com.specflow.tests.Refeed;
+import com.specflow.tests.CaseHowStage;
 import com.specflow.tests.TestAgent;
 import com.specflow.tests.TestOutcome;
 import com.specflow.tests.TestReport;
@@ -519,7 +520,7 @@ public final class DevelopmentAgent {
         }
         TestOutcome tests;
         try {
-            tests = testPhase(spec, approved);
+            tests = testPhase(spec, approved, lastChanges);
         } catch (EnvProblem problem) {
             // 环境起不来：这就是十五.5 里那一档「立刻停 + 原始错误 + 待办」。
             // 落成环境问题的测试结论，下面那段收场会**留下现场**并把原因交给人——
@@ -579,15 +580,27 @@ public final class DevelopmentAgent {
      * <b>测试脚本跑在哪</b>也在这一段定：环境活着 → 单元与集成都进容器，否则都回退宿主
      * （十五.5，执行位置只由 {@link ExecutionLocation} 一处判）。
      *
+     * @param changes 这次运行真正落盘的改动。它是测试<b>第二段</b>唯一的依据——
+     *                「怎么测」要照着这次改了什么来补，而不是照着整份文件猜
      * @return 这次测试阶段的结论；没有用例清单时返回 {@code null}（= 没跑）
      */
-    private TestOutcome testPhase(Spec spec, PlanReview approved) {
+    private TestOutcome testPhase(Spec spec, PlanReview approved,
+                                  List<PatchApplier.FileChange> changes) {
         if (approved == null || approved.cases().isEmpty()) {
             return null;
         }
+        // 第二段：代码写完了、这次改动的 diff 也在手上了，让它给每条用例补「怎么测」。
+        // 为什么非要拆成两段：第一段（检查阶段）只能看到需求与验收标准，那时写「怎么测」
+        // 只能是照着它脑子里的实现猜；等真跑起来，用例描述的就成了「它打算怎么写」，
+        // 需求被代码稀释。它**不许改期望**——机器把照抄回来的期望与第一段逐字核过
+        // （见 CaseHowStage），对不上就整批打回重来。
+        CaseHowStage.Result refined = new CaseHowStage(assembler, templates, llm)
+                .fill(spec, approved.cases(), changes);
+        listener.casesRefined(refined.cases(), refined.note());
         // 先说起点再动手：这一段里界面拿不到任何进度（只有一次模型调用加一次脚本执行），
-        // 「开始了、大概要多久、中途停不下来」这三件事只能由引擎在这一刻告诉界面
-        listener.testsStarted(approved.cases().size());
+        // 「开始了、大概要多久、中途停不下来」这三件事只能由引擎在这一刻告诉界面。
+        // 条数用补完之后那份：它和上面那一行「怎么测」说的是同一件事
+        listener.testsStarted(refined.cases().size());
         Map<String, String> variables = null;
         EnvRegistration registration = null;
         // 这一次真的按哪个档跑：勾了集成、但环境怎么也起不来时，退成只跑单元（十五.5 的回退口径）。
@@ -621,7 +634,7 @@ public final class DevelopmentAgent {
             // 这一次在哪儿跑（容器 / 宿主）只在这一处问：环境活着就进容器，
             // 用不了（没 Docker、没初始化、容器关了）就回退宿主——回退这件事会写进结果与留档
             outcome = new TestAgent(projectRoot, project, templates, llm)
-                    .run(spec, approved.cases(), planned, variables,
+                    .run(spec, refined.cases(), planned, variables,
                             ExecutionLocation.of(environment));
         } catch (EnvProblem problem) {
             // 环境问题是这一段的刹车信号：它和「测试代码写错了」是两码事，

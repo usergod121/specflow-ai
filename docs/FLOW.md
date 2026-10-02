@@ -29,12 +29,15 @@
    过了 → 下一步；没过 → 回滚到本步进入点 → 回喂错误 → 本步重试（预算 max-retry）
    本步重试耗尽 / 总轮次用尽 → 整个 run 回滚到起点，失败收工
 ⑦ 全部走完        快照改名 .pending，等人接受或回滚           WorkspaceSnapshot.markPending
-⑧ 测试阶段        只在「检查阶段给过用例清单」时才跑：一次调用生成
- （Test Agent）    tools/<时间戳>/ 下的测试代码 + 入口脚本 → 引擎只落盘
+⑧ 测试阶段        只在「检查阶段给过用例清单」时才跑：**先跑第二段**——
+ （Test Agent）    代码写完了、这次改动的 diff 也出来了，让它给每条用例补「怎么测」
+                  （**期望一个字都不许改**：机器把它照抄回来的期望与第一段逐字比，
+                  对不上就带着差异再要一版，两版都不过就只补对得上的那几条）
+                  → 一次调用生成 tools/<时间戳>/ 下的测试代码 + 入口脚本 → 引擎只落盘
                  → 机器核对「用例 ⇄ 测试代码」的连线（不过就不跑）
                  → 在项目根执行它 → 看退出码 → 读它打印的失败清单
                  → 跑不出结论就再生成一版（最多 3 版，带上上一版的原始错误）
-                 DevelopmentAgent.testPhase → TestAgent / TestArtifacts /
+                 DevelopmentAgent.testPhase → CaseHowStage → TestAgent / TestArtifacts /
                  TestScriptVerifier / TestReport / CaseTraceCheck
 ⑨ 人看失败清单     停在这里等人：只有两条硬判据（环境起不来、超时）才停机，
                  而且是**只停机、不回滚**——改动与产物都留着进「待处置」等人定夺；
@@ -76,7 +79,10 @@
 | 检查回来后机器查出「方案执行不了」 | 人工确认 | 只此一处。方案（或施工单）要动的文件不在目标清单里、步数超过 7、最后一步标了中间态时，点「运行」被挡一次，点「我知道，仍然继续」才继续（一次性放行，换一份方案就失效）。施工单那三条由 `StepAudit` 判，在界面上单独占一块（`#plan .steps-audit`），同样是「我知道，仍然继续」才放行 | `RunService.review` → `PlanAudit.check` + `StepAudit.check`；`index.html` 的 `auditBlock()`、`stepsAuditBlock()` 与 `run()` |
 | 续跑复用留档里那份施工单 | 硬拦（没有放行） | 会。留档里那份当初是照**当时**的清单核的，而续跑的前提就是用户改了清单。复用前拿 `StepAudit` 对着当前 `targets` 再核一遍（越界的步物理上做不了），核不过就一个字节都不动地停下（`AgentResult.PLAN_OUTDATED`，CLI 退出码 6），并说清哪一步要动哪个文件。这次拒绝**不留档**——留档会把「挂着等人补料」的那条挤下去，用户就再也接不上了。留档里没有施工单（老记录）时不核，照旧现生成一份 | `DevelopmentAgent.staleSchedule`、`RunRecorder.finished` |
 | 测试产物只能写在 `tools/<时间戳>/` 里 | 硬拦 | 会。路径必须落在本次那个产物目录下：写产品代码、写别处、绝对路径、`..` 穿越一律整批拒绝（`TARGET_NOT_ALLOWED` 那种级别的错，但走的是另一份白名单——目标清单管不着它，它也不在 `spec.targets` 里，所以开发 Agent 改不动测试代码，结构上防作弊） | `TestArtifacts.write` / `shown` |
-| 用例 ⇄ 测试代码的溯源连线 | 硬拦 | 会。四条判据：清单上有、代码里没扫到 = **漏实现**；代码里有、清单上没有 = **清单外乱写**；**同一个文件里**同一个编号出现多次 = **重复实现**（跨文件不算：单元与集成各写一遍是正常的，旧口径按整批判重，代价是整批测试一次都不跑）；`expect` 与清单对不上 = **偷偷改期望**。任何一条不通过就**拒绝跑**（产物留着给人看差异，走「重新生成」那条路） | `CaseTraceCheck.check`、`TestReport.traceRefused` |
+| 用例 ⇄ 测试代码的溯源连线 | 硬拦 | 会。四条判据：清单上有、代码里没扫到 = **漏实现**；代码里有、清单上没有 = **清单外乱写**；**同一个文件里**同一个编号出现多次 = **重复实现**（跨文件不算：单元与集成各写一遍是正常的，旧口径按整批判重，代价是整批测试一次都不跑）；`expect` 与清单对不上 = **偷偷改期望**。任何一条不通过就**拒绝跑**（产物留着给人看差异，走「重新生成」那条路）。**被人停用的用例不在这份清单里**：引擎拿到的就是去掉停用的那份，所以不再要求它被实现 | `CaseTraceCheck.check`、`TestReport.traceRefused`、`PlanReview.live` |
+| 两段式生成：第一段只定期望，第二段补「怎么测」 | 硬拦（第二段） | 会。第一段（检查阶段）只给需求 + 验收标准 + 施工单（**一行代码都没有**），产出「编号 / 要测什么 / 分级 / 期望什么 / 对应哪条验收」五栏——写着「怎么测」也没地方放。第二段在代码写完、这次改动的 diff 出来后跑，只回 `编号 \| 怎么测 \| 期望`：**期望必须与第一段逐字相同**（归一化空白后比），对不上就**带着差异再要一版**（最多 2 版），两版都对不上就**只把对得上的那几条补进去**（其余留空）——**期望一个字都不会被改**。产物只有 `how` 一栏；界面与留档都标着「期望来自第一段、怎么测来自第二段」 | `CaseHowStage.fill`、`ReviewProtocol.CASES_RULES`、`PlanParser.testCase`（五栏/六栏都认）、`AgentListener.casesRefined`、`index.html` 的 `stageNoteHtml` / `caseDetailHtml` |
+| 没有对应验收标准的用例不许是「必须过」 | 硬拦（机器降级） | 会。「不过就等于这次需求没做到」这个分量只有验收标准给得起，所以标了「必须过」却没挂验收标准的用例，机器**当面降成「建议过」**，并照样把它数进「无对应验收的必须过用例」那一栏（降级不等于抹掉）。**需求里一条验收标准都没写时不降级**：那时没有可对应的对象，降级等于惩罚「没写验收标准」这件事 | `AcceptanceCoverage.level`、`AcceptanceCoverage.check`（`unmappedMust`）、`RunService.review` |
+| 停用 / 恢复一条用例（可恢复的停用） | 硬拦（退出分母） | 不拦流程，但**会让这条用例退出所有分母**：通过率（分子分母一起去掉）、溯源连线、回喂（勾中的停用编号会被引擎**当场拒**，`--refeed all` 也不含它们）、覆盖核对（`CaseTraceCheck` 更是压根拿不到它，于是不再要求它被实现）。覆盖核对把「本来有用例管、只是被停用了」单独报一栏（`disabledOnly`，「用例被停用后没人管」），**不混进「零覆盖」**——「没人管」和「管事的那条被你停了」是两句不同的话。留档里是一条**追加式流水**（`RunRecord.CaseSwitch`：谁、什么时候、停用还是恢复），老记录读回来是空表；界面 chip 与失败行上各有一枚小按钮，**可恢复**（用户口头语是"删掉它"，但删除不可逆，所以做成停用） | `RunRecord.CaseSwitch`、`RunStore.disable` / `refeed` / `failingCases`、`PlanReview.live`、`AcceptanceCoverage.Report.disabledOnly`、`POST /api/tests/disable`、`index.html` 的 `toggleCaseDisabled` / `liveCases` / `disabledRateHtml` |
 | 生成出来的脚本里的高危命令 | 硬拦 | 会。`sudo` / `rm -rf` / `dd if=` / `mkfs` / `--privileged` / 挂宿主根 / `$HOME` / `docker.sock`，以及 Windows 那一套删除命令（`del /s /q`、`rmdir /s /q`、`Remove-Item -Recurse`）命中就整批拒绝落盘、也不执行。判据**大小写无关、空白折叠**，还会把被换行拆开的命令（`^` / `\` 续行）接回去再判；「删除类命令 + 沾上产品目录、盘符、通配符、环境变量」一律拒，宁可误拒也不放过。它仍然是字面匹配，**挡不住真正的变体**（`python -c`、`mvn exec`），真正的兜底是容器隔离（还没做） | `TestArtifacts.forbidden` |
 | 脚本本身起不来 | 硬拦 | 会。入口脚本不存在、进程起不来、输出读不出来 → 判 `ENVIRONMENT`：立刻停、**不回滚**（改动与产物都留着等人处置）、把原始错误交给人（CLI 退出码 4）。**超时单独一档**（`TIMEOUT`）：连整棵进程树一起收掉（Windows 走 `taskkill /T`，只杀直接子进程会留下孙进程），同样**不回滚** | `TestScriptVerifier.run` / `killTree`、`TestReport.classify`、`DevelopmentAgent.execute` |
 | 测试失败的四档 | 硬拦（分档） | 会。**机器只保留两条硬判据**（都是引擎亲眼看见的），而且**只停机、不回滚**（用户 2026-10-02 拍板）：①**环境起不来** → 停（CLI 退出码 4）；②**测试超时** → 单独一档。其余每一档**一律不停机、不回滚、不自动回喂**，改动与产物都留着等人看：③**脚本说它没跑起来**（它自己打 `BLOCKED`，或输出里有带报错形状的「命令不存在 / 连不上」）——那是**它的说法**，引擎只转述（实测过它拿这句话盖住自己的编译错误，旧实现采信之后把编译通过的改动一起回滚了）；④**断言没过**（输出里有 `FAIL \| …`）——机器只看见现象，谁错了交给人；⑤**它的代码编不过**（跑完了、退出码非 0、却一条用例的结论都没报出来）。判断都由引擎按输出做，不看脚本自己下的结论 | `TestReport.classify`、`TestOutcome.Failure.Kind.hard()`、`DevelopmentAgent.execute` |

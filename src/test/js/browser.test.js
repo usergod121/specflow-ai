@@ -2969,6 +2969,10 @@ async function main() {
       // ② 开发那一轮：把 a 改成 2
       ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
        '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
+      // ②b 第二段：代码写完、diff 出来了，给每条用例补「怎么测」（`编号 | 怎么测 | 期望`）。
+      // 期望必须与上面那份清单**逐字照抄**：机器逐字核，对不上会带着差异再要一版（吃掉下一条回答）。
+      // 「怎么测」本来是第一段写的，从这一批起挪到了这里（第一段看不到代码，写出来是照脑子里的实现猜的）
+      ['1 | 读 Foo.java 里的 a，看它是不是 2 | a == 2'].join('\n'),
       // ③ 生成测试产物：入口脚本打印一条失败并非 0 退出。
       // 锚点（REM CASE / REM expect）必须和上面那份清单逐字对得上——引擎在跑之前会机器核对，
       // 对不上的产物会被直接拒绝运行（链 28 验的就是那条路）。
@@ -3119,6 +3123,9 @@ async function main() {
       // ② 开发那一轮：把 a 改成 2
       ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
        '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
+      // ②b 第二段：补「怎么测」；两条的期望都要逐字照抄上面那份清单
+      ['1 | 读 Foo.java 里的 a，看它是不是 2 | a == 2',
+       '2 | 跑一次编译，看退出码 | 编译通过'].join('\n'),
       // ③ 生成测试产物：一条过、一条不过，退出码 1。
       // 锚点（CASE 编号 + expect: 清单里那句期望）写在**测试代码文件**里，入口脚本只用 ASCII——
       // 这是协议要求的写法：引擎落盘时行尾统一是 LF，而 .cmd 是按本机代码页读的，
@@ -3177,9 +3184,21 @@ async function main() {
     check(chipText26.includes('a 能变成 2') && chipText26.includes('读 Foo.java 里的 a'),
         'chip 上就是口语化的「要测什么 + 怎么测」：' + JSON.stringify(chipText26));
     const rates26 = await evaluate(`document.querySelector('#cases .rate-row').textContent`);
-    check(rates26.includes('必须过 0/1') && rates26.includes('建议过 0/1')
+    // 这一链故意把第 1 条写成「必须过」而那一栏是「无」，同时又加了一条验收标准：
+    // **硬规则**于是当场生效——机器把它降成「建议过」（见 AcceptanceCoverage.level）。
+    // 所以两档的数都变了：必须过 0/0、建议过 0/2
+    check(rates26.includes('必须过 0/0') && rates26.includes('建议过 0/2')
             && rates26.includes('可选 0/0') && rates26.includes('未标 0/0'),
         '四档通过率都在（某一档为空也照常显示 0/0，不是整块消失）：' + JSON.stringify(rates26));
+    check(await evaluate(`document.querySelector('#cases .case-tier-head.should') !== null`),
+        '标了「必须过」却没挂验收标准的那条被机器降成了「建议过」（硬规则）');
+    const chipLevel26 = await evaluate(`(() => {
+      const head = document.querySelector('#cases .case-tier-head.should');
+      return head ? head.textContent : '';
+    })()`);
+    check(chipLevel26.includes('建议过') && chipLevel26.includes('2 条'),
+        '降级之后它落在「建议过」那一档里，和原来就是建议过的那条同一档：'
+            + JSON.stringify(chipLevel26));
 
     // 覆盖核对那两枚计数：固定摆在通过率旁边，两个数都该是 0（这一链故意造出两个非 0）
     check(rates26.includes('零覆盖验收') && rates26.includes('无对应验收的必须过用例'),
@@ -3193,11 +3212,16 @@ async function main() {
     check(coverageNote26.includes('R-1：加完之后 a 等于 2') && coverageNote26.includes('用例 1'),
         '并且把零覆盖的那条验收标准原文与那几条必须过的用例列出来：'
             + JSON.stringify(coverageNote26.slice(0, 90)));
+    check(coverageNote26.includes('降成') || coverageNote26.includes('降成建议过'),
+        '那一条要说清是「标了必须过却没挂验收标准、被机器降成了建议过」——'
+            + '光说「它是必须过」，人会以为是界面画错了：' + JSON.stringify(coverageNote26.slice(0, 160)));
     check(coverageNote26.includes('不影响这一轮往下走'),
         '说清它不拦人（用例是证据，不是门槛）');
 
-    check(await evaluate(`document.querySelectorAll('#cases .case-tier-empty').length`) === 2,
-        '空着的那两档各自写着「这一档没有用例」');
+    // 空档照写「这一档没有用例」：这一链降级之后**必须过那一档也空了**（唯一那条被降成建议过），
+    // 所以空档是三个（必须过 / 可选 / 未标），不是两个
+    check(await evaluate(`document.querySelectorAll('#cases .case-tier-empty').length`) === 3,
+        '空着的那几档各自写着「这一档没有用例」');
     check(await evaluate(`document.querySelector('#cases .case-detail') === null`),
         'chip 默认是收起的（细节不占地方）');
     await evaluate(`document.querySelector('#cases .case-chip[data-case="1"]').click(); 'ok'`);
@@ -3268,8 +3292,10 @@ async function main() {
 
     // 通过率跟着这一次的结果走
     const ratesAfter26 = await evaluate(`document.querySelector('#cases .rate-row').textContent`);
-    check(ratesAfter26.includes('必须过 1/1') && ratesAfter26.includes('建议过 0/1'),
-        '跑完之后通过率按这一次的结果算（必须过过了、建议过没过）：' + JSON.stringify(ratesAfter26));
+    // 两条现在都在「建议过」那一档（第 1 条是硬规则降下来的）：1 过了、2 没过 → 1/2
+    check(ratesAfter26.includes('必须过 0/0') && ratesAfter26.includes('建议过 1/2'),
+        '跑完之后通过率按这一次的结果算（降成建议过的那条过了、另一条没过）：'
+            + JSON.stringify(ratesAfter26));
     // 结果面板里那份通过率旁边也有这两枚计数：翻到哪一屏都是同一份账
     const testsRates26 = await evaluate(`(() => {
       const rows = [...document.querySelectorAll('#result .rate-row')];
@@ -3547,8 +3573,8 @@ async function main() {
             + JSON.stringify(detailText26.slice(0, 120)));
     check(await evaluate(`document.querySelectorAll('#rundetail .case-chip').length`) === 2,
         '历史详情里用例清单也在（通过率的分母）');
-    check(detailText26.includes('必须过 1/1') && detailText26.includes('建议过 0/1'),
-        '历史详情里的通过率也是按那一次的结果算的');
+    check(detailText26.includes('必须过 0/0') && detailText26.includes('建议过 1/2'),
+        '历史详情里的通过率也是按那一次的结果算的（含那次被降级的口径）');
     check(await evaluate(`document.querySelector('#rundetail [data-act="next-round"]') === null`),
         '历史里不给那四个动作（它们动的是磁盘上此刻那份改动，而历史只该看）');
     await evaluate(`(() => { document.getElementById('history').hidden = true; return 'ok'; })()`);
@@ -3764,6 +3790,8 @@ async function main() {
       // ② 开发那一轮：把 a 改成 2
       ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
        '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
+      // ②b 第二段：补「怎么测」（期望逐字照抄清单里那句）
+      ['1 | 读 Foo.java 里的 a，看它是不是 2 | a == 2'].join('\n'),
       // ③ 生成测试产物：**没有 CASE / expect 锚点**（真跑起来是满分，引擎必须拦住它）
       ['<<<<<<< SEARCH {{ENTRY}}', '=======',
        '@echo off',
@@ -3920,6 +3948,8 @@ async function main() {
       // ② 开发那一轮：把 a 改成 2
       ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
        '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
+      // ②b 第二段：补「怎么测」（期望逐字照抄清单里那句）
+      ['1 | 读 Foo.java 里的 a，看它是不是 2 | a == 2'].join('\n'),
       // ③④ 两次生成测试产物都给同一份危险脚本：第一版被拒、第二版照样被拒 → 停下交给人。
       // 桩里只备两条，引擎要是问了第三次会拿到 500（那一轮就不是这个结果了）
       ['<<<<<<< SEARCH {{ENTRY}}', '=======', dangerousScript, '>>>>>>> REPLACE', ''].join('\n'),
@@ -3984,11 +4014,11 @@ async function main() {
     check(kind29 && kind29.panel.includes('重新生成'),
         '也给出了路：可以走「重新生成」让它换一种写法');
 
-    // ② 带着拒绝原因自动重生成一次（只一次）：四次调用 = 检查 + 开发 + 首版 + 重生成一版
-    check(stubModel.calls() === 4,
-        '引擎自己多生成了一版（一共问了 4 次：检查 / 开发 / 首版 / 重生成），实际 '
+    // ② 带着拒绝原因自动重生成一次（只一次）：五次调用 = 检查 + 开发 + 第二段 + 首版 + 重生成一版
+    check(stubModel.calls() === 5,
+        '引擎自己多生成了一版（一共问了 5 次：检查 / 开发 / 第二段 / 首版 / 重生成），实际 '
             + stubModel.calls() + ' 次');
-    const retry29 = String(stubModel.requests[3] || '');
+    const retry29 = String(stubModel.requests[4] || '');
     check(retry29.includes('上一版产物被安全闸拦下了') && retry29.includes('rm -rf'),
         '重生成那一版把拒绝原因喂回去了（它不是重新想一遍，而是照原因改写法）');
     check(retry29.includes('不要自己删除目录或文件'),
@@ -4033,6 +4063,283 @@ async function main() {
         .textContent.includes(${JSON.stringify(path.basename(PROJECT_ROOT))})`, '换回原项目');
     stubModel.close();
     stubModel = null;
+
+    // ---------- 链 30：停用 / 恢复一条用例 + 两段的来历 ----------
+    // 链 25/26 已经把用例清单、分档通过率、失败清单摆到屏幕上了。这一链只问一件事：
+    // 点一下每条用例右边那枚小按钮，屏幕上该变的是不是真的都变了——
+    // 分母少一条、记号换成「已停用」、按钮换成「恢复」、以及发出去的正文对不对。
+    //
+    // 全程装桩：真打到 /api/tests/disable 会往留档里写一笔（那是在用户的记录里留痕），
+    // 而这一链要验的正是「界面把请求发成了什么样」。清单也是直接灌进 state 的——
+    // 这一链要的不是「模型能不能生出用例」，是「拿到这样一份清单之后界面算得对不对」。
+    //
+    // 就在**当前项目**里跑（链 29 已经换回来了），不另造项目：一个字节都不往磁盘上写。
+    console.log('\n链 30　停用 / 恢复一条用例：分母跟着变、按钮变「恢复」、请求体带着编号：');
+
+    const offCases30 = [
+      { index: 1, what: '按订单号查得到', how: '拿 id=1 查一次', level: 'MUST',
+        expected: 'id=1', acceptance: 'R-1' },
+      { index: 2, what: '查不到的返回 404', how: '拿 id=999 查一次', level: 'MUST',
+        expected: '404', acceptance: 'R-1' },
+      // 这一条的「怎么测」还空着——第二段还没跑到（或者那一条没补成功），chip 上该标 pending
+      { index: 3, what: '参数为空报 400', how: '', level: 'SHOULD', expected: '400', acceptance: 'R-2' },
+      { index: 4, what: '日志里记一笔', how: '翻一眼日志', level: 'OPTIONAL',
+        expected: '有那一行', acceptance: '无' },
+    ];
+    const offReport30 = {
+      exit: 1,
+      cases: [{ index: 1, passed: true }, { index: 2, passed: true },
+        { index: 3, passed: false }, { index: 4, passed: false }],
+      failures: [{ kind: 'ASSERTION', testCase: '3', expected: '400', actual: '200',
+        opinion: 'the product code is wrong' }],
+      // 四条都接上了测试代码：这一链要验的是分母，不是「未连线」那一档（链 28 验过了）
+      links: offCases30.map(one => ({ index: one.index,
+        file: 'tools/20990101-000000/UnitTests.java', line: one.index * 4 })),
+      directory: 'tools/20990101-000000',
+      sources: { 'tools/20990101-000000/UnitTests.java': '// CASE 1\n// expect: id=1\n' },
+      output: 'PASS | 1\nPASS | 2\nFAIL | 3 | 400 | 200\n',
+    };
+    // 停用那条路要落档才肯改界面（见 toggleCaseDisabled）：给一个「这一次运行」的身份，
+    // 那条流水才会走服务端那一趟——正是这一链要拦下来看的那个请求
+    await evaluate(`(() => {
+      state.plan = { cases: ${JSON.stringify(offCases30)} };
+      state.tests = ${JSON.stringify(offReport30)};
+      state.testsCases = ${JSON.stringify(offCases30)};
+      state.recordId = 'probe-record';
+      state.coverage = null;
+      state.disabled = new Set();
+      state.caseOpen = null;
+      state.frozen = null;
+      renderPlan();
+      return 'ok';
+    })()`);
+    await waitFor(`document.querySelector('#cases .case-item[data-case="4"]') !== null`,
+        '灌进去的用例清单画出来了');
+
+    // ① 两段的产物：来历那一行 + stage-note + data-how
+    const before30 = await evaluate(`(() => {
+      const item = i => document.querySelector('#cases .case-item[data-case="' + i + '"]');
+      const hint = text => [...document.querySelectorAll('#cases .hint')]
+          .map(el => el.textContent).find(one => one.includes(text)) || '';
+      return {
+        how3: item(3).dataset.how, how1: item(1).dataset.how,
+        disabled3: item(3).dataset.disabled,
+        chip: document.querySelector('#cases .rate.disabled') === null,
+        rates: document.querySelector('#cases .rate-row').textContent,
+        stage: document.querySelector('#cases .stage-note').textContent,
+        status: hint('这次跑完'),
+        policy: hint('上面的比例都按'),
+      };
+    })()`);
+    check(before30.how3 === 'pending' && before30.how1 === 'filled',
+        '「怎么测」空着的那条是 data-how="pending"、补上了的那条是 "filled"：'
+            + JSON.stringify([before30.how1, before30.how3]));
+    check(before30.stage.includes('第一段') && before30.stage.includes('第二段')
+            && before30.stage.includes('检查阶段') && before30.stage.includes('看到这次改动的 diff'),
+        '清单顶上那句「两段的产物…第一段（检查阶段）…第二段（看到 diff 之后）」在：'
+            + JSON.stringify(before30.stage.slice(0, 90)));
+    check(before30.stage.includes('现在有 3/4 条补上了「怎么测」'),
+        '而且说出确切有几条还没补上（不然人不知道是「还没跑到」还是「这几条没补成功」）：'
+            + JSON.stringify(before30.stage.slice(-70)));
+    check(before30.disabled3 === 'false' && before30.chip === true,
+        '还没停用时：那一条是 data-disabled="false"，也没有「已停用」那一枚');
+    check(before30.rates.includes('必须过 2/2') && before30.rates.includes('建议过 0/1')
+            && before30.rates.includes('可选 0/1') && before30.rates.includes('溯源 4/4'),
+        '四档通过率与溯源都是「四条全在」的口径：' + JSON.stringify(before30.rates));
+    check(before30.status === '这次跑完：必须过 2/2 · 建议过 0/1 · 可选 0/1 · 未标 0/0',
+        '底下那句原文就是这几档拼出来的：' + JSON.stringify(before30.status));
+    check(before30.policy.includes('上面的比例都按没停用的用例算'),
+        '分母口径那一句固定摆在通过率上面（没有停用时也有，它讲的是这套数字怎么算）：'
+            + JSON.stringify(before30.policy));
+
+    // 点开第 3 条：来历那一行要看得见
+    await evaluate(`document.querySelector('#cases .case-chip[data-case="3"]').click(); 'ok'`);
+    await waitFor(`document.querySelector('#cases .case-detail') !== null`, '第 3 条的细节展开了');
+    const detail30 = await evaluate(`document.querySelector('#cases .case-detail').textContent`);
+    check(detail30.includes('来历') && detail30.includes('第一段') && detail30.includes('第二段'),
+        '点开之后「来历」那一行说得出两段各管什么：' + JSON.stringify(detail30.slice(40, 150)));
+    check(detail30.includes('第二段还没补'),
+        '这条的「怎么测」还空着，就明说第二段还没补（不是留一行空白）：'
+            + JSON.stringify((detail30.match(/怎么测[^，。]{0,45}/) || [''])[0]));
+
+    // ② 点右边那枚小按钮 → 停用
+    await evaluate(`(() => {
+      window.__offCalls = [];
+      window.__switches = [];
+      window.__realFetch30 = window.fetch;
+      window.fetch = (url, opts) => {
+        if (String(url).endsWith('/api/tests/disable')) {
+          const body = String((opts && opts.body) || '');
+          window.__offCalls.push(body);
+          const asked = JSON.parse(body);
+          // 服务端是**追加式**流水：回的是整条，界面按它重折（不是自己加减）
+          window.__switches.push({ index: asked.cases[0], disabled: asked.disabled });
+          return Promise.resolve(new Response(JSON.stringify({
+            disabled: window.__switches.filter(one => one.disabled).map(one => one.index),
+            caseSwitches: window.__switches.slice(),
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return window.__realFetch30(url, opts);
+      };
+      return 'ok';
+    })()`);
+    await evaluate(`document.querySelector('#cases .case-off[data-off-case="3"]').click(); 'ok'`);
+    // 桩是立刻回的，但重画走的是 await 之后那一段：等它落定（不是等服务端）
+    await sleep(400);
+
+    const after30 = await evaluate(`(() => {
+      const item = i => document.querySelector('#cases .case-item[data-case="' + i + '"]');
+      const pick = (el, sel) => {
+        const found = el ? el.querySelector(sel) : null;
+        return found ? found.textContent : '';
+      };
+      const hint = text => [...document.querySelectorAll('#cases .hint')]
+          .map(el => el.textContent).find(one => one.includes(text)) || '';
+      const chip = document.querySelector('#cases .rate.disabled');
+      const off = document.querySelector('#cases .case-off[data-off-case="3"]');
+      return {
+        disabled3: item(3).dataset.disabled, disabled1: item(1).dataset.disabled,
+        state3: pick(item(3), '.wire .state'), mark3: pick(item(3), '.mark'),
+        where3: pick(item(3), '.wire .where'), where1: pick(item(1), '.wire .where'),
+        button: off ? off.textContent : null,
+        chip: chip ? chip.textContent : null,
+        rates: document.querySelector('#cases .rate-row').textContent,
+        status: hint('这次跑完'),
+        policy: hint('上面的比例都按'),
+        bodies: window.__offCalls.slice(),
+      };
+    })()`);
+    check(after30.disabled3 === 'true' && after30.disabled1 === 'false',
+        '第 3 条变成 data-disabled="true"，别的几条还是 false：'
+            + JSON.stringify([after30.disabled3, after30.disabled1]));
+    check(after30.state3 === '已停用',
+        'chip 上那枚状态换成「已停用」：' + JSON.stringify(after30.state3));
+    check(after30.mark3 === '' && after30.where3 === '',
+        '它这一次的记号（「没过」）和测试代码位置都撤掉了——停用的那条不再算这一次的结果：'
+            + JSON.stringify([after30.mark3, after30.where3, after30.where1]));
+    check(after30.button === '恢复',
+        '右边那枚按钮从「停用」变成「恢复」（用户要的是「删掉它」，恢复得摆在他看得见的地方）：'
+            + JSON.stringify(after30.button));
+    check(after30.chip === '已停用 1',
+        '通过率旁边多出来那一枚写着「已停用 1」：' + JSON.stringify(after30.chip));
+    check(after30.rates.includes('必须过 2/2') && after30.rates.includes('建议过 0/0')
+            && after30.rates.includes('可选 0/1'),
+        '分母真的少了一条（建议过 0/1 → 0/0，而必须过那两条照样 2/2）：'
+            + JSON.stringify(after30.rates));
+    check(after30.rates.includes('溯源 3/3'),
+        '溯源那一枚跟着一起缩（4/4 → 3/3），不是只改通过率那一处：' + JSON.stringify(after30.rates));
+    check(after30.status === '这次跑完：必须过 2/2 · 建议过 0/0 · 可选 0/1 · 未标 0/0',
+        '底下那句原文按停用之后的口径重算：' + JSON.stringify(after30.status));
+    check(after30.policy.includes('上面的比例都按没停用的用例算'),
+        '分母口径那一句还在（停用之后它才是真正被读的那一句）');
+    const offBody30 = JSON.parse(after30.bodies[0] || '{}');
+    check(after30.bodies.length === 1
+            && offBody30.id === 'probe-record' && (offBody30.cases || []).join() === '3'
+            && offBody30.disabled === true,
+        '打出去的正文是「哪一次运行的哪一条、停用还是恢复」：' + JSON.stringify(offBody30));
+
+    // 停用着的那几条跟着这次运行的请求进引擎（还没跑过、没有留档时，界面这一侧是它唯一的去处）
+    const payload30 = await evaluate(`(() => {
+      const keep = state.disabled;
+      state.disabled = new Set([7, 3]);
+      const body = payload([]);
+      state.disabled = keep;
+      return { list: body.disabled, has: Object.prototype.hasOwnProperty.call(body, 'disabled') };
+    })()`);
+    check(payload30.has === true && (payload30.list || []).join() === '3,7',
+        '请求体里带着停用那几条，而且是升序（引擎按它写进这一次的留档）：'
+            + JSON.stringify(payload30));
+
+    // ③ 覆盖核对：一条验收标准因为「管它的用例被停用」才没人管
+    await evaluate(`(() => {
+      state.coverage = { criteria: ['R-1：查得到', 'R-2：参数为空报 400'],
+        uncovered: [], unmappedMust: [], disabledOnly: ['R-2：参数为空报 400'] };
+      renderCases();
+      return 'ok';
+    })()`);
+    const cover30 = await evaluate(`(() => {
+      const note = document.querySelector('#cases .wire-bad-note');
+      const rows = [...document.querySelectorAll('#cases .wire-bad-note .case-line')].map(el => ({
+        k: (el.querySelector('.k') || {}).textContent || '',
+        v: (el.querySelector('.v') || {}).textContent || '',
+      }));
+      const chips = [...document.querySelectorAll('#cases .rate-row .rate')]
+          .map(el => el.textContent.trim());
+      return { rows, chips, note: note ? note.textContent : '' };
+    })()`);
+    check(cover30.chips.includes('用例被停用后没人管 1'),
+        '通过率旁边多出那一枚「用例被停用后没人管 1」：' + JSON.stringify(cover30.chips));
+    const offRow30 = cover30.rows.filter(row => row.k === '停用后没人管');
+    check(offRow30.length === 1 && offRow30[0].v.includes('R-2：参数为空报 400')
+            && offRow30[0].v.includes('要么恢复它'),
+        '底下列出那一行「停用后没人管」，带着验收标准原文和两条出路：'
+            + JSON.stringify(offRow30));
+    check(!cover30.rows.some(row => row.k === '零覆盖'),
+        '这条验收标准**不被说成「零覆盖」**——它有过用例，是人把那条停了；'
+        + '说成没人管过，人会去重新生成一份用例：' + JSON.stringify(cover30.rows.map(row => row.k)));
+    check(cover30.note.includes('1 条是因为用例被停用才没人管'),
+        '汇总那句里也算着这一个数：'
+            + JSON.stringify((cover30.note.match(/[^。]*因为用例被停用才没人管/) || [''])[0]));
+
+    // ④ 再点一次（这会儿它是「恢复」）→ 一切都回到原样
+    await evaluate(`document.querySelector('#cases .case-off[data-off-case="3"]').click(); 'ok'`);
+    await sleep(400);
+    const back30 = await evaluate(`(() => {
+      const item = i => document.querySelector('#cases .case-item[data-case="' + i + '"]');
+      const pick = (el, sel) => {
+        const found = el ? el.querySelector(sel) : null;
+        return found ? found.textContent : '';
+      };
+      const hint = text => [...document.querySelectorAll('#cases .hint')]
+          .map(el => el.textContent).find(one => one.includes(text)) || '';
+      const off = document.querySelector('#cases .case-off[data-off-case="3"]');
+      return {
+        disabled3: item(3).dataset.disabled,
+        state3: pick(item(3), '.wire .state'),
+        button: off ? off.textContent : null,
+        chip: document.querySelector('#cases .rate.disabled') === null,
+        rates: document.querySelector('#cases .rate-row').textContent,
+        status: hint('这次跑完'),
+        bodies: window.__offCalls.slice(),
+      };
+    })()`);
+    check(back30.disabled3 === 'false' && back30.state3.includes('未连线') === false
+            && back30.state3.length > 0,
+        '恢复之后那一条回到 data-disabled="false"，chip 上不再是「已停用」：'
+            + JSON.stringify([back30.disabled3, back30.state3]));
+    check(back30.button === '停用', '按钮变回「停用」：' + JSON.stringify(back30.button));
+    check(back30.chip === true, '「已停用 1」那一枚整个消失（它只在真有停用时才画）');
+    check(back30.status === '这次跑完：必须过 2/2 · 建议过 0/1 · 可选 0/1 · 未标 0/0'
+            && back30.rates.includes('溯源 4/4'),
+        '分母回到原样（4 条全在）：' + JSON.stringify([back30.status, back30.rates]));
+    const backBody30 = JSON.parse(back30.bodies[1] || '{}');
+    check(back30.bodies.length === 2 && backBody30.cases.join() === '3'
+            && backBody30.disabled === false,
+        '恢复那一次也落档（写的是 disabled:false，不然「恢复」这件事事后查无实据）：'
+            + JSON.stringify(backBody30));
+    // 恢复之后请求体里就不该再有停用那几条了（空集合时那一栏整个不带）
+    const payloadEmpty30 = await evaluate(`(() => {
+      const body = payload([]);
+      return { has: Object.prototype.hasOwnProperty.call(body, 'disabled'), text: JSON.stringify(body) };
+    })()`);
+    check(payloadEmpty30.has === false && !payloadEmpty30.text.includes('"disabled"'),
+        '一条都没停用时请求体里不带 disabled 这一栏（空表发过去，引擎会以为「这次有停用」）');
+
+    // 把灌进去的东西和桩都收干净：后面是收尾那一段，页面上不该留着这一链的痕迹
+    await evaluate(`(() => {
+      window.fetch = window.__realFetch30;
+      state.plan = null;
+      state.tests = null;
+      state.testsCases = null;
+      state.recordId = '';
+      state.coverage = null;
+      state.disabled = new Set();
+      state.caseOpen = null;
+      renderPlan();
+      return 'ok';
+    })()`);
+    check(await evaluate(`document.querySelectorAll('#cases .case-item').length`) === 0,
+        '收尾：灌进去的那份清单清掉了，页面上不留这一链的痕迹');
 
     // ---------- 收尾 ----------
     console.log('\n整轮：');

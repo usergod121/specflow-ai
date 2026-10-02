@@ -25,6 +25,7 @@ import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.VerifySpec;
 import com.specflow.template.TemplateRegistry;
+import com.specflow.tests.CaseHowStage;
 import com.specflow.tests.EntryScripts;
 import com.specflow.tests.Refeed;
 import com.specflow.tests.TestOutcome;
@@ -1806,11 +1807,57 @@ class DevelopmentAgentTest {
                 // 分步行为由下面那几个用例专门覆盖
                 return stepsAnswer;
             }
+            if (asksForHowStage(messages)) {
+                // 第二段（补「怎么测」）那一次调用：自动回一份照抄期望的答案。
+                // 它**不占脚本里的应答**，因为每一次跑测试阶段都会先发生这一次——
+                // 让它吃掉一条脚本，几十条既有用例的「第几轮」就全对不上了。
+                // 这一段本身的行为由 CaseHowStageTest 专门覆盖
+                return howAnswer(messages);
+            }
             patches.add(List.copyOf(messages));
             if (responses.isEmpty()) {
                 throw new IllegalStateException("脚本已用尽，模型被调用了 " + calls.size() + " 次");
             }
             return fill(responses.poll(), messages);
+        }
+
+        /** 这一次是不是第二段（补「怎么测」）。协议原文是唯一的判据。 */
+        private static boolean asksForHowStage(List<ChatMessage> messages) {
+            return messages.stream().anyMatch(message -> message.role().equals(ChatMessage.SYSTEM)
+                    && message.content().contains(CaseHowStage.INSTRUCTIONS));
+        }
+
+        /**
+         * 第二段的答案：照抄第一段那份清单里每一条的「期望」，并给一句像样的「怎么测」。
+         *
+         * <p>它模拟的是<b>守规矩的模型</b>。要测「它把期望改掉时引擎怎么办」，
+         * 那属于 {@code CaseHowStageTest} 的活（那边直接喂协议不符的回话）。
+         */
+        private static String howAnswer(List<ChatMessage> messages) {
+            String user = messages.get(messages.size() - 1).content();
+            StringBuilder out = new StringBuilder();
+            boolean inTable = false;
+            for (String line : user.split("\n")) {
+                if (line.startsWith("## 第一段定下来的清单")) {
+                    inTable = true;
+                    continue;
+                }
+                if (!inTable) {
+                    continue;
+                }
+                if (line.isBlank()) {
+                    inTable = false;
+                    continue;
+                }
+                String[] parts = line.split("\\|");
+                String index = parts[0].strip();
+                if (parts.length < 4 || !index.matches("\\d+")) {
+                    continue;
+                }
+                out.append(index).append(" | 照清单里的入口调一次，看结果 | ")
+                        .append(parts[3].strip()).append('\n');
+            }
+            return out.length() == 0 ? "这次没什么可补的。" : out.toString();
         }
 
         /**

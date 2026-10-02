@@ -972,7 +972,10 @@ const caseApi = load('index.html', [
   'planSignature', 'staleFreeze', 'needsConfirm', 'confirmCases', 'regenBlockHtml',
   'regenProblemHtml', 'regenTraceHtml', 'traceRateHtml', 'coverageRates', 'coverageProblemsHtml',
   'caseTrace', 'caseAcceptance',
-  'testsActionsHtml', 'testsPanelHtml', 'rateOfAll', 'caseListForTests',
+  // 停用 / 恢复那一条路（用户口头语是「删掉它」）+ 两段的来历
+  'disabledOf', 'liveCases', 'isDisabledCase', 'disabledRateHtml', 'disabledLogHtml',
+  'stageNoteHtml', 'DISABLE_HINT', 'RECOVER_HINT',
+  'testsActionsHtml', 'testsPanelHtml', 'rateOfAll', 'caseListForTests', 'chipCases',
   'verdictLabel', 'verdictsOf', 'settlementText', 'judgementPayload',
 ], '// ---------- 用例与测试结果 ----------', 'async function refreshPending');
 
@@ -986,6 +989,9 @@ const {
   coverageProblemsHtml, caseTrace, caseAcceptance,
   testsActionsHtml, testsPanelHtml, rateOfAll,
   VERDICT, verdictLabel, verdictsOf, settlementText, caseListForTests,
+  disabledOf, liveCases, isDisabledCase, disabledRateHtml, disabledLogHtml, stageNoteHtml,
+  DISABLE_HINT, RECOVER_HINT,
+  chipCases,
 } = caseApi;
 check(caseLevel({ level: 'MUST' }) === 'MUST' && caseLevel({ level: '可选' }) === 'UNKNOWN',
     '分级只认引擎那四个枚举名；认不出来的按「未标」，不替它升级成「必须过」');
@@ -1509,6 +1515,259 @@ check(caseDetailText.includes('断言没过'), '失败原因跟着走');
 check(caseDetailHtml(caseSample[1], null).includes('还没有'),
     '还没生成测试代码时明说它什么时候才有');
 
+// ---------- 停用 / 恢复一条用例（用户口头语是「删掉它」） ----------
+// 这一批新增的动作。它做的是「这条别再算了」：退出所有分母（通过率、溯源连线、回喂、
+// 覆盖核对），引擎也不再要求它被实现，而人随时能恢复。
+//
+// 判据几乎全在纯函数里，而它们错起来都很安静：分母比清单短一截，屏幕上根本看不出来；
+// 停了的那条照样能勾上回喂；「已停用」那一枚不画，人会以为「怎么少了一条」；
+// 历史详情里冒出一枚会动此刻磁盘的按钮。所以在这里喂数据钉死，
+// 而真点一下那枚按钮会发生什么，由 browser.test.js 的链盯着。
+console.log('停用流水折成当下状态：');
+check([...disabledOf({ caseSwitches: [
+  { index: 3, disabled: true }, { index: 3, disabled: false }, { index: 5, disabled: true },
+] })].join() === '5',
+    '「停用3 → 恢复3 → 停用5」折出来只剩 5：最后那次动作说了算');
+check([...disabledOf({ caseSwitches: [
+  { index: 5, disabled: false }, { index: 5, disabled: true },
+] })].join() === '5',
+    '同样两笔、倒过来写折出来还是 5：它必须顺序敏感——不敏感的话「恢复」永远撤销不了前面的「停用」');
+check([...disabledOf({ caseSwitches: [
+  { index: 5, disabled: true }, { index: 5, disabled: false },
+] })].join() === '',
+    '「停用5 → 恢复5」折出来是空的：恢复真的把那一笔撤销了（不是只在界面上变灰）');
+check(disabledOf(null).size === 0 && disabledOf({}).size === 0
+    && disabledOf({ caseSwitches: null }).size === 0,
+    '老记录里没有这一栏（那时还没有停用这个动作）时是空集合，不是抛错');
+check(disabledOf({ caseSwitches: [{ by: 'x', at: 'y' }, null, { index: 7, disabled: true }] }).has(7)
+    && disabledOf({ caseSwitches: [{ by: 'x' }] }).size === 0,
+    '流水里混着没有编号的残项时跳过它，剩下的照样折得对');
+check(disabledOf({ caseSwitches: [{ index: '3', disabled: true }] }).has(3),
+    '编号是字符串也认（留档里的 JSON 回来就是字符串）');
+check([...disabledOf({ caseSwitches: [{ index: 3 }] })].join() === '',
+    '没写 disabled 的那一笔按「恢复」算——留档里只有 true 是停用，别的都当没停');
+
+console.log('停用过的用例：分子分母一起去掉：');
+// 四条用例、四条结果：1/2 必须过（都过了）、3 建议过（没过）、4 可选（没过）
+const offCases = [
+  { index: 1, what: 'a', how: 'how-a', level: 'MUST', expected: 'x', acceptance: 'R-1' },
+  { index: 2, what: 'b', how: 'how-b', level: 'MUST', expected: 'x', acceptance: 'R-1' },
+  { index: 3, what: 'c', how: '', level: 'SHOULD', expected: 'x', acceptance: 'R-2' },
+  { index: 4, what: 'd', how: 'how-d', level: 'OPTIONAL', expected: 'x', acceptance: 'R-3' },
+];
+const offReport = testsReport({
+  exit: 1,
+  cases: [{ index: 1, passed: true }, { index: 2, passed: true },
+    { index: 3, passed: false }, { index: 4, passed: false }],
+  failures: [{ kind: 'ASSERTION', testCase: '3', expected: 'x', actual: 'y', opinion: '' }],
+  links: [{ index: 1, file: 'tools/x/T.java', line: 3 },
+    { index: 3, file: 'tools/x/T.java', line: 9 }],
+});
+check(liveCases(offCases, new Set([3])).map(one => one.index).join() === '1,2,4',
+    'liveCases 就是「还活着的那几条」：' + liveCases(offCases, new Set([3])).map(o => o.index).join());
+check(liveCases(offCases, null).length === 4 && liveCases(null, new Set([3])).length === 0,
+    '没传停用集合（老调用点）时一条都不少；没有清单时给空表而不是抛错');
+check(isDisabledCase('3', new Set([3])) === true && isDisabledCase(4, new Set([3])) === false
+    && isDisabledCase(3, null) === false,
+    'isDisabledCase 同样认字符串编号，而且没传集合时一律为「没停用」');
+check(casePassRate(offCases, offReport) === '必须过 2/2 · 建议过 0/1 · 可选 0/1 · 未标 0/0',
+    '没停用时通过率就是原样：' + casePassRate(offCases, offReport));
+check(casePassRate(offCases, offReport, new Set([3])) === '必须过 2/2 · 建议过 0/0 · 可选 0/1 · 未标 0/0',
+    '停用第 3 条之后，「建议过」那一档变成 0/0（分子分母一起拿掉，不是只把没过的那条藏起来）：'
+        + casePassRate(offCases, offReport, new Set([3])));
+check(casePassRate(offCases, offReport, new Set([1])) === '必须过 1/1 · 建议过 0/1 · 可选 0/1 · 未标 0/0',
+    '停用一条**过了**的用例：分子也跟着少一个（1/1，不是 2/1）——只减分母的话比例会超过 100%：'
+        + casePassRate(offCases, offReport, new Set([1])));
+check(rateOfAll(offCases, offReport) === '2/4'
+    && rateOfAll(offCases, offReport, new Set([3])) === '2/3',
+    '总通过率的分子分母同样按没停用的算：' + rateOfAll(offCases, offReport) + ' → '
+        + rateOfAll(offCases, offReport, new Set([3])));
+check(traceRateHtml(offCases, offReport).includes('溯源 <b>2/4</b>')
+    && traceRateHtml(offCases, offReport, new Set([3])).includes('溯源 <b>1/3</b>'),
+    '溯源那一枚也一样：停用的那条哪怕「已连线」也不算（2/4 → 1/3）：'
+        + traceRateHtml(offCases, offReport, new Set([3])));
+
+console.log('停用的用例不给勾（回喂也不收它）：');
+const offPicks = { failures: [
+  { kind: 'ASSERTION', testCase: '2' },
+  { kind: 'ASSERTION', testCase: '3' },
+  { kind: 'ASSERTION', testCase: '5' },
+] };
+check(pickableIndexes(offPicks, new Set([3])).join() === '2,5',
+    '能勾的里面没有停用的那一条（引擎那一侧也会当场拦下）：'
+        + pickableIndexes(offPicks, new Set([3])).join());
+check(pickableIndexes(offPicks).join() === '2,3,5' && toggleAllPicks(offPicks, new Set()).size === 3,
+    '没传停用集合时一条都不少（默认值那一档是给老调用点留的，它们一个字都不用改）');
+check(defaultPicks(offPicks, new Map([[3, VERDICT.CODE]]), new Set([3])).size === 0
+    && defaultPicks(offPicks, new Map([[2, VERDICT.CODE]]), new Set([3])).has(2),
+    '默认勾选不会替人勾上停用的那条，活着的照样勾');
+check([...toggleAllPicks(offPicks, new Set(), new Set([3]))].join() === '2,5',
+    '「全选」只勾活着的那几条：' + [...toggleAllPicks(offPicks, new Set(), new Set([3]))].join());
+check(toggleAllPicks(offPicks, new Set([2, 5]), new Set([3])).size === 0,
+    '活着的那几条都勾上时再点一次是「取消全选」（停用的那条不该把它永远算成「还差一条」）');
+
+console.log('「已停用 N」那一枚：');
+check(disabledRateHtml(new Set()) === '' && disabledRateHtml(null) === ''
+    && disabledRateHtml(undefined) === '',
+    '没有停用的用例时一个字都不画（画一个恒为 0 的计数只占地方）');
+const offChip = disabledRateHtml(new Set([5, 3]));
+check(offChip.includes('已停用 <b>2</b>'),
+    '非空时把那个数画出来（用户要的那句「必须过 3/3 · 已停用 2」的后半截）：' + JSON.stringify(offChip));
+check(offChip.includes('class="rate disabled"'),
+    '它有自己的那一枚样式，和通过率那几枚分得开（虚线的，不是错误色）');
+check(offChip.includes('停用的用例：3、5'),
+    'tip 里按编号顺序列出来（点一下就知道停的是哪几条，而不是自己去数）：' + JSON.stringify(offChip));
+check(disabledRateHtml(new Set([3])).includes('已停用 <b>1</b>'), '只有一条时也画');
+
+console.log('停用之后那份清单画成什么样：');
+/**
+ * 画一次清单，把「画的过程中抛了」也收成一条红的断言。
+ *
+ * <p>为什么要收：纯逻辑测试是整轮跑下来的，一处抛异常会把后面所有断言连根拔掉
+ * （§17.7 记过同一个坑）。而「渲染抛了」本身正是要报出来的事实——
+ * 它变成一条带着异常原文的红断言，而不是把整轮测试带走。
+ */
+function panelOr(what, fn) {
+  try {
+    return fn();
+  } catch (error) {
+    check(false, what + '（渲染直接抛了：' + error.message + '）');
+    return '';
+  }
+}
+const offPanel = panelOr('停用之后清单画得出来', () => casesPanelHtml(offCases, offReport,
+    { detail: null, confirm: false, disabled: new Set([3]) }));
+check(offPanel.includes('data-disabled="true"'),
+    '停用的那一条带着 data-disabled="true"（样式按它上色）');
+check(offPanel.includes('data-disabled="false"'), '没停用的那几条带着 data-disabled="false"');
+check(offPanel.includes('class="case-off" data-off-case="3"') && offPanel.includes('>恢复<'),
+    '它右边那枚按钮改成了「恢复」：'
+        + JSON.stringify((offPanel.match(/<button[^>]*data-off-case="3"[^>]*>[^<]*<\/button>/) || [''])[0]));
+check((offPanel.match(/<button[^>]*data-off-case="[^"]*"[^>]*>/g) || [])
+    .every(tag => !tag.includes('data-act')),
+    '那枚按钮挂在 data-off-case 上，不是 data-act——wirePanel 会把所有 [data-act] 接到动作分发上，'
+        + '挂错属性就会被当成「下一轮」那一类动作发出去');
+check(offPanel.includes('已停用 <b>1</b>'), '通过率旁边多出一枚「已停用 1」');
+check(offPanel.includes('上面的比例都按<b>没停用的用例</b>算'),
+    '那一行固定口径在（它不是给停用状态看的，是给这套数字的算法看的）');
+check(offPanel.includes('必须过 <b>2/2</b>') && offPanel.includes('建议过 <b>0/0</b>'),
+    '每档那个数就是「没停用」的口径：');
+check(offPanel.includes('data-how="pending"') && offPanel.includes('data-how="filled"'),
+    '「怎么测」还空着的那条标着 pending、写了的那几条标着 filled');
+check(casesPanelHtml(offCases, offReport, { detail: null, confirm: false })
+    .includes('data-off-case') === false,
+    '没有停用这回事的调用点（没传 disabled）一枚按钮都不画');
+check(panelOr('历史详情那份清单画得出来', () => casesPanelHtml(offCases, offReport,
+    { detail: null, confirm: false, disabled: null })).includes('data-off-case') === false,
+    'disabled: null（历史详情那种场合）不画停用按钮——它动的是此刻的清单，而历史只该看');
+
+console.log('两段的来历（第一段定期望，第二段补怎么测）：');
+const stageNote = stageNoteHtml(offCases, true);
+check(stageNote.includes('第一段') && stageNote.includes('第二段'),
+    '清单顶上固定说清这两栏来自哪一段：' + JSON.stringify(stageNote.slice(0, 80)));
+check(stageNote.includes('检查阶段') && stageNote.includes('验收标准与施工单')
+    && stageNote.includes('看到这次改动的 diff'),
+    '而且两段各自拿到了什么、第二段什么时候才跑，都说得出');
+check(stageNote.includes('现在有 3/4 条补上了「怎么测」') && stageNote.includes('另外 1 条还空着'),
+    '有几条没补上时补一句确切的数（不然人不知道是「还没跑到」还是「这几条没补成功」）：'
+        + JSON.stringify((stageNote.match(/现在有[^）]*）/) || [''])[0]));
+check(!stageNoteHtml(offCases.map(one => ({ ...one, how: one.how || '补上了' })), true)
+    .includes('现在有'),
+    '都补上了就不再说这一句（一句恒真的话只会让人不再读它）');
+check(stageNoteHtml(offCases, false).includes('停用 / 恢复') === false,
+    '不能动作的场合（历史详情）不提那枚按钮——画面上根本没有它');
+check(stageNoteHtml(offCases, true).includes('停用 / 恢复'),
+    '能动作的场合把「停用 / 恢复」是什么一并说清：');
+
+const offDetail = caseDetailHtml(offCases[2], offReport, false);
+check(offDetail.includes('来历') && offDetail.includes('第一段') && offDetail.includes('第二段'),
+    '点开一条用例看得见「来历」那一行：'
+        + JSON.stringify((offDetail.match(/<span class="k">来历<\/span>[\s\S]{0,40}/) || [''])[0]));
+check(offDetail.includes('第二段还没补'),
+    '「怎么测」空着时明说第二段还没补（不是留一行空白让人以为漏显示了）：'
+        + JSON.stringify((offDetail.match(/怎么测[\s\S]{0,70}/) || [''])[0]));
+check(caseDetailHtml(offCases[0], offReport, false).includes('how-a'),
+    '补上了的那条就写着第二段补的那句话');
+check(caseDetailHtml(offCases[0], offReport, true).includes('已停用')
+    && caseDetailHtml(offCases[0], offReport, true).includes('不再要求它被实现'),
+    '停用的那条展开之后说清它已经退出分母、引擎也不再要求它被实现：'
+        + JSON.stringify((caseDetailHtml(offCases[0], offReport, true).match(/<span class="k">连线<\/span>[\s\S]{0,60}/) || [''])[0]));
+
+console.log('覆盖核对：停用造成的那一栏不是「零覆盖」：');
+/** 把 rate-row 里那几枚 chip 拆成 {标签, 数, tip}，好按枚断言而不是拿整块 HTML 去 includes。 */
+function rateChips(html) {
+  return [...html.matchAll(/<span class="rate[^"]*" title="([^"]*)">([^<]*)<b>(\d+)<\/b><\/span>/g)]
+      .map(m => ({ tip: m[1], label: m[2].trim(), count: Number(m[3]) }));
+}
+const covOff = { criteria: ['A1：查得到', 'A2：查不到返回 404', 'A3：参数为空报 400'],
+  uncovered: [], unmappedMust: [], disabledOnly: ['A2：查不到返回 404'] };
+const covChips = rateChips(coverageRates(covOff));
+const offCover = covChips.find(chip => chip.label === '用例被停用后没人管');
+check(offCover && offCover.count === 1,
+    '多出来的那一枚写着「用例被停用后没人管 1」：' + JSON.stringify(covChips.map(c => c.label + ' ' + c.count)));
+check(offCover && offCover.tip.includes('本来有用例在管')
+    && !offCover.tip.includes('一条用例都没提到'),
+    '它说的是「本来有人管、被停用了」，不是「没人管过」——说成后者，人会去重新生成一份用例：'
+        + JSON.stringify(offCover && offCover.tip));
+check(covChips.find(chip => chip.label === '零覆盖验收').count === 0,
+    '而「零覆盖验收」那一枚还是 0：这条验收标准不该被算进零覆盖');
+check(coverageRates({ criteria: ['A1'], uncovered: [], unmappedMust: [], disabledOnly: [] })
+    .includes('没有哪条验收标准是因为用例被停用才没人管'),
+    '一条都没停用时那枚 chip 的 tip 说的是「没有这件事」（不是留一句会误读的空白）');
+
+const covOffBad = coverageProblemsHtml(covOff);
+check(covOffBad.includes('<span class="k">停用后没人管</span>'),
+    '底下列出了那一行「停用后没人管」：' + JSON.stringify((covOffBad.match(/<span class="k">[^<]*<\/span>/) || [''])[0]));
+check(covOffBad.includes('A2：查不到返回 404') && covOffBad.includes('要么恢复它'),
+    '带着验收标准原文，并说清两条路（恢复它 / 另写一条用例来验）');
+check(!covOffBad.includes('<span class="k">零覆盖</span>'),
+    '这条验收标准不被画成「零覆盖」那一行——它有过用例，是人把那条停了');
+check(covOffBad.includes('1 条是因为用例被停用才没人管'), '汇总那句里那个数也算进去了：'
+    + JSON.stringify((covOffBad.match(/[^。]*因为用例被停用才没人管[^。]*/) || [''])[0]));
+check(coverageProblemsHtml({ criteria: ['A1'], uncovered: [], unmappedMust: [], disabledOnly: [] }) === '',
+    '三个数都是 0 时一个字都不多说');
+
+console.log('失败清单那一行：停用的不给勾、按钮改成「恢复」：');
+const offFailure = { kind: 'ASSERTION', testCase: '3', expected: 'x', actual: 'y', opinion: '' };
+const offRow = failRowHtml(offFailure, offCases, new Set(), new Map(), new Set([3]), true);
+check(offRow.includes('data-disabled="true"'), '那一行带着 data-disabled="true"：');
+check(offRow.includes('data-pick="3" disabled'),
+    '勾选框画着、但禁着（它已经不参与回喂了；整块拿掉的话，「这里本来有个勾」这个信息也没了）');
+check(/<span class="fail-kind[^"]*">已停用<\/span>/.test(offRow),
+    '类型那一枚换成「已停用」（还挂着「断言没过」等于让人再判一次）：'
+        + JSON.stringify((offRow.match(/<span class="fail-kind[^"]*">[^<]*<\/span>/) || [''])[0]));
+check(offRow.includes('class="case-off" data-off-case="3"') && offRow.includes('>恢复<'),
+    '右边那枚按钮写着「恢复」：'
+        + JSON.stringify((offRow.match(/<button[^>]*data-off-case="3"[^>]*>[^<]*<\/button>/) || [''])[0]));
+check(!offRow.includes('fail-source'),
+    '那一行不再写「机器只看现象，谁错了由你判」——它已经不是这一批的一条失败了');
+check(offRow.includes(RECOVER_HINT),
+    '按钮的提示用的是「恢复」那一句（说清它立刻照旧进分母、参与回喂）：'
+        + JSON.stringify(RECOVER_HINT));
+const liveRow = failRowHtml(offFailure, offCases, new Set(), new Map(), new Set(), true);
+check(liveRow.includes('data-disabled="false"') && liveRow.includes('>停用<'),
+    '没停用时按钮是「停用」：'
+        + JSON.stringify((liveRow.match(/<button[^>]*data-off-case="3"[^>]*>[^<]*<\/button>/) || [''])[0]));
+check(liveRow.includes(DISABLE_HINT) && DISABLE_HINT.includes('随时可以恢复'),
+    '提示里说清这是可恢复的停用、不是删除（用户口头语是「删掉它」）：' + JSON.stringify(DISABLE_HINT));
+check(!liveRow.includes('data-pick="3" disabled'), '没停用的那一条勾选框是可用的');
+check(failRowHtml(offFailure, offCases, new Set(), new Map(), new Set([3]), false)
+    .includes('data-off-case') === false,
+    'canSwitch=false（历史详情那种场合）不画这枚按钮');
+
+console.log('留档里那条停用流水：');
+check(disabledLogHtml(null) === '' && disabledLogHtml([]) === '',
+    '老记录里没有这一栏时一个字都不画');
+const offLog = disabledLogHtml([{ index: 3, disabled: true, by: '张三', at: '2026-10-02 10:00' },
+  { index: 3, disabled: false, by: '李四', at: '2026-10-02 11:00' }]);
+check(offLog.includes('谁、什么时候') && offLog.includes('停用 用例 3（张三，2026-10-02 10:00）')
+    && offLog.includes('恢复 用例 3（李四，2026-10-02 11:00）'),
+    '翻记录的人问得出「谁什么时候停的、又谁恢复的」（那条折成状态之后就查无实据了）：'
+        + JSON.stringify(offLog.slice(0, 120)));
+check(disabledLogHtml([{ index: 4, disabled: true }]).includes('不知道是谁')
+    && disabledLogHtml([{ index: 4, disabled: true }]).includes('没记时间'),
+    '留档里缺那一栏时明说，不编一个名字出来');
+
 // ---------- 跑测试期间那句话 ----------
 // 「测试进行中（最长 N 分钟）」必须由引擎说出来：那一段跑多久只有引擎知道，
 // 界面自己写一个数，两边迟早对不上。
@@ -1562,6 +1821,48 @@ check(judgementPayload('', [3], 'KNOWN').id === '',
     '不知道是哪一次时 id 给空串（服务端按最新那条落，不丢这个判断）');
 check(JSON.stringify(judgementPayload(null, [], 'KNOWN')) === '{"id":"","cases":[],"owner":"KNOWN"}',
     'null 也要变成空串和空表，不发一个 null 出去');
+
+// ---------- 方案面板画 chip 时借第二段那一栏 ----------
+// 第二段的「怎么测」落在留档/终态事件里（state.testsCases），而 state.plan.cases 是用户确认
+// 并冻结的那一份——**不能回写它**（冻结指纹按它算，一改就要人重新确认一遍）。所以画 chip 时
+// 只按编号借那一栏。不借的话，跑完一次之后方案面板还写着「第二段还没补」，
+// 而失败清单里那条已经补上了：同一件事两处说法不一致。
+console.log('画 chip 用的那份清单（第二段的「怎么测」怎么借过来）：');
+const planBefore = { index: 1, what: 'a 变成 2', how: '', level: 'MUST', expected: 'a == 2', acceptance: 'A1' };
+const planSecond = { index: 2, what: '能编译', how: '跑一次编译', level: 'SHOULD', expected: '编译通过', acceptance: '无' };
+const signatureBefore = caseSignature([planBefore, planSecond]);
+
+state.plan = { cases: [planBefore, planSecond] };
+state.testsCases = null;
+check(chipCases().map(one => one.how).join('|') === '|跑一次编译',
+    '还没跑过（没有第二段的产物）时就用方案自己那一份：' + JSON.stringify(chipCases().map(o => o.how)));
+
+state.testsCases = [
+  // 故意把「不是怎么测」的几栏写歪（第二段要是被篡改过，界面也不许跟着它走）
+  { index: 1, what: '被改过的要测什么', how: '读 Foo.java 里的 a', level: 'SHOULD',
+    expected: 'a == 99', acceptance: '无' },
+  { index: 2, what: '能编译', how: '跑一次编译', level: 'SHOULD', expected: '编译通过', acceptance: '无' },
+];
+const borrowed = chipCases();
+check(borrowed[0].how === '读 Foo.java 里的 a',
+    '第二段补过之后 chip 上看得见它的产物（而不是还写着「还没补」）：' + JSON.stringify(borrowed[0].how));
+check(borrowed[0].expected === 'a == 2' && borrowed[0].level === 'MUST'
+    && borrowed[0].acceptance === 'A1' && borrowed[0].what === 'a 变成 2',
+    '只借「怎么测」那一栏：期望、分级、验收、要测什么一律以方案里那份为准（那几栏是冻结清单的）'
+        + '：' + JSON.stringify(borrowed[0]));
+check(state.plan.cases[0].how === '',
+    '**方案本身一个字节都不许改**：它一改，冻结指纹就变了，用户会被要求重新确认一遍');
+check(caseSignature(state.plan.cases) === signatureBefore,
+    '冻结指纹与跑之前逐字相同：' + JSON.stringify(caseSignature(state.plan.cases)));
+
+state.testsCases = [{ index: 9, how: '别人的清单' }];
+check(chipCases()[0].how === '',
+    '编号对不上（另一份清单）时一律不借：拿上一轮的「怎么测」顶这一轮，界面上看着像补过了');
+state.testsCases = [{ index: 1, how: '只回来一条' }];
+check(chipCases().length === 2 && chipCases()[0].how === '',
+    '条数对不上也不借（同一条清单的判据是编号逐个对得上）');
+state.plan = null;
+state.testsCases = null;
 
 console.log(failed ? '\n失败 ' + failed + ' 项' : '\n全部通过');
 process.exitCode = failed ? 1 : 0;

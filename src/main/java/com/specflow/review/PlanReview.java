@@ -7,6 +7,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * 检查阶段的产物：一份给人看的实现方案。
@@ -280,6 +281,34 @@ public record PlanReview(
     public static PlanReview of(String summary, String flowchart, List<MissingItem> missing,
                                 List<PlanStep> steps, List<TestCase> cases) {
         return new PlanReview(summary, flowchart, missing, steps, cases);
+    }
+
+    /**
+     * 这次<b>真正要验</b>的那几条用例：把被人停用的去掉。
+     *
+     * <p>它就是「停用的用例不参与任何分母」在引擎这一侧的落点：测试阶段、溯源核对
+     * （{@code CaseTraceCheck}）与通过率拿到的都是这一份，所以停用之后
+     * <b>引擎不再要求那条用例被实现</b>——不再报「漏实现」，也不再把它算进「没验」。
+     *
+     * <p>为什么用「过滤出活用例」而不是把停用集合一路传进每个下游：下游有四处要问它
+     * （核对、对账、回喂、覆盖），每处各判一次「这条停了没有」，迟早有一处漏判——
+     * 而漏判的表现是「界面上说不算，引擎里照样算」，正是这一批要堵住的东西。
+     * 留档与界面仍然拿<b>完整</b>那份清单（{@code RunRecord.testCases}）：
+     * 停用的用例要看得见、还能恢复，藏起来就成了删除。
+     *
+     * @param disabled 此刻还停用着的用例编号；{@code null} 或空 = 一条都没停用
+     */
+    public PlanReview live(Set<Integer> disabled) {
+        if (disabled == null || disabled.isEmpty()) {
+            return this;
+        }
+        List<TestCase> kept = cases.stream()
+                .filter(one -> !disabled.contains(one.index()))
+                .toList();
+        if (kept.size() == cases.size()) {
+            return this;
+        }
+        return new PlanReview(summary, flowchart, missing, steps, kept);
     }
 
     /** 按严重度排一遍（越严重越靠前），同档保持模型给的顺序。 */

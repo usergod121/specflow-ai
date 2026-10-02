@@ -29,7 +29,11 @@ public record ReviewOutcome(PlanReview plan, List<PlanAudit.Finding> audit,
     public ReviewOutcome {
         audit = audit == null ? List.of() : List.copyOf(audit);
         stepAudit = stepAudit == null ? StepAudit.none() : stepAudit;
-        coverage = coverage == null ? new AcceptanceCoverage.Report(List.of(), List.of(), List.of())
+        // 四栏写全（包括「用例被停用后没人管」那一栏）：覆盖核对那一边刻意不再留一个
+        // 三栏的兼容构造器——老记录是 Jackson 按规范构造器读的（缺的那栏兜成 null 再归一成空表），
+        // 留那么一个形状只会让人以为老记录走的是它。空表在这里就是要一个空表，写全最清楚
+        coverage = coverage == null
+                ? new AcceptanceCoverage.Report(List.of(), List.of(), List.of(), List.of())
                 : coverage;
     }
 }

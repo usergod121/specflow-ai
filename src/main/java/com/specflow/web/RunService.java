@@ -41,10 +41,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -118,6 +120,15 @@ public final class RunService implements AgentListener {
      * {@code /api/run-detail} 才画得出失败清单——多一个来回，而且那一刻用户正盯着屏幕等结果。
      */
     private TestOutcome lastTests;
+
+    /**
+     * <b>第二段</b>补完之后的用例清单（见 {@code CaseHowStage}）；没走到那一步时是 {@code null}。
+     *
+     * <p>为什么要在这里存一笔：第二段跑在测试阶段<b>里面</b>（那时才有这次改动的 diff），
+     * 而界面上的用例 chip 是照着清单画的——不留这一笔，用户就得等运行结束、
+     * 再刷一次历史详情才看得到「怎么测」补上了。
+     */
+    private List<PlanReview.TestCase> refinedCases;
 
     private final ExecutorService runner = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "specflow-run");
@@ -195,6 +206,7 @@ public final class RunService implements AgentListener {
         cancelRequested = false;
         // 上一次的测试结论同理：留着它，一次没跑测试的运行会顶着上一轮的失败清单收场
         lastTests = null;
+        refinedCases = null;
         Spec spec = toValidSpec(request);
         // 回喂在这一刻定下来：它要在发提示词之前拼好（它在提示词里、也进留档），
         // 而它的原料是**上一轮那条留档**——不是界面发过来的文案（界面只发编号）
@@ -205,8 +217,14 @@ public final class RunService implements AgentListener {
         requireEnvironment(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
 
+        // 这一次带着哪几条「停用」跑：界面上那份集合是完整的一份（不是增量），
+        // 由引擎在留档里记成一条流水（谁、什么时候）。它的用处有三处：
+        // 测试阶段只验活着的用例、覆盖核对把停用的排除在分母外、留档与界面说得出分母口径
+        List<RunRecord.CaseSwitch> switches = RunRecord.CaseSwitch.append(List.of(),
+                request.pickedDisabled(), true, LocalDateTime.now().toString());
+
         String runId = hub.startRun(UUID.randomUUID().toString());
-        runner.submit(() -> execute(spec, llm, request.approvedPlan(), settingsOf(request)));
+        runner.submit(() -> execute(spec, llm, request.approvedPlan(), settingsOf(request), switches));
         return runId;
     }
 
@@ -285,15 +303,18 @@ public final class RunService implements AgentListener {
                 .orElseThrow(() -> new IllegalStateException("现在没有挂起的运行，直接点运行就行"));
         cancelRequested = false;
         lastTests = null;
+        refinedCases = null;
         currentRefeed = refeedOf(request);
         Spec spec = toValidSpec(request);
         requireEnvironment(request);
         LlmClient llm = OpenAiCompatibleClient.from(project.llm(), projectRoot);
         DevelopmentAgent.Resume origin =
                 new DevelopmentAgent.Resume(suspended.detail(), force, suspended.planSteps());
+        List<RunRecord.CaseSwitch> switches = RunRecord.CaseSwitch.append(List.of(),
+                request.pickedDisabled(), true, LocalDateTime.now().toString());
         String runId = hub.startRun(UUID.randomUUID().toString());
         runner.submit(() -> execute(spec, llm, request.approvedPlan(), origin,
-                settingsOf(request)));
+                settingsOf(request), switches));
         return runId;
     }
 
@@ -332,13 +353,35 @@ public final class RunService implements AgentListener {
         // 一次检查只有一次模型调用（好几秒），这点扫树的功夫可以忽略；
         // 为此把 ProjectIndex 塞进构造函数反而让这个类多背一个依赖。
         ProjectIndex.Entries entries = new ProjectIndex(projectRoot).entries();
-        return new ReviewOutcome(plan,
-                PlanAudit.check(plan, spec.targets(), entries.files(), entries.directories()),
+        // 覆盖核对补的是「验没验」那一半：哪条验收标准一条用例都没覆盖、
+        // 哪几条必须过的用例没写对应哪条验收标准。两个数都该是 0，而它只是给人看的
+        AcceptanceCoverage.Report coverage =
+                AcceptanceCoverage.check(spec.acceptance(), plan.cases(), disabledOf(request));
+        // 硬规则：没有对应验收标准的用例不许是「必须过」级——机器把它降成「建议过」，
+        // 而这次降级刚被上面那一行数进了 unmappedMust（降级不等于抹掉，用户照样看得见是哪几条）。
+        // 降级之后的清单才是人确认、冻结、往下跑的那一份
+        AcceptanceCoverage.Levelled levelled =
+                AcceptanceCoverage.level(spec.acceptance(), plan.cases());
+        PlanReview levelledPlan = levelled.downgraded().isEmpty() ? plan
+                : PlanReview.of(plan.summary(), plan.flowchart(), plan.missing(), plan.steps(),
+                        levelled.cases());
+        return new ReviewOutcome(levelledPlan,
+                PlanAudit.check(levelledPlan, spec.targets(), entries.files(), entries.directories()),
                 // 施工单那几条不用扫项目：要动哪些文件是白纸黑字写在单子上的
-                StepAudit.check(plan.steps(), spec.targets()),
-                // 覆盖核对补的是「验没验」那一半：哪条验收标准一条用例都没覆盖、
-                // 哪几条必须过的用例没写对应哪条验收标准。两个数都该是 0，而它只是给人看的
-                AcceptanceCoverage.check(spec.acceptance(), plan.cases()));
+                StepAudit.check(levelledPlan.steps(), spec.targets()),
+                coverage);
+    }
+
+    /**
+     * 这一次带的停用集合：界面在请求里给的是<b>完整的一份</b>（不是增量）。
+     *
+     * <p>为什么检查阶段也要它：覆盖核对算的是「这条验收标准有没有活着的用例在管」，
+     * 而停用是人在检查阶段就能做的动作——不带它，界面上会显示成「零覆盖」，
+     * 而那句话的意思是「没人管」，与「你把管事的那条停了」是两件事。
+     */
+    private static Set<Integer> disabledOf(RunRequest request) {
+        return RunRecord.CaseSwitch.disabledIn(RunRecord.CaseSwitch.append(List.of(),
+                request.pickedDisabled(), true, null));
     }
 
     /** 界面与 CLI 走同一套校验：这里过不了的 spec，命令行那边同样过不了。 */
@@ -387,26 +430,32 @@ public final class RunService implements AgentListener {
         return Teardown.waiting(projectRoot, project).stream().findFirst().orElse(null);
     }
 
-    private void execute(Spec spec, LlmClient llm, PlanReview approved, TestSettings settings) {
-        execute(spec, llm, approved, null, settings);
+    private void execute(Spec spec, LlmClient llm, PlanReview approved, TestSettings settings,
+                         List<RunRecord.CaseSwitch> switches) {
+        execute(spec, llm, approved, null, settings, switches);
     }
 
     /**
      * @param resume 非空表示这是「接着上次跑」，见 {@link #resume(RunRequest, boolean)}
      */
     private void execute(Spec spec, LlmClient llm, PlanReview approved, DevelopmentAgent.Resume resume,
-                         TestSettings settings) {
+                         TestSettings settings, List<RunRecord.CaseSwitch> switches) {
         try {
             // 装饰器：先记进运行留档，再转发给界面推送。两件事互不知道对方存在，
             // CLI 那边套的是同一个录制器，只是转发目标换成了空实现。
             // 回喂那一段也交给它：它要跟着这一轮的记录一起落档（见 RunRecorder）
-            AgentListener listener = RunRecorder.start(store, spec, approved, this, currentRefeed);
+            AgentListener listener = RunRecorder.start(store, spec, approved, this, currentRefeed,
+                    switches);
             DevelopmentAgent agent = new DevelopmentAgent(projectRoot, project, templates(),
                     llm, List.of(new CompileVerifier()), listener, settings, environment);
+            // 引擎这一侧只认「活着的用例」：停用的不进测试阶段，因此也就不会被
+            // CaseTraceCheck 要求实现、不会在失败清单里被报成「没验」。
+            // 留档拿到的仍是完整那份清单（录制器手里那个 approved），停用的用例要看得见、能恢复
+            PlanReview live = approved == null ? null : approved.live(RunRecord.CaseSwitch.disabledIn(switches));
             if (resume == null) {
-                agent.run(spec, approved, currentRefeed);
+                agent.run(spec, live, currentRefeed);
             } else {
-                agent.resume(spec, approved, resume.modelSaid(), resume.force(), resume.steps());
+                agent.resume(spec, live, resume.modelSaid(), resume.force(), resume.steps());
             }
         } catch (RuntimeException e) {
             log.warn("运行中断", e);
@@ -534,6 +583,28 @@ public final class RunService implements AgentListener {
                 ProgressMessages.environmentChanged(registration));
     }
 
+    /**
+     * <b>第二段</b>把它补好了：这次改动的 diff 已经看过，每一条的「怎么测」都补上了。
+     *
+     * <p>它分成两件事发出去：
+     * <ul>
+     *   <li>一份<b>新清单</b>给界面（走终态事件）——用例 chip 上「怎么测」那一栏立刻跟上，
+     *       不用等运行结束再刷一次历史；</li>
+     *   <li>一行<b>人话</b>给时间线——它同时进留档：第二段补了几条、哪几条没补上、
+     *       有没有出现过「它想把期望改掉、被机器拦下」。这些话不进留档，
+     *       事后翻记录的人就分不清「这一栏空着是因为没验，还是因为第二段没补成功」。</li>
+     * </ul>
+     */
+    @Override
+    public void casesRefined(List<PlanReview.TestCase> cases, String note) {
+        if (cases != null) {
+            refinedCases = List.copyOf(cases);
+        }
+        if (note != null && !note.isBlank()) {
+            hub.publish("info", 0, 0, null, note);
+        }
+    }
+
     @Override
     public void workspaceRestored(int round, String reason) {
         hub.publish("warn", round, currentStep, null, ProgressMessages.restored(reason));
@@ -560,6 +631,11 @@ public final class RunService implements AgentListener {
         // 这一次跑过测试就把结果一并带上（没跑就没有这个键：给一个空对象会被读成「跑了、全过」）
         if (lastTests != null) {
             body.put("tests", testPayload(lastTests));
+        }
+        // 第二段补完之后的那份清单：界面拿它换掉手上那份，chip 上的「怎么测」当场跟上。
+        // 没有它就只能在刷新页面之后靠历史详情兜住——那正是「第二段到底跑没跑」看不清的原因
+        if (refinedCases != null) {
+            body.put("testCases", refinedCases);
         }
         // 回喂与「它没有改动」：界面上要一眼看得出这一轮是按哪几条失败在改的，
         // 以及它到底改没改（实测过它把文件原样再交一遍，而界面上和真改过长得一模一样）
@@ -632,6 +708,25 @@ public final class RunService implements AgentListener {
             payload.put("problem", generated.problem());
         }
         return payload;
+    }
+
+    /**
+     * 停用 / 恢复几条用例（用户的原话是「删掉它」）。
+     *
+     * <p>它为什么要有接口：停用会让一条用例<b>退出所有分母</b>——通过率、溯源连线、回喂、
+     * 覆盖核对都不再算它，引擎也不再要求它被实现。这是人对一次运行做过的事，
+     * 而留档是它唯一的去处（见 {@code RunStore.disable}）：只留在界面上，刷新一次就没了，
+     * 事后翻记录的人只会看到「通过率变了、某条用例不见了」，却查不出是谁、什么时候、为什么。
+     *
+     * <p>它是<b>可恢复</b>的：{@code disabled=false} 就是恢复。用户说的是「删掉」，
+     * 而删除不可逆——清单是冻结的，删掉之后连「当时少了一条」这件事都解释不了。
+     *
+     * @param id       哪一次运行；空串表示「界面上正看着的那一次」，按最新那条落
+     * @param cases    这次动的用例编号
+     * @param disabled {@code true} = 停用，{@code false} = 恢复
+     */
+    public RunRecord disableCases(String id, List<Integer> cases, boolean disabled) {
+        return store.disable(id, cases, disabled);
     }
 
     /**

@@ -3,6 +3,7 @@ package com.specflow.agent;
 import com.specflow.env.EnvRegistration;
 import com.specflow.exception.PatchConflictException;
 import com.specflow.patch.PatchApplier;
+import com.specflow.review.PlanReview;
 import com.specflow.review.PlanStep;
 import com.specflow.tests.TestOutcome;
 import com.specflow.verify.VerificationResult;
@@ -217,6 +218,21 @@ public interface AgentListener {
 
     /** 校验未通过，工作区已回滚到本轮开始前的状态。 */
     default void workspaceRestored(int round, String reason) {
+    }
+
+    /**
+     * <b>第二段</b>把用例清单补完了：每一条的「怎么测」都补上了。
+     *
+     * <p>两段式的第一段（检查阶段）只产出「验什么、期望什么、对应哪条验收标准、分级」——
+     * 那时还没有代码，让模型同时写「怎么测」，它会顺手照着脑子里的实现写，需求被代码稀释。
+     * 第二段在代码写完、有了这次改动的 diff 之后才补「怎么测 + 从哪个入口/文件进」，
+     * 而<b>期望一个字都不许改</b>：机器把模型照抄回来的期望与第一段逐字比对，
+     * 对不上就拒绝并要求重来（见 {@code CaseHowStage}）。
+     *
+     * @param cases 补完之后的那份清单（期望、分级、验收标准与第一段<b>逐字相同</b>）
+     * @param note  给人和留档的一句话：补了几条、哪几条没补上、有没有出现过「想改期望被拦下」
+     */
+    default void casesRefined(List<PlanReview.TestCase> cases, String note) {
     }
 
     /** 任务结束，无论成败都会触发一次。 */

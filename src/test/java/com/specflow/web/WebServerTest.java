@@ -1146,8 +1146,9 @@ class WebServerTest {
                         List.of(),
                         List.of(new com.specflow.tests.TestOutcome.CaseResult(1, false)), List.of()),
                 null, null, null, null, List.of(),
-                // 覆盖核对、回喂、「它没有改动」：这一条只关心收场怎么删产物，三笔都留空
-                null, null, null);
+                // 覆盖核对、回喂、「它没有改动」：这一条只关心收场怎么删产物，三笔都留空。
+                // 最后那一栏是「谁什么时候停用过哪几条」，同样空着
+                null, null, null, null);
     }
 
     private String latestRunId() {

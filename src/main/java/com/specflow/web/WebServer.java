@@ -3,6 +3,7 @@ package com.specflow.web;
 import com.specflow.env.EnvRegistration;
 import com.specflow.exception.SpecValidationException;
 import com.specflow.exception.SpecflowException;
+import com.specflow.history.RunRecord;
 import com.specflow.project.ProjectInitializer;
 import com.specflow.project.ProjectScanner;
 import com.specflow.project.RecentProjects;
@@ -213,6 +214,8 @@ public final class WebServer implements AutoCloseable {
                 case "/api/tests/regenerate" -> regenerateTests(now, exchange);
                 // 「这几条怎么判的」：开发 AI 错了 / 测试代码错了 / 不重要（十五.6 的三条路）
                 case "/api/tests/judge" -> judgeFailures(now, exchange);
+                // 「停用 / 恢复这几条用例」：停用的不进任何分母，但随时能恢复（十五.6 的那条出路）
+                case "/api/tests/disable" -> caseSwitches(now, exchange);
                 // 测试环境：现在什么状态 / 初始化 / 清空（十五.5、§15.8 的手动入口）
                 case "/api/env" -> Http.sendJson(exchange, 200, environmentOf(now, exchange));
                 case "/api/env/init" -> initEnvironment(now, exchange);
@@ -595,6 +598,33 @@ public final class WebServer implements AutoCloseable {
         project.requireOpen();
         project.runs().judge(request.id(), request.cases(), request.owner());
         Http.sendJson(exchange, 200, Map.of("done", true));
+    }
+
+    /**
+     * 「停用 / 恢复这几条用例」——用户的原话是「删掉它」。
+     *
+     * <p>停用不是删除，而是「这条别再算了」：它退出所有分母（通过率、溯源连线、回喂、
+     * 覆盖核对），引擎也不再要求它被实现，而人随时能恢复。请求体是
+     * {@code {"id":"...","cases":[3],"disabled":true}}，{@code id} 空着表示
+     * 「界面上正看着的那一次」（见 {@code RunStore.disable}）。
+     *
+     * <p>回来的不只是「成了」：整条流水一起回去（{@code caseSwitches}）——
+     * 界面按它重画那一栏，「谁在什么时候停过它」也回得去。只回一个布尔值的话，
+     * 界面只能自己猜当下的状态，而猜错的后果是「界面上停着、引擎里没停」。
+     */
+    private void caseSwitches(OpenProject project, HttpExchange exchange) throws IOException {
+        if (!Http.requirePost(exchange)) {
+            return;
+        }
+        Payloads.CaseSwitching request = Http.readJson(exchange, Payloads.CaseSwitching.class);
+        if (request == null) {
+            return;
+        }
+        project.requireOpen();
+        RunRecord updated = project.runs().disableCases(request.id(), request.cases(), request.off());
+        Http.sendJson(exchange, 200, Map.of(
+                "disabled", updated.disabledIndexes(),
+                "caseSwitches", updated.caseSwitches() == null ? List.of() : updated.caseSwitches()));
     }
 
     /**

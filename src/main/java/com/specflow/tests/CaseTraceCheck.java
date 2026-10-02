@@ -313,8 +313,12 @@ public final class CaseTraceCheck {
      *
      * <p>只归一化空白，<b>不碰其它任何字符</b>——「逐字照抄」是这条判据的全部意义，
      * 改一个标点、换一个数字都是改了期望。归一化空白只是不想让排版差异冒充错误。
+     *
+     * <p><b>包内可见，因为「逐字」只有一个意思</b>：{@code CaseHowStage}（第二段把期望
+     * 照抄回来那道闸）用的是同一个方法。两处各写一份「忽略空白」的话，迟早出现
+     * 一边认为算改、另一边认为没改——而这两道闸防的是同一件事（被测方自己给自己定期望）。
      */
-    private static String normalize(String text) {
+    static String normalize(String text) {
         return text == null ? "" : text.replaceAll("[\\s\\u00a0\\u3000]+", " ").strip();
     }
 

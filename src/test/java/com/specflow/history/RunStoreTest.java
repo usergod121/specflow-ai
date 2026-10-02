@@ -77,8 +77,9 @@ class RunStoreTest {
                 List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of(),
                 List.of(), null, List.of(), null, null,
                 // 判决、收场、重新生成过哪几份产物：都是跑完之后人写的那几笔，直接造时留空。
-                // 覆盖核对、回喂、「它没有改动」这三笔同理：这一条不涉及测试阶段
-                null, null, null, List.of(), null, null, null);
+                // 覆盖核对、回喂、「它没有改动」这三笔同理：这一条不涉及测试阶段。
+                // 最后那一栏是「谁什么时候停用过哪几条」：这一条里一条都没停用
+                null, null, null, List.of(), null, null, null, null);
     }
 
     @Test
