@@ -205,17 +205,92 @@ class TestAgentTest {
         assertThat(outcome.exit()).isEqualTo(TestScriptVerifier.NO_EXIT_CODE);
     }
 
+    /**
+     * 被安全闸拦下 = <b>一条看得见的失败项</b>（用户 2026-10-02 拍板）。
+     *
+     * <p>旧行为只落下一句日志（「测试产物没能落地，这次测试到此为止」）、产物整批清掉，
+     * 失败清单里是空的——人手里没有任何东西可看，只能重跑一轮碰运气。实测里它连着三版
+     * 都在入口脚本里写 {@code rm -rf "$OUT_DIR"}，于是连着白跑三轮。
+     */
     @Test
-    @DisplayName("产物里有高危命令：拒绝落盘、也不会执行")
+    @DisplayName("产物里有高危命令：拒绝落盘、也不会执行，并记成一条「被安全拦截」")
     void refusesDangerousScript() throws IOException {
+        // 用实测里那句原文：删自己的产物目录也是「批量删除」，一样拒（见 TestArtifacts 的批量旗标）
         TestOutcome outcome = run(answer -> block(answer.entry(),
-                WINDOWS ? "@echo off\nrm -rf / && exit /b 0" : "#!/bin/sh\nrm -rf /\nexit 0"));
+                WINDOWS ? "@echo off\nrm -rf \"$OUT_DIR\"\nexit /b 0"
+                        : "#!/bin/sh\nrm -rf \"$OUT_DIR\"\nexit 0"));
 
         assertThat(outcome.detail()).contains("高危命令");
-        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.TEST_CODE);
+        assertThat(outcome.worst()).as("单独一档：它的下一步和「测试代码问题」不是一回事")
+                .isEqualTo(TestOutcome.Failure.Kind.BLOCKED_COMMAND);
+        assertThat(outcome.failures()).as("和断言失败并排出现在失败清单里").singleElement()
+                .satisfies(failure -> {
+                    assertThat(failure.actual()).as("写明「被安全拦截」+ 原因，人才知道拦的是什么")
+                            .startsWith("被安全拦截：").contains("高危命令").contains("rm -rf");
+                    assertThat(failure.kind().label()).isEqualTo("被安全拦截");
+                });
+        assertThat(outcome.directory()).as("危险产物整批清掉，别指向一个不存在的地方").isEmpty();
+        assertThat(outcome.exit()).isEqualTo(TestScriptVerifier.NO_EXIT_CODE);
         try (var tools = Files.list(root.resolve("tools"))) {
-            assertThat(tools).isEmpty();
+            assertThat(tools).as("危险命令一个字节都没落盘").isEmpty();
         }
+    }
+
+    /**
+     * 被拦下之后<b>自动再生成一次</b>——把拒绝原因喂回去，让它换一种写法。
+     *
+     * <p>为什么给它这一次机会：实测里三版都栽在同一句删除命令上，一版就停等于白跑三轮。
+     * 为什么只给一次：那是安全语义，不是讨价还价。
+     */
+    @Test
+    @DisplayName("被安全拦截：带着拒绝原因重生成一次；第二版换了写法就照常跑")
+    void regeneratesOnceWhenTheSafetyGateRefusedTheArtifacts() {
+        FakeLlm llm = llm(answer -> ++generation == 1
+                // 第一版：删自己的产物目录（真实测里那句原文）
+                ? block(answer.entry(), WINDOWS
+                        ? "@echo off\nrm -rf \"$OUT_DIR\"\nexit /b 0"
+                        : "#!/bin/sh\nrm -rf \"$OUT_DIR\"\nexit 0")
+                // 第二版：换了写法，照常跑
+                : block(answer.entry(), anchoredScript(0, "PASS | 1", "PASS | 2")));
+
+        TestOutcome outcome = agent(llm).run(spec(), cases());
+
+        assertThat(generation).as("引擎自己又生成了一版（这就是「把拒绝原因喂回去」）").isEqualTo(2);
+        assertThat(outcome.calls()).as("两版就是两次真实调用，账要按版数记").isEqualTo(2);
+        assertThat(outcome.passed()).as("第二版落地了、也跑过了").isTrue();
+        assertThat(llm.user())
+                .as("喂回去的是「被安全闸拦下」，不是一份空的运行错误")
+                .contains("上一版产物被安全闸拦下了")
+                .contains("rm -rf");
+        assertThat(llm.user())
+                .as("并明说脚本不许自己删东西（协议里那条根因）")
+                .contains("不要自己删除目录或文件");
+    }
+
+    /**
+     * 反面：换了一版<b>还是</b>被拦下就停下交给人——不许一直求它别写删除命令。
+     *
+     * <p>停下时手里要有一条完整的失败项（数字、原因、原始错误都在），
+     * 人可以据此停用那条用例，也可以再点一次「重新生成」继续优化。
+     */
+    @Test
+    @DisplayName("两版都被拦下：停在第二版，交给人处置（不再试第三次）")
+    void stopsAfterTheSecondRefusal() {
+        FakeLlm llm = llm(answer -> {
+            generation++;
+            return block(answer.entry(), WINDOWS
+                    ? "@echo off\nrm -rf \"$OUT_DIR\"\nexit /b 0"
+                    : "#!/bin/sh\nrm -rf \"$OUT_DIR\"\nexit 0");
+        });
+
+        TestOutcome outcome = agent(llm).run(spec(), cases());
+
+        assertThat(generation).as("首版 + 一次重生成 = 两版，第三次不给").isEqualTo(2);
+        assertThat(outcome.calls()).isEqualTo(2);
+        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.BLOCKED_COMMAND);
+        assertThat(outcome.detail())
+                .as("说清下一步：可以重新生成、可以改用例写法，清理由引擎负责")
+                .contains("重新生成").contains("清理由引擎负责");
     }
 
     @Test
@@ -506,6 +581,10 @@ class TestAgentTest {
         assertThat(system).as("入口脚本的名字由引擎定，不能让它自己猜").contains(entryName());
         assertThat(system).as("锚点约定要写给它：不写它不可能知道引擎在扫什么")
                 .contains("CASE <编号>").contains("expect:");
+        assertThat(system)
+                .as("协议里要写明「脚本不许自己删目录/文件，清理由引擎负责」——"
+                        + "这是实测里 rm -rf \"$OUT_DIR\" 连写三版的根因")
+                .contains("测试脚本不许自己删目录、删文件").contains("由**引擎**负责");
         assertThat(llm.user())
                 .contains("用例清单")
                 .contains("按编号查订单能查到")

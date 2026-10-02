@@ -3521,6 +3521,9 @@ async function postRun(path, refeed) {
   // 测试那一摊同理：上一轮的失败清单、勾选、人的判决、重新生成的那批代码
   // 都是冲着上一轮那份结论做的决定，跟到这一轮来就成了「还没跑就有失败清单」
   state.tests = null;
+  // 上一轮那份**冻结清单**同理：失败清单的标题按它画（见 caseListForTests），
+  // 而这一次的冻结清单要跑完才写进留档。留着它，这一轮的失败行会顶着上一轮的语义
+  state.testsCases = null;
   state.testsOpen = true;
   state.picked = new Set();
   // 新的那份失败清单还没到，默认勾选得重新铺一次（见 seedPicks）
@@ -5761,6 +5764,10 @@ const FAILURE_KINDS = {
   ENVIRONMENT: ['bad', '环境起不来', '引擎亲见：命令/环境起不来，改动未回滚'],
   TIMEOUT: ['mid', '测试超时', '引擎亲见：没在时限内跑完，改动未回滚'],
   UNRUNNABLE: ['bad', '它的代码编不过', '引擎亲见：跑完一条用例结论都没有'],
+  // 「被安全拦截」是引擎自己拦下的：它写的东西里有危险命令，一个字节都没落盘、也没执行。
+  // 单独一档（不和「测试代码问题」混）是因为下一步完全不同：这一档要么停用那条用例，
+  // 要么让它换一种写法（引擎已经带着拒绝原因重生成过一次），而不是去修协议或改产品代码
+  BLOCKED_COMMAND: ['bad', '被安全拦截', '引擎亲见：危险命令被拦下，一个字节都没落盘、没执行'],
   BLOCKED: ['mid', '脚本报跑不起来', '机器转述脚本的说法，仅供参考'],
   ASSERTION: ['bad', '断言没过', '机器只看现象，谁错了由你判'],
   TEST_CODE: ['mid', '测试代码问题', '机器核对测试产物得出的结论'],
@@ -5826,7 +5833,10 @@ function refeedNote(result) {
   }
   return '<div class="refeed-note">这一轮带着上一轮的 ' + cases.length + ' 条失败回喂给开发（用例 '
       + cases.join('、') + '）：内容是引擎按固定模板拼的——用例的语义、期望 vs 实际、失败类型、'
-      + '涉及的目标文件，<b>不含测试代码与断言</b>。</div>';
+      + '涉及的目标文件，<b>不含测试代码与断言</b>。'
+      // 编号的口径要说清：它是**上一轮冻结的那份清单**里的编号，不是界面上那份新方案的编号
+      // （实测撞上过两轮清单不一致：同一个编号在两份清单里是两条不同的用例）
+      + '编号、语义与期望都取自上一轮冻结的那份用例清单（引擎逐条核过，对不上会当场拦下）。</div>';
 }
 
 /**
@@ -6658,12 +6668,20 @@ function rateOfAll(cases, report) {
   return passed + '/' + (cases || []).length;
 }
 
-/** 这次测试对着的那份用例清单：界面上有就用它，刷新过页面时退到留档里那一份。 */
+/**
+ * 这次测试对着的那份用例清单：<b>跑出这份结果的那一轮冻结的那一份</b>优先。
+ *
+ * <p>为什么留档里那一份排在前面（哪怕界面上正摆着一份新的方案）：失败清单里的编号
+ * 只在「跑出它的那一轮冻结的清单」里有意义。实测撞上过一次张冠李戴——人重新点了一次
+ * 「先检查」拿到新清单，而屏幕上这份失败清单是上一轮跑的，两边的第 7 条不是同一条用例，
+ * 界面按新清单画标题，于是那一行的语义整个错位。冻结清单在 {@code record.testCases} 里，
+ * 跑完那一刻就写死了；界面上那份新方案是**下一轮要冻的东西**，不是这一份结果的口径。
+ */
 function caseListForTests() {
-  if (state.plan && state.plan.cases && state.plan.cases.length) {
-    return state.plan.cases;
+  if (state.testsCases && state.testsCases.length) {
+    return state.testsCases;
   }
-  return state.testsCases || [];
+  return (state.plan && state.plan.cases) || [];
 }
 
 /**

@@ -60,10 +60,75 @@ class RefeedTest {
                 .startsWith(Refeed.HEADING)
                 .contains("用例 7「连续写两条记账后第二次返回 2」")
                 .contains("失败类型：断言没过")
-                .contains("期望 two appends succeed")
+                // 期望取自**冻结清单**那一栏（唯一真源），不是脚本自己打印的那句
+                .contains("期望 文件两行")
                 .contains("实际 InaccessibleObjectException")
                 .contains("它怎么验的：写两条再读文件")
                 .contains(TARGETS.get(0));
+    }
+
+    /**
+     * 「编号 ↔ 语义」对照：回喂是按编号说的，而编号只在那一轮冻结的清单里有意义。
+     *
+     * <p>实测里张冠李戴的那一次，喂出去的就是一条「编号对不上语义」的话：
+     * 开发 Agent 收到的是一段自相矛盾的回喂（既没失败、也没期望/实际）。
+     */
+    @Test
+    @DisplayName("回喂段里带「编号 ↔ 语义」对照，编号与语义出自同一份冻结清单")
+    void carriesTheNumberToMeaningTable() {
+        Refeed refeed = refeed(List.of(7, 8));
+
+        assertThat(refeed.text())
+                .contains("编号 ↔ 语义对照")
+                .contains("7 = 连续写两条记账后第二次返回 2")
+                .contains("8 = LEDGER_FILE 没设时抛 IllegalStateException");
+    }
+
+    /**
+     * 逐项校验：对不上就在<b>开工前</b>拦下（见 {@code RunStore.refeed}）。
+     *
+     * <p>三种对不上各报各的，不合并成一句「回喂失败」——人要知道该去改哪一条。
+     */
+    @Test
+    @DisplayName("逐项校验：编号不在冻结清单里 / 那一轮没失败 / 期望与实际取不到")
+    void reportsWhatCannotBeFed() {
+        List<PlanReview.TestCase> declared = List.of(
+                testCase(7, "记两笔", "写两条", "文件两行"),
+                testCase(8, "没设变量时抛异常", "清掉变量", "抛异常"));
+        TestOutcome outcome = new TestOutcome("tools/x", List.of(), 1, 1,
+                com.specflow.verify.VerificationResult.failed("测试脚本", "run.cmd", "退出码 1"),
+                List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.ASSERTION, "8",
+                        "IllegalStateException", "只有一行", "代码错了")),
+                List.of(new TestOutcome.CaseResult(7, true), new TestOutcome.CaseResult(8, false)),
+                List.of());
+
+        assertThat(Refeed.problems(declared, outcome, List.of(7, 8, 99)))
+                .as("7 那一轮过了（不在失败清单里）、99 压根不在清单里")
+                .hasSize(2)
+                .anySatisfy(problem -> assertThat(problem)
+                        .contains("第 7 条").contains("失败清单里没有"))
+                .anySatisfy(problem -> assertThat(problem)
+                        .contains("第 99 条").contains("不在那一轮冻结的用例清单里"));
+        assertThat(Refeed.problems(declared, outcome, List.of(8)))
+                .as("这一条对得上：编号在清单里、也真的失败了").isEmpty();
+        assertThat(Refeed.problems(declared, outcome, List.of()))
+                .as("一条都没勾：不是「下一轮」，没什么可核的").isEmpty();
+    }
+
+    /** 失败行没写实际（或者清单没写期望、脚本也没写）时也拦下：喂过去的两栏都是空的。 */
+    @Test
+    @DisplayName("逐项校验：期望与实际都取不到时当场拦")
+    void reportsWhenNothingCanBeQuoted() {
+        List<PlanReview.TestCase> declared = List.of(testCase(7, "记两笔", "写两条", ""));
+        TestOutcome outcome = new TestOutcome("tools/x", List.of(), 1, 1,
+                com.specflow.verify.VerificationResult.failed("测试脚本", "run.cmd", "退出码 1"),
+                List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.ASSERTION, "7", "", "", "")),
+                List.of(new TestOutcome.CaseResult(7, false)), List.of());
+
+        assertThat(Refeed.problems(declared, outcome, List.of(7)))
+                .hasSize(2)
+                .anySatisfy(problem -> assertThat(problem).contains("取不到期望"))
+                .anySatisfy(problem -> assertThat(problem).contains("取不到实际"));
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.specflow.tests;
 
 import com.specflow.context.ContextAssembler;
+import com.specflow.exception.BlockedCommandException;
 import com.specflow.exception.SpecflowException;
 import com.specflow.llm.ChatMessage;
 import com.specflow.llm.LlmClient;
@@ -98,6 +99,13 @@ public final class TestAgent {
      * <p><b>能跑起来但用例没过，绝不自动重跑</b>（十五.6）：那种失败机器判不了是谁的错，
      * 自动重跑只会烧调用、还会把「谁错了」这个判断从人手里抢走。停在那里等人放行。
      *
+     * <p><b>被安全闸拦下（危险命令）另给一次机会。</b>那一版一个字节都没落盘、一行都没跑，
+     * 能喂回去的只有「引擎为什么拒了你」——实测过它连着三版都写同一句 {@code rm -rf "$OUT_DIR"}，
+     * 旧行为是一版就停，于是连着白跑三轮、失败清单里还是空的。现在：带上拒绝原因再生成<b>一次</b>；
+     * 换了一版还是被拒就停下交给人（记成 {@link TestOutcome.Failure.Kind#BLOCKED_COMMAND}
+     * 那一条看得见的失败项），人可以停用那条用例、也可以再点「重新生成」继续优化。
+     * 只给一次，是因为这是安全语义：反复求它别写删除命令，等于把闸门当成摆设。
+     *
      * <p>环境起不来（{@link TestOutcome.Failure.Kind#hard() 硬判据}）时同样只生成这一版：
      * 它不是「没有结论」那一档，停机交给上层，产物与产品改动都留着等人处置。
      *
@@ -109,12 +117,26 @@ public final class TestAgent {
     public TestOutcome run(Spec spec, List<PlanReview.TestCase> cases, TestSettings settings,
                            Map<String, String> variables, ExecutionLocation location) {
         TestOutcome outcome = null;
+        // 「被安全拦截」那一次单独记：它只给一次「把拒绝原因喂回去、换一种写法」的机会。
+        // 为什么给：实测过它连着三版都写同一句 rm -rf "$OUT_DIR"，一版就停等于连着白跑三轮；
+        // 为什么只一次：那是安全语义，不是讨价还价——反复求它别写删除命令，等于把闸门当成摆设
+        boolean blockedRetried = false;
+        // 上一版被安全拦截时，喂给下一次生成的不是「脚本输出」而是那句拒绝原因
+        String refusal = null;
         for (int generation = 1; generation <= MAX_GENERATIONS; generation++) {
             // 模型调用本身失败会从这里原样冒泡（整次运行都要停）；「生成被拒」落成下面那一档
-            Attempt attempt = attempt(spec, cases, settings, variables, location, outcome);
+            Attempt attempt = attempt(spec, cases, settings, variables, location, outcome, refusal);
             if (attempt.rejected()) {
-                log.warn("测试产物没能落地，这次测试到此为止：{}", attempt.rejection().getMessage());
-                return TestReport.withCalls(attempt.outcome(), generation);
+                outcome = TestReport.withCalls(attempt.outcome(), generation);
+                if (!attempt.blocked() || blockedRetried || generation == MAX_GENERATIONS) {
+                    log.warn("测试产物没能落地，这次测试到此为止：{}", attempt.rejection().getMessage());
+                    return outcome;
+                }
+                blockedRetried = true;
+                refusal = attempt.rejection().getMessage();
+                log.warn("第 {} 版测试产物被安全闸拦下了，把拒绝原因喂回去换一种写法再生成一版：{}",
+                        generation, refusal);
+                continue;
             }
             // 每生成一版就是一次真实调用，账要按版数记（用户掏的钱不能说少）
             outcome = TestReport.withCalls(attempt.outcome(), generation);
@@ -130,6 +152,9 @@ public final class TestAgent {
             }
             log.warn("这一版测试代码跑不出一条用例的结论（第 {} 版），带上原始错误再生成一版：{}",
                     generation, attempt.outcome().output());
+            // 下一版要修的是**这一版的运行错误**，不再是上上版那句拒绝原因：不清掉它，
+            // 提示词里会挂着一句和当前这一版毫无关系的「你上一版被拦下了」
+            refusal = null;
             // 把这一版收掉再进下一版：它编不过/跑不起来，留着只会让 tools/ 只增不减，
             // 而真正要给人看的那一份是最后一版（前几版的原始错误已经写进下一版的提示词里）
             attempt.artifacts().delete();
@@ -148,6 +173,9 @@ public final class TestAgent {
      * @param previous 上一版跑完的结论；第一版是 {@code null}。
      *                 非空时它的原始输出会作为「上一版的错误」附在提示词里——模型照着自己的
      *                 原始报错改，比重新想一遍命中率高得多（实测过它连着三版都选了同一条错路）
+     * @param refusal  上一版<b>被安全闸拦下</b>时那句拒绝原因；不是这种重试时是 {@code null}。
+     *                 它和 {@code previous} 分开：那一次产出压根没跑起来，能喂回去的只有
+     *                 「引擎为什么拒了你」，把一份空输出当错误喂过去，它只会以为是运行环境的问题
      * @return 这一版的结果。<b>两种失败分开走：</b>模型调用本身失败会原样抛出去
      *         （整次运行都要停），而「这批测试代码不能用」落成 {@link Attempt#rejected()}——
      *         怎么交代由调用方决定（{@code run} 落成一条结论，{@code generate} 原样抛出）。
@@ -155,12 +183,12 @@ public final class TestAgent {
      */
     private Attempt attempt(Spec spec, List<PlanReview.TestCase> cases, TestSettings settings,
                             Map<String, String> variables, ExecutionLocation location,
-                            TestOutcome previous) {
+                            TestOutcome previous, String refusal) {
         TestArtifacts artifacts = TestArtifacts.create(projectRoot,
                 location == null ? ExecutionLocation.host() : location);
         String response;
         try {
-            response = ask(spec, cases, artifacts, settings, variables, previous);
+            response = ask(spec, cases, artifacts, settings, variables, previous, refusal);
         } catch (RuntimeException e) {
             // 模型调用没回来 = 这一轮一个字节都没生成。刚建的那个空 tools/<时间戳>/ 要收掉：
             // 留着它会攒成一串空目录，看上去像「跑过好几次测试」，而实际什么都没跑。
@@ -190,8 +218,17 @@ public final class TestAgent {
             // 环境起不来（硬判据）时**什么都不删**：停下的只是这一次运行，现场原样留着
             // （产品改动进「待处置」、产物留在 tools/ 里）——见 run 的注释
             return new Attempt(outcome, artifacts, reportedNothing, written, trace, null);
+        } catch (BlockedCommandException e) {
+            // 安全闸拦下了它写的东西（高危命令）：产物一个字节都不落盘、也一行都不执行。
+            // 「这一批没落地」是一档**看得见的失败**（不是一句日志就完了）：它和断言失败并排
+            // 进失败清单、进界面、进留档，人据此决定是停用那条用例还是让它换一种写法。
+            // 产物照旧整批清掉——它是模型写的、而且在宿主上真跑，留着没有意义也不会被执行
+            log.warn("测试产物被安全闸拦下（不落盘、不执行），这一批已清掉：{}", e.getMessage());
+            artifacts.delete();
+            return new Attempt(TestReport.blockedCommand(1, e.getMessage()), artifacts, false,
+                    List.of(), null, e);
         } catch (SpecflowException e) {
-            // 生成阶段就被拒了（没按协议写、路径越界、命中高危命令）：产物一个字节都不留。
+            // 生成阶段就被拒了（没按协议写、路径越界）：产物一个字节都不留。
             // 产品代码刚才编译通过、改动还在磁盘上，这里只报告「这批测试代码不能用」。
             // <b>这一档照旧删产物</b>：拒绝的理由是这批代码本身不能用（不是环境的事），
             // 而它连一个可执行的入口都没落地，留着只是一堆指向空处的文件
@@ -226,6 +263,17 @@ public final class TestAgent {
         /** 这一版是不是「生成就被拒了」（产物已经清掉，没什么可给人看的）。 */
         boolean rejected() {
             return rejection != null;
+        }
+
+        /**
+         * 这一版是不是被<b>安全闸</b>拦下的（危险命令），而不是协议不符 / 路径越界。
+         *
+         * <p>两者收场不同：安全拦截值得再生成一版（拒绝原因喂回去让它换写法），
+         * 协议问题重掷骰子还是同样的错。判据就是抛出来的那个类型
+         * （见 {@link BlockedCommandException}），不靠比对消息里的字。
+         */
+        boolean blocked() {
+            return rejection instanceof BlockedCommandException;
         }
     }
 
@@ -306,8 +354,9 @@ public final class TestAgent {
      *
      * @return 产物目录、写了哪些文件、每个文件的正文、连线核对结果；
      *         最后那一版编不过时还有一段「它的代码编不过 + 原始错误」
-     * @throws SpecflowException 生成被拒（没按协议写、路径越界、命中高危命令）；
-     *                           模型调用本身失败也会冒泡出去。两种情况下产物一个字节都不留
+     * @throws SpecflowException 生成被拒（没按协议写、路径越界）；命中高危命令也会抛，
+     *                           但那种先带拒绝原因重生成一次（见 {@code run} 的注释），
+     *                           换了一版还被拦下才抛出来。两种情况产物一个字节都不留
      */
     public Generated generate(Spec spec, List<PlanReview.TestCase> cases) {
         return generate(spec, cases, TestSettings.UNIT_ONLY, null, ExecutionLocation.host());
@@ -336,13 +385,24 @@ public final class TestAgent {
                               Map<String, String> variables, ExecutionLocation location) {
         Generated generated = null;
         TestOutcome previous = null;
+        // 和 run 那一边同一条规矩：被安全闸拦下只给一次换写法的机会（见 run 的注释）。
+        // 这条路也要有——人点「重新生成」要的正是「换一版」，而一版就被同一条删除命令拒掉，
+        // 他能做的只是再点一次，等同一个结果
+        String refusal = null;
         for (int generation = 1; generation <= MAX_GENERATIONS; generation++) {
-            Attempt attempt = attempt(spec, cases, settings, variables, location, previous);
+            Attempt attempt = attempt(spec, cases, settings, variables, location, previous, refusal);
             if (attempt.rejected()) {
+                if (attempt.blocked() && refusal == null && generation < MAX_GENERATIONS) {
+                    refusal = attempt.rejection().getMessage();
+                    log.warn("重新生成的第 {} 版被安全闸拦下，把拒绝原因喂回去换一种写法再生成一版：{}",
+                            generation, refusal);
+                    continue;
+                }
                 // 这条路是同步接口，说得出「为什么不行」（界面上就是一条错误提示）；和 run()
                 // 那边落成 TestOutcome.rejected 是同一个理由，只是这里把**原来那个异常**
                 // 原样交出去（换一个类型或重拼一句话，都会丢掉它自带的说法）。
-                // 产物已经在 attempt 里清掉了，一次都不重试：协议问题重掷骰子还是同样的错
+                // 产物已经在 attempt 里清掉了：协议问题重掷骰子还是同样的错，
+                // 换了一版还被安全闸拦下也一样——那时候人要看的是那句拒绝原因，不是第三次尝试
                 throw attempt.rejection();
             }
             String directory = attempt.artifacts().relative();
@@ -360,6 +420,8 @@ public final class TestAgent {
             }
             log.warn("重新生成的这一版跑不出一条用例的结论（第 {} 版），带上原始错误再生成一版：{}",
                     generation, attempt.outcome().output());
+            // 同 run 那边：下一版要修的是这一版的运行错误，不再挂着上上版那句拒绝原因
+            refusal = null;
             // 和 run 那边同一条规矩：中间这几版收掉，只留最后一版（原始错误已经进了下一版的提示词）
             attempt.artifacts().delete();
             previous = attempt.outcome();
@@ -428,13 +490,17 @@ public final class TestAgent {
      *
      * @param previous 上一版跑完的结论（第一版是 {@code null}）。非空时把它的原始输出
      *                 附在用户消息的最后一段：这一版是「修上一版的错」，不是重新想一遍
+     * @param refusal  上一版被安全闸拦下时那句拒绝原因（不是这种重试时 {@code null}）：
+     *                 这一版要修的是「写法被闸门拒了」，不是「跑起来的报错」
      */
     private String ask(Spec spec, List<PlanReview.TestCase> cases, TestArtifacts artifacts,
                        TestSettings settings, Map<String, String> variables,
-                       TestOutcome previous) {
+                       TestOutcome previous, String refusal) {
         String message = assembler.userMessage(spec, templates)
                 + "\n" + TestProtocol.caseList(cases);
-        if (previous != null) {
+        if (refusal != null && !refusal.isBlank()) {
+            message = message + "\n" + TestProtocol.refusalNotice(refusal);
+        } else if (previous != null) {
             message = message + "\n" + TestProtocol.retryNotice(previous);
         }
         return llm.complete(List.of(

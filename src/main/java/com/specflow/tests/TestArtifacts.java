@@ -1,5 +1,6 @@
 package com.specflow.tests;
 
+import com.specflow.exception.BlockedCommandException;
 import com.specflow.exception.SpecflowException;
 import com.specflow.patch.PatchBlock;
 import com.specflow.util.ProjectFiles;
@@ -384,7 +385,10 @@ public final class TestArtifacts {
     private void refuseForbidden(PatchBlock block, String shown) {
         String evidence = forbidden(block.replace());
         if (evidence != null) {
-            throw new SpecflowException("生成的测试产物里有高危命令，已经拒绝落盘、也不会执行："
+            // 用专门的类型抛（见 BlockedCommandException 的注释）：这一档要单独记成一条
+            // 「被安全拦截」的失败项、并且值得把拒绝原因喂回去再生成一版——
+            // 而协议不符、路径越界那两种不重试。光靠文字认这两种，改一个字就认不出来了
+            throw new BlockedCommandException("生成的测试产物里有高危命令，已经拒绝落盘、也不会执行："
                     + shown + " 里的「" + evidence + "」。"
                     + "测试脚本只该跑测试——要动系统、要挂宿主目录、要删产品代码的写法一律不接受");
         }

@@ -334,6 +334,8 @@ class SpecflowCliTest {
             assertThat(user).as("回喂那一段真的进了提示词：%s", user)
                     .contains("## 上一轮的测试失败")
                     .contains("用例 2「改完还能编译」")
+                    .contains("编号 ↔ 语义对照")
+                    .contains("2 = 改完还能编译")
                     .contains("期望 compiled")
                     .contains("实际 not compiled")
                     .contains("Foo.java");
@@ -348,7 +350,7 @@ class SpecflowCliTest {
         recordRefeedableRun();
         RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
 
-        assertThat(RunCommand.refeedOf("all", store).cases()).containsExactly(2);
+        assertThat(RunCommand.refeedOf("all", store).cases()).containsExactly(2, 3);
         assertThat(RunCommand.refeedOf("2", store).cases()).containsExactly(2);
         assertThat(RunCommand.refeedOf("2, 3", store).cases()).as("编号分隔符随便写")
                 .containsExactly(2, 3);
@@ -373,6 +375,12 @@ class SpecflowCliTest {
         assertThatThrownBy(() -> RunCommand.refeedOf("这几条", store))
                 .isInstanceOf(SpecflowException.class)
                 .hasMessageContaining("--refeed 要写编号");
+        assertThatThrownBy(() -> RunCommand.refeedOf("1, 2", store))
+                .as("第 1 条上一轮是过了的：对不上失败清单，当场拒"
+                        + "（喂一条没失败的等于把「人确认过」这句话变成假的）")
+                .isInstanceOf(SpecflowException.class)
+                .hasMessageContaining("回喂被拦下")
+                .hasMessageContaining("第 1 条");
     }
 
     // ---------- 辅助 ----------
@@ -389,12 +397,19 @@ class SpecflowCliTest {
                 new PlanReview.TestCase(1, "a 变成 2", "读 Foo.java 里的 a",
                         PlanReview.TestCase.Level.MUST, "a == 2", "无"),
                 new PlanReview.TestCase(2, "改完还能编译", "跑一次编译",
-                        PlanReview.TestCase.Level.SHOULD, "compiled", "无"));
+                        PlanReview.TestCase.Level.SHOULD, "compiled", "无"),
+                // 第 3 条也造一条真失败：回喂的编号要逐项核过冻结清单与失败清单
+                // （只有真失败过的编号才喂得出去），分隔符那种写法才有两条编号可写
+                new PlanReview.TestCase(3, "改完还能跑起来", "跑一次入口",
+                        PlanReview.TestCase.Level.MUST, "exit 0", "无"));
         TestOutcome tests = new TestOutcome("tools/20260930-180000", List.of(), 1, 1,
                 VerificationResult.failed("测试脚本", "run", "一条没过"),
                 List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.ASSERTION, "2",
-                        "compiled", "not compiled", "code is wrong")),
-                List.of(new TestOutcome.CaseResult(1, true), new TestOutcome.CaseResult(2, false)),
+                                "compiled", "not compiled", "code is wrong"),
+                        new TestOutcome.Failure(TestOutcome.Failure.Kind.ASSERTION, "3",
+                                "exit 0", "exit 1", "code is wrong")),
+                List.of(new TestOutcome.CaseResult(1, true), new TestOutcome.CaseResult(2, false),
+                        new TestOutcome.CaseResult(3, false)),
                 List.of());
         RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
                 PlanReview.of("做点事", "", List.of(), List.of(), cases), AgentListener.NOOP);

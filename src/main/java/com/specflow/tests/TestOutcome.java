@@ -92,8 +92,8 @@ public record TestOutcome(
          * 失败类型。<b>这里只回答「机器看见了什么」，不回答「谁错了」</b>——
          * 谁错了由人看失败清单来定（十五.1）。
          *
-         * <p>六档按「凭什么这么说」排，前两档是<b>引擎自己看见的硬判据</b>，
-         * 后四档是脚本的说法或机器的猜测，都<b>不许自动回喂</b>：
+         * <p>七档按「凭什么这么说」排，前两档是<b>引擎自己看见的硬判据</b>，
+         * 后面几档是机器的计算、脚本的说法或猜测，都<b>不许自动回喂</b>（回喂是人对失败清单做过判断之后的动作）：
          * <ul>
          *   <li>{@link #ENVIRONMENT}（硬）—— 命令/环境<b>起不来</b>：入口脚本不存在、进程起不来、
          *       输出读不出来。引擎亲见，再跑一万次也一样，所以立刻停 + 把原始错误给人；
@@ -103,20 +103,27 @@ public record TestOutcome(
          *   <li>{@link #UNRUNNABLE} —— 跑完了、退出码非 0，却<b>一条用例的结论都没报出来</b>
          *       （多半是它写的代码编不过）。引擎亲见的是「没有结论」，所以按现象说，
          *       不替它判「编译不过」这个原因。这一档会先自动重试生成（见 {@code TestAgent}）；
+         *   <li>{@link #BLOCKED_COMMAND} —— <b>引擎自己把它拦下的</b>：它写的产物里有
+         *       {@code rm -rf} 这类高危命令，安全闸拒绝落盘、也拒绝执行。这一档和断言失败
+         *       <b>并排</b>出现在失败清单里（界面上看得见、留档里查得到），而不是一句
+         *       「这轮白跑了」；实测过它连着三版都写同一句删除命令，所以这一档还带着
+         *       <b>一次</b>「把拒绝原因喂回去、让它换写法」的机会（仍然被拒就停下交给人）；
          *   <li>{@link #BLOCKED} —— 脚本自己打了一行 {@code BLOCKED}（或者输出里有带报错形状的
          *       「命令不存在 / 连不上」）。<b>那是它的说法</b>：实测过它把「编译不过」也写成
          *       BLOCKED，所以引擎只转述、采信它就没有下文了——停下等人看，不回滚、不删产物；</li>
          *   <li>{@link #ASSERTION} —— 输出里有 {@code FAIL | …} 行：脚本说这几条没过。机器只看见
          *       现象，是产品代码错了还是用例写错了，<b>机器判不了也不判</b>，交给人；</li>
          *   <li>{@link #TEST_CODE} —— 机器<b>核对测试产物本身</b>得出的结论：溯源没接上线、
-         *       清单上的用例一条都没报、脚本报了清单外的编号、产物没能落盘。这一档不是猜的，
-         *       是算出来的。</li>
+         *       清单上的用例一条都没报、脚本报了清单外的编号、产物没能按协议落地。这一档不是猜的，
+         *       是算出来的。（安全拦截从这一档里分了出去，见 {@link #BLOCKED_COMMAND}：
+         *       那句「产物不能用」下面藏着两种完全不同的下一步。）</li>
          * </ul>
          */
         public enum Kind {
             ENVIRONMENT("环境起不来"),
             TIMEOUT("测试超时"),
             UNRUNNABLE("它的代码编不过"),
+            BLOCKED_COMMAND("被安全拦截"),
             BLOCKED("脚本报跑不起来"),
             ASSERTION("断言没过"),
             TEST_CODE("测试代码问题");
@@ -155,7 +162,10 @@ public record TestOutcome(
         /** 失败清单里的一行，也是时间线上那一行。 */
         public String describe() {
             if (testCase.isEmpty()) {
-                return kind.label() + "：" + actual;
+                // 「实际」那一栏有时已经自带类型标签（安全拦截那条就是「被安全拦截：<原因>」，
+                // 用户要求的最小信息量）。再拼一遍会变成「被安全拦截：被安全拦截：…」，
+                // 读起来像两个错——认出来就不再重复（见 TestReport.blockedCommand）
+                return actual.startsWith(kind.label() + "：") ? actual : kind.label() + "：" + actual;
             }
             return "用例 " + testCase + "：" + kind.label()
                     + "，期望 " + (expected.isEmpty() ? "（没写）" : expected)
@@ -245,7 +255,8 @@ public record TestOutcome(
             return null;
         }
         for (Failure.Kind kind : List.of(Failure.Kind.ENVIRONMENT, Failure.Kind.TIMEOUT,
-                Failure.Kind.UNRUNNABLE, Failure.Kind.BLOCKED, Failure.Kind.TEST_CODE)) {
+                Failure.Kind.UNRUNNABLE, Failure.Kind.BLOCKED_COMMAND, Failure.Kind.BLOCKED,
+                Failure.Kind.TEST_CODE)) {
             if (failures.stream().anyMatch(failure -> failure.kind() == kind)) {
                 return kind;
             }
@@ -321,6 +332,16 @@ public record TestOutcome(
             return "它写的测试代码一条用例的结论都没跑出来（多半是编不过）——换了 "
                     + Math.max(1, calls) + " 版都是这样，就不再自动重试了。"
                     + "原始错误在下面的输出里；改动<b>没有回滚</b>，产物也留着。";
+        }
+        if (worst == Failure.Kind.BLOCKED_COMMAND) {
+            return "引擎的安全闸把这批测试产物拦下了：里面写了危险命令，"
+                    + "所以它<b>一个字节都没落盘、也一行都没执行</b>——产品代码和这台机器都是安全的。"
+                    + "这一档不是断言没过，也不是你的需求有问题：它写错了脚本。"
+                    + "引擎已经带着拒绝原因重生成过一版（见下面的原始错误），还是被拦下就停在这里。"
+                    + "接下来你可以：换个说法让它重写（点「测试代码错了 → 重新生成」），"
+                    + "或者把这条用例改成不碰删除/提权/挂载的写法；"
+                    + "<b>清理由引擎负责</b>——测试脚本不许自己删目录、删文件。"
+                    + "改动<b>没有回滚</b>，等你处置。";
         }
         if (worst == Failure.Kind.BLOCKED) {
             return "脚本自己说它没跑起来。引擎<b>只转述这句话，不当结论</b>（实测过它拿这句话"

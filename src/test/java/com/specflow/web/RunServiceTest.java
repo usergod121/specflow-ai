@@ -395,9 +395,13 @@ class RunServiceTest {
             assertThat(user).as("回喂那一段进了提示词：%s", user)
                     .contains("## 上一轮的测试失败")
                     .contains("用例 2「加完之后项目还能编译」")
-                    .contains("期望 compiled")
+                    // 期望取自**冻结清单**那一栏（唯一真源）：脚本自己打印的那句「compiled」只作兜底
+                    .contains("期望 编译通过")
                     .contains("实际 not compiled")
                     .contains("Foo.java");
+            assertThat(user).as("回喂段里还带着「编号 ↔ 语义」对照（编号只在冻结清单里有意义）")
+                    .contains("编号 ↔ 语义对照")
+                    .contains("2 = 加完之后项目还能编译");
             assertThat(user).as("它在需求与施工单之后").contains("## 需求");
             assertThat(user.indexOf("## 需求"))
                     .isLessThan(user.indexOf("## 上一轮的测试失败"));
@@ -421,12 +425,105 @@ class RunServiceTest {
         service.shutdown();
     }
 
+    /**
+     * 回喂的编号对不上上一轮冻结的清单：<b>当场拦</b>，一轮都不开。
+     *
+     * <p>实测撞上过的那一次：界面上的编号取自上一轮留档、语义取自新一轮清单，
+     * 于是喂出去的那一条既没失败、也没期望/实际，整段话自相矛盾——而钱已经花了。
+     * 这里挑「上一轮第 1 条<b>过了</b>」那种编号：它在冻结清单里、但不在失败清单里，
+     * 正是最容易被人误勾上的一种（人工勾选时按的是语义、不是编号）。
+     */
+    @Test
+    @DisplayName("回喂：编号对不上上一轮冻结的清单 → 当场拒，一次调用都不烧")
+    void refusesRefeedThatDoesNotMatchTheFrozenList() throws Exception {
+        Files.writeString(root.resolve("Foo.java"), "old\n");
+        recordRefeedableRun();
+        RunService service = service();
+
+        RunRequest request = RunRequest.of(null, "把 a 改成 2", null, null, null,
+                List.of("Foo.java"), null, null, null, null, 0, 1, null, List.of(1));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.start(request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("回喂被拦下")
+                .hasMessageContaining("第 1 条")
+                .hasMessageContaining("失败清单里没有");
+        service.shutdown();
+    }
+
     /** 等到这次运行收场（它的终态事件发出来为止）。 */
     private static void awaitIdle(RunService service) throws InterruptedException {
         for (int attempt = 0; attempt < 400 && service.hub().running(); attempt++) {
             Thread.sleep(25);
         }
         assertThat(service.hub().running()).as("这一次运行收场了").isFalse();
+    }
+
+    /**
+     * 覆盖核对在<b>正常路径上不误报</b>、而在「照抄上一版验收文本」时<b>当场报零覆盖</b>。
+     *
+     * <p>两半都要，因为这两件事的代价不一样：误报（把接上的说成没接上）会让人去改一份
+     * 本来就对的东西，而漏报只是少一条提示。真模型实测里那一次就是后者——
+     * 我改了 A1~A5 的措辞，而模型那一栏照抄的是上一版原文，它报了 {@code uncovered 5/5}，
+     * 数是准的。只测 AcceptanceCoverage 那一层的话，「算出来了但没接进返回体」照样是绿的，
+     * 所以这里走真接口（{@code /api/review} 那条链）。
+     */
+    @Test
+    @DisplayName("覆盖核对：照抄原文不误报；照抄上一版验收文本当场报零覆盖")
+    void coverageReportsCopiedOldAcceptanceText() throws Exception {
+        String criteriaCopied = """
+                <<<<<<< SUMMARY
+                做点事。
+                >>>>>>> SUMMARY
+
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+
+                <<<<<<< CASES
+                1 | a 能变成 2 | 读 Foo.java | 必须过 | a == 2 | A1：加完之后 a 等于 2
+                >>>>>>> CASES
+                """;
+        String criteriaStale = """
+                <<<<<<< SUMMARY
+                做点事。
+                >>>>>>> SUMMARY
+
+                <<<<<<< FLOW
+                flowchart TD
+                    A[入口] --> B[出口]
+                >>>>>>> FLOW
+
+                <<<<<<< CASES
+                1 | a 能变成 2 | 读 Foo.java | 必须过 | a == 2 | 加完之后 a 是 2
+                >>>>>>> CASES
+                """;
+        try (StubModelServer model = StubModelServer.answering(criteriaCopied, criteriaStale)) {
+            Files.createDirectories(root.resolve(".specflow"));
+            Files.writeString(root.resolve(".specflow").resolve("local.env"),
+                    "SPECFLOW_TEST_KEY=sk-test\n");
+            ProjectConfig project = new ProjectConfig(null,
+                    new LlmConfig(model.baseUrl(), "stub", "SPECFLOW_TEST_KEY", 5, 0.0, 0), null);
+            RunService service = new RunService(root, project, root.resolve(".specflow/templates"));
+
+            ReviewOutcome copied = service.review(RunRequest.of(null, "把 a 改成 2",
+                    List.of("A1：加完之后 a 等于 2"), null, null,
+                    List.of("src/main/java/demo/Foo.java"), null, null, null, null, null, null,
+                    null, List.of()));
+            assertThat(copied.coverage().uncoveredCount())
+                    .as("照抄原文：一条都不该报（假红会让人去改一份本来就对的东西）").isZero();
+            assertThat(copied.coverage().unmappedMustCount()).isZero();
+
+            ReviewOutcome stale = service.review(RunRequest.of(null, "把 a 改成 2",
+                    List.of("A1：加完之后 a 等于 2"), null, null,
+                    List.of("src/main/java/demo/Foo.java"), null, null, null, null, null, null,
+                    null, List.of()));
+            assertThat(stale.coverage().uncoveredCount())
+                    .as("照抄的是上一版验收文本：当场报零覆盖（实测那一次是 5/5）").isEqualTo(1);
+            assertThat(stale.coverage().uncovered()).containsExactly("A1：加完之后 a 等于 2");
+            service.shutdown();
+        }
     }
 
     /**

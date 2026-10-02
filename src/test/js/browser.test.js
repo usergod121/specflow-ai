@@ -79,6 +79,11 @@ let envProject = null;
  */
 let traceProject = null;
 /**
+ * 链 29 临时造出来的「带假模型的项目」（被安全拦截那一链）。
+ * 收尾规矩和上面几个一样：目录跟着 TEMP_PATHS 删，「最近打开」里那条记录单独去接口上删。
+ */
+let blockedProject = null;
+/**
  * 链 23 起的本机假模型服务。跑完必须关掉——它是一个真在监听的端口，
  * 留着它下一次跑测试会多一个没人认领的进程。
  */
@@ -185,6 +190,10 @@ function startStubModel(answer) {
  */
 function startScriptedModel(answers) {
   const queue = [...answers];
+  // 每条请求的原文与「一共被问了几次」都留着：链 29 要验的两件事就在这两样里——
+  // ①引擎有没有把拒绝原因真的喂回给模型；②它是不是只多生成了一版（一张嘴就问三次就是没做到）
+  const requests = [];
+  let served = 0;
   return new Promise(resolve => {
     const server = http.createServer((req, res) => {
       const chunks = [];
@@ -199,6 +208,8 @@ function startScriptedModel(answers) {
         }
         let content = queue.shift();
         const request = Buffer.concat(chunks).toString('utf8');
+        served++;
+        requests.push(request);
         const dir = (request.match(/tools\/\d{8}-\d{6}(-\d+)?/) || [])[0];
         if (dir) {
           content = content.replace(/\{\{DIR\}\}/g, dir)
@@ -211,6 +222,8 @@ function startScriptedModel(answers) {
     server.listen(0, '127.0.0.1', () => resolve({
       port: server.address().port,
       close: () => server.close(),
+      calls: () => served,
+      requests,
     }));
   });
 }
@@ -3868,6 +3881,159 @@ async function main() {
     stubModel.close();
     stubModel = null;
 
+    // ---------- 链 29：被安全拦截（危险命令） ----------
+    // 真模型实测里它连着三版都在入口脚本里写 rm -rf "$OUT_DIR"。旧行为是：引擎拒绝落盘 →
+    // 失败清单里什么都没有 → 一版就停，一轮白跑，人手里没东西可看。
+    // 用户 2026-10-02 拍板改成三件事，这一链就是拿真引擎 + 真界面把它们逐个钉住：
+    //   ① 被拦下 = 一条看得见的失败项（界面 + 留档都在，类型写「被安全拦截」）；
+    //   ② 带着拒绝原因自动重生成一次（只一次）；
+    //   ③ 危险命令绝不执行——桩里那条命令会删掉一个真实存在的文件，跑完它必须还在。
+    console.log('\n链 29　被安全拦截：记成一条看得见的失败、带着拒绝原因重生成一次、危险命令不执行：');
+
+    blockedProject = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-blocked-'));
+    TEMP_PATHS.push(blockedProject);
+    fs.mkdirSync(path.join(blockedProject, '.specflow'), { recursive: true });
+    fs.mkdirSync(path.join(blockedProject, 'src', 'main', 'java', 'com', 'demo'), { recursive: true });
+    fs.writeFileSync(path.join(blockedProject, 'pom.xml'), '<project/>\n');
+    const fooPath29 = path.join(blockedProject, 'src', 'main', 'java', 'com', 'demo', 'Foo.java');
+    fs.writeFileSync(fooPath29, 'class Foo {\n    int a = 1;\n}\n');
+    // 哨兵：那条危险命令真要被执行了，这个文件就没了。它是「一个字节都没执行」的证据
+    const keepPath29 = path.join(blockedProject, 'src', 'main', 'java', 'com', 'demo', 'Keep.java');
+    fs.writeFileSync(keepPath29, 'class Keep {}\n');
+    // 那条危险命令就照实测原文写（rm -rf "$OUT_DIR"），再跟一条会真删掉哨兵的命令——
+    // 产物压根不落盘，所以这条也永远跑不到
+    const dangerousScript = ['@echo off',
+      'rm -rf "$OUT_DIR"',
+      'del /s /q "src\\main\\java\\com\\demo\\Keep.java"',
+      'echo PASS ^| 1',
+      'exit /b 0', ''].join('\n');
+    stubModel = await startScriptedModel([
+      // ① 检查：一条用例、一条验收标准
+      ['<<<<<<< SUMMARY', '给 Foo 加一个方法。', '>>>>>>> SUMMARY', '',
+       '<<<<<<< FLOW', 'flowchart TD', '    A[入口] --> B[出口]', '>>>>>>> FLOW', '',
+       '<<<<<<< CASES',
+       '1 | a 能变成 2 | 读 Foo.java 里的 a | 必须过 | a == 2 | R-1 加完之后 a 等于 2',
+       '>>>>>>> CASES', '',
+       '<<<<<<< STEPS',
+       '1 | 给 Foo 加一个方法 | src/main/java/com/demo/Foo.java | 能编译 | 自洽',
+       '>>>>>>> STEPS', ''].join('\n'),
+      // ② 开发那一轮：把 a 改成 2
+      ['<<<<<<< SEARCH src/main/java/com/demo/Foo.java',
+       '    int a = 1;', '=======', '    int a = 2;', '>>>>>>> REPLACE', ''].join('\n'),
+      // ③④ 两次生成测试产物都给同一份危险脚本：第一版被拒、第二版照样被拒 → 停下交给人。
+      // 桩里只备两条，引擎要是问了第三次会拿到 500（那一轮就不是这个结果了）
+      ['<<<<<<< SEARCH {{ENTRY}}', '=======', dangerousScript, '>>>>>>> REPLACE', ''].join('\n'),
+      ['<<<<<<< SEARCH {{ENTRY}}', '=======', dangerousScript, '>>>>>>> REPLACE', ''].join('\n'),
+    ]);
+    fs.writeFileSync(path.join(blockedProject, '.specflow', 'project.yaml'),
+        'llm:\n  base-url: http://127.0.0.1:' + stubModel.port + '\n  model: stub\n'
+        + '  api-key-env: SPECFLOW_TEST_KEY\n');
+    fs.writeFileSync(path.join(blockedProject, '.specflow', 'local.env'), 'SPECFLOW_TEST_KEY=sk-test\n');
+
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: blockedProject }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(blockedProject))})`, '页面切到这一链的项目');
+
+    await setField('demand', '给 Foo 加一个方法，让 a 变成 2');
+    await evaluate(`(() => {
+      state.selected = new Set(['src/main/java/com/demo/Foo.java']);
+      updatePicked();
+      return 'ok';
+    })()`);
+    await clickButton('review');
+    await waitFor(`state.plan && state.plan.cases && state.plan.cases.length === 1`,
+        '用例清单回来了', 20000);
+    await evaluate(`document.querySelector('#cases [data-act="confirm"]').click(); 'ok'`);
+    await waitFor(`document.getElementById('run').disabled === false`, '确认之后「运行」放开');
+    await clickButton('run');
+    await waitFor(`state.running === false && document.querySelector('#result .status') !== null`,
+        '这一次真运行跑到收场', 60000);
+
+    // ① 一条看得见的失败项：类型是「被安全拦截」，不是「测试代码问题」，也不是整轮消失
+    check((await evaluate(`document.getElementById('result').textContent`)).includes('测试没全过'),
+        '结果那一行说的是「测试没全过」（不是「跑不下去了」，也不是当成通过）');
+    const kind29 = await evaluate(`(() => {
+      const row = document.querySelector('#result .fail');
+      if (!row) return null;
+      const kind = row.querySelector('.fail-kind');
+      const source = row.querySelector('.fail-source');
+      // 取不到就给空串：界面少画一个 span 时，要红的是下面那条断言，
+      // 而不是让整条链在这里抛异常中断（后面所有断言都看不到——§17.7 记过同一个坑）
+      return {
+        kind: kind ? kind.textContent : '',
+        source: source ? source.textContent : '',
+        text: row.textContent,
+        panel: document.getElementById('result').textContent,
+      };
+    })()`);
+    check(kind29 !== null, '失败清单里真有那一条（旧行为：这里什么都没有）');
+    check(kind29 && kind29.kind.includes('被安全拦截'),
+        '类型那一枚写着「被安全拦截」：' + JSON.stringify(kind29 && kind29.kind));
+    check(kind29 && kind29.source.includes('引擎亲见') && kind29.source.includes('没落盘'),
+        '旁边说清凭什么这么判（引擎亲见）与后果（一个字节都没落盘）：'
+            + JSON.stringify(kind29 && kind29.source));
+    check(kind29 && kind29.text.includes('被安全拦截：') && kind29.text.includes('高危命令'),
+        '失败行里带着引擎那句拒绝原因原文：' + JSON.stringify(kind29 && kind29.text.slice(0, 120)));
+    check(kind29 && kind29.panel.includes('清理由引擎负责'),
+        '并且说清下一步：测试脚本不许自己删东西，清理由引擎负责');
+    check(kind29 && kind29.panel.includes('重新生成'),
+        '也给出了路：可以走「重新生成」让它换一种写法');
+
+    // ② 带着拒绝原因自动重生成一次（只一次）：四次调用 = 检查 + 开发 + 首版 + 重生成一版
+    check(stubModel.calls() === 4,
+        '引擎自己多生成了一版（一共问了 4 次：检查 / 开发 / 首版 / 重生成），实际 '
+            + stubModel.calls() + ' 次');
+    const retry29 = String(stubModel.requests[3] || '');
+    check(retry29.includes('上一版产物被安全闸拦下了') && retry29.includes('rm -rf'),
+        '重生成那一版把拒绝原因喂回去了（它不是重新想一遍，而是照原因改写法）');
+    check(retry29.includes('不要自己删除目录或文件'),
+        '连同「脚本不许自己删目录/文件，清理由引擎负责」一起喂（那是根因）');
+
+    // ③ 危险命令绝不执行：产物一个字节都没落盘，哨兵文件还在
+    const tools29 = path.join(blockedProject, 'tools');
+    const landed29 = fs.existsSync(tools29)
+        ? fs.readdirSync(tools29).flatMap(dir => {
+          const one = path.join(tools29, dir);
+          return fs.statSync(one).isDirectory() ? fs.readdirSync(one) : [dir];
+        })
+        : [];
+    check(landed29.length === 0,
+        '危险产物一个字节都没落盘（连入口脚本都没有）：' + JSON.stringify(landed29));
+    check(fs.existsSync(keepPath29),
+        '那条命令真被执行的话哨兵文件就没了——它还在，说明危险命令一行都没跑');
+    check(fs.readFileSync(fooPath29, 'utf8').includes('int a = 2'),
+        '产品代码也在，而且这一轮的改动照样留着（被拦下不等于回滚）');
+
+    // ④ 留档里也记着这一条（事后翻记录的人查得到）
+    const runs29 = await (await fetch(BASE + 'api/runs')).json();
+    const detail29 = await (await fetch(BASE + 'api/run-detail?id='
+        + encodeURIComponent(runs29.runs[0].id))).json();
+    check(detail29.tests && detail29.tests.failures.length === 1
+            && detail29.tests.failures[0].kind === 'BLOCKED_COMMAND'
+            && detail29.tests.failures[0].actual.startsWith('被安全拦截：'),
+        '留档里也记着这一条（类型 BLOCKED_COMMAND + 拒绝原因）：'
+            + JSON.stringify(detail29.tests && detail29.tests.failures));
+    check(detail29.tests && detail29.tests.files.length === 0 && detail29.tests.directory === '',
+        '留档里那份产物账是空的（没落地就是没落地，不指向一个不存在的地方）：'
+            + JSON.stringify(detail29.tests && [detail29.tests.directory, detail29.tests.files]));
+
+    // 换回原项目：这一链改的是服务的「当前项目」
+    await fetch(BASE + 'api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: PROJECT_ROOT }),
+    });
+    try { await evaluate(`location.reload(); 'ok'`); } catch (e) { /* 正在导航 */ }
+    await waitForReload(`document.getElementById('projectname')
+        .textContent.includes(${JSON.stringify(path.basename(PROJECT_ROOT))})`, '换回原项目');
+    stubModel.close();
+    stubModel = null;
+
     // ---------- 收尾 ----------
     console.log('\n整轮：');
     check(browserErrors.length === 0,
@@ -3935,6 +4101,12 @@ async function main() {
       // 链 28 的临时项目：目录跟着 TEMP_PATHS，这里删「最近打开」里那条
       try {
         await fetch(BASE + 'api/recent?path=' + encodeURIComponent(traceProject), { method: 'DELETE' });
+      } catch (e) { /* 清理尽力而为 */ }
+    }
+    if (blockedProject) {
+      // 链 29 的临时项目：同样的收尾（目录跟着 TEMP_PATHS，这里删「最近打开」里那条）
+      try {
+        await fetch(BASE + 'api/recent?path=' + encodeURIComponent(blockedProject), { method: 'DELETE' });
       } catch (e) { /* 清理尽力而为 */ }
     }
     try { ws && ws.close(); } catch (e) { /* ignore */ }

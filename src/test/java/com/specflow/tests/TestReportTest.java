@@ -449,6 +449,33 @@ class TestReportTest {
         assertThat(outcome.detail()).contains("没有被执行");
     }
 
+    /**
+     * 被安全闸拦下是<b>另一档</b>（用户 2026-10-02 拍板）：它和「协议不符 / 路径越界」
+     * 的下一步完全不同——一个是让它换写法，一个是让人去修协议。
+     *
+     * <p>那一行的最小信息量是「被安全拦截：<原因>」，而且**只写一遍**：
+     * 类型标签和正文各说一次就成了「被安全拦截：被安全拦截：…」。
+     */
+    @Test
+    @DisplayName("产物被安全闸拦下：单独一档，那一行写着「被安全拦截：<原因>」且不重复")
+    void blockedCommandIsItsOwnKind() {
+        TestOutcome outcome = TestReport.blockedCommand(2, "run.cmd 里的「rm -rf \"$OUT_DIR\"」");
+
+        assertThat(outcome.worst()).isEqualTo(TestOutcome.Failure.Kind.BLOCKED_COMMAND);
+        assertThat(outcome.worst().label()).isEqualTo("被安全拦截");
+        assertThat(outcome.failures()).singleElement().satisfies(failure -> {
+            assertThat(failure.actual()).startsWith("被安全拦截：").contains("rm -rf");
+            assertThat(failure.describe()).as("时间线/失败清单里那一行")
+                    .startsWith("被安全拦截：").contains("rm -rf")
+                    .doesNotContain("被安全拦截：被安全拦截");
+        });
+        assertThat(outcome.exit()).isEqualTo(TestScriptVerifier.NO_EXIT_CODE);
+        assertThat(outcome.directory()).as("危险产物一个字节都没落盘，别指向它").isEmpty();
+        assertThat(outcome.detail())
+                .as("收场那句话要说清：没落盘、没执行、改动没回滚、清理由引擎负责")
+                .contains("一个字节都没落盘").contains("没有回滚").contains("清理由引擎负责");
+    }
+
     @Test
     @DisplayName("失败行的字段少写几个也能读出来——宁可缺一栏，也不要整条失败消失")
     void toleratesShortFailureLines() {

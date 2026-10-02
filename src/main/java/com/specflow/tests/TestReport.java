@@ -262,7 +262,7 @@ public final class TestReport {
     }
 
     /**
-     * 还没跑到脚本就收场了：模型没按协议给补丁块、路径写到产物目录外面、命中高危命令。
+     * 还没跑到脚本就收场了：模型没按协议给补丁块、路径写到产物目录外面。
      *
      * <p>归「测试代码问题」而不是「产品代码错了」：坏的是这一批测试产物本身，
      * 产品代码刚才还编译通过了。产物已经被删掉，所以 {@code directory} 给空串——
@@ -270,12 +270,36 @@ public final class TestReport {
      *
      * <p>结论那一栏给 {@code SKIPPED}：脚本确实没跑，把它记成「通过」或「失败」
      * 都是在替一次没发生的事下判断。
+     *
+     * <p><b>安全拦截不走这里</b>：它有自己的档（{@link #blockedCommand}）。两件事的下一步
+     * 完全不同——协议不符要人去修协议，安全拦截要先让人看见「引擎拦了什么、为什么拦」。
      */
     public static TestOutcome rejected(int calls, String reason) {
         return new TestOutcome("", List.of(), calls, TestScriptVerifier.NO_EXIT_CODE,
                 VerificationResult.skipped(TestScriptVerifier.NAME, "测试产物没能落地：" + reason),
                 List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.TEST_CODE,
                         "", "", reason, "")),
+                List.of(), List.of());
+    }
+
+    /**
+     * <b>被安全拦截</b>：它写的产物里有危险命令，引擎拒绝落盘、也拒绝执行。
+     *
+     * <p>为什么单独成一条失败项、和断言失败并排摆出来：实测过它连着三版都在入口脚本里写
+     * {@code rm -rf "$OUT_DIR"}，而旧实现只落下一句「测试产物没能落地，这次测试到此为止」——
+     * 失败清单里是空的、产物被整批清掉，人<b>没有任何东西可看</b>，只能重跑一轮碰运气。
+     * 用户 2026-10-02 拍板：这种拦截要<b>记成一条看得见的失败</b>（类型写「被安全拦截」），
+     * 和断言失败一样进界面与留档，由人决定是停用那条用例、还是继续优化让模型换写法。
+     *
+     * <p>「实际」那一栏写着拦截的理由（引擎的原话：哪一段、命中了什么），
+     * 「期望」那一栏空着——它不是某一条用例的下场，是这一批产物整批没落地。
+     * 危险命令<b>一个字节都没执行</b>，这一点写在收场话里（见 {@code TestOutcome.closing}）。
+     */
+    public static TestOutcome blockedCommand(int calls, String reason) {
+        return new TestOutcome("", List.of(), calls, TestScriptVerifier.NO_EXIT_CODE,
+                VerificationResult.skipped(TestScriptVerifier.NAME, "测试产物没能落地：" + reason),
+                List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.BLOCKED_COMMAND,
+                        "", "", "被安全拦截：" + reason, "")),
                 List.of(), List.of());
     }
 

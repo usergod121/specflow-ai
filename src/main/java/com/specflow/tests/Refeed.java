@@ -25,6 +25,12 @@ import java.util.regex.Pattern;
  * 期望 vs 实际、涉及的目标文件。不给：测试代码、断言源码。给了断言，模型最省事的做法
  * 就是照着断言改代码——而那份断言本身可能才是错的（十五.7）。
  *
+ * <p><b>编号与期望只有一个真源：那一轮冻结的用例清单。</b>回喂是按编号说话的，
+ * 而编号只在「跑出那份失败清单的那一轮」的清单里有意义。实测撞上过一次错位：
+ * 编号取自上一轮留档、语义取自新一轮清单，拼出来的那一条既没失败、也没有期望/实际。
+ * 所以 {@link #problems} 把这件事变成<b>开工前的逐项校验</b>——对不上就当场拦，
+ * 由 {@code RunStore.refeed} 抛给人看，而不是花钱跑完一轮之后才发现喂错了。
+ *
  * @param cases 这次回喂了哪几条用例（编号，升序）
  * @param text  拼好的那一段（含标题）
  */
@@ -56,9 +62,15 @@ public record Refeed(List<Integer> cases, String text) {
     /**
      * 按十五.7 的固定模板拼一段。
      *
-     * @param declared 上一轮那份用例清单（人确认并冻结过的那一份）。它给的是<b>语义描述</b>——
-     *                 失败清单里那栏「期望」是脚本自己的原话，两者对不上时以清单为准
-     * @param tests    上一轮的测试结论（失败清单在里面）
+     * <p><b>编号与期望只有一个真源：那一轮冻结的用例清单。</b>实测过「编号取自上一轮留档、
+     * 语义取自新一轮清单」造成的张冠李戴（回喂出去的那条既没失败、也没期望/实际，
+     * 整段话自相矛盾）。所以这里：语义与「期望」都从 {@code declared}（冻结清单）取，
+     * 失败清单只提供<b>失败类型</b>与<b>实际</b>——它是脚本的原话，只配当「实际」那一栏的证据，
+     * 不配当期望（那份期望本身可能才是错的）。
+     *
+     * @param declared 那一轮冻结的用例清单（人确认过的那一份）。它给的是<b>语义描述</b>与<b>期望</b>——
+     *                 失败清单里那栏「期望」是脚本自己的原话，只作兜底
+     * @param tests    那一轮的测试结论（失败清单在里面）
      * @param targets  本次运行的白名单（{@code spec.targets()}）。<b>run 级</b>，
      *                 不是「这条用例对应哪个文件」——引擎没记过那个对应关系，
      *                 硬编一个上去比说清它是什么更糟
@@ -78,6 +90,16 @@ public record Refeed(List<Integer> cases, String text) {
         List<TestOutcome.Failure> failures = tests == null ? List.of() : tests.failures();
         StringBuilder out = new StringBuilder(HEADING).append('\n');
         out.append("人看过上一轮的失败清单，确认下面这几条是产品代码的问题（不是用例写错了）：\n");
+        // 「编号 ↔ 语义」对照表：回喂是按编号说的，而编号只在那一轮冻结的清单里有意义。
+        // 摆成一张表，人和模型都不用再去猜「7 是哪一条」——实测里就是这一步错位的
+        out.append("编号 ↔ 语义对照（编号、语义与下面的「期望」都取自那一轮冻结的用例清单，逐条核对过）：\n");
+        for (Integer index : wanted) {
+            PlanReview.TestCase one = caseOf(cases, index);
+            out.append("  ").append(index).append(" = ")
+                    .append(one == null ? "（这一轮的冻结清单里没有这个编号）"
+                            : (one.what().isEmpty() ? "（这条没写要测什么）" : one.what()))
+                    .append('\n');
+        }
         List<Integer> fed = new ArrayList<>();
         for (Integer index : wanted) {
             PlanReview.TestCase one = caseOf(cases, index);
@@ -89,8 +111,10 @@ public record Refeed(List<Integer> cases, String text) {
                     .append("」");
             out.append("；失败类型：").append(failure == null
                     ? "没在这份失败清单里" : failure.kind().label());
-            String expected = failure != null && !failure.expected().isEmpty()
-                    ? failure.expected() : (one == null ? "" : one.expected());
+            // 期望以冻结清单为准（唯一真源），清单里没写才退回脚本自己那句——
+            // 反过来（脚本优先）就等于让被测方决定「期望应该是什么」
+            String expected = one != null && !one.expected().isEmpty()
+                    ? one.expected() : (failure == null ? "" : failure.expected());
             out.append("；期望 ").append(expected.isEmpty() ? "（没写）" : expected);
             out.append("；实际 ").append(failure == null || failure.actual().isEmpty()
                     ? "（没写）" : failure.actual());
@@ -106,6 +130,67 @@ public record Refeed(List<Integer> cases, String text) {
         out.append("测试代码与断言源码不给你：照着断言改代码等于对着答案抄，")
                 .append("而那份断言本身可能才是错的。\n");
         return new Refeed(fed, out.toString());
+    }
+
+    /**
+     * <b>逐项校验</b>：勾中的编号在那一轮冻结的清单里找得到、也真的在那份失败清单里、
+     * 而且期望与实际都取得到吗？对不上就把「哪一条、差什么」原样列出来。
+     *
+     * <p>为什么要有这一步（实测撞上的那一次）：回喂用的编号取自上一轮留档、语义取自新一轮清单，
+     * 于是喂出去的那一条<b>既没失败、也没期望/实际</b>，整段话自相矛盾——
+     * 「人确认下面这几条是产品代码的问题」下面跟着一条「失败类型：没在这份失败清单里」。
+     * 开发 Agent 那一轮改对了东西，靠的是施工单，不是这段回喂。
+     * {@code Refeed.of} 会如实写出「找不到」，但那种「如实」来得太晚：钱已经花了、开发已经跑过了。
+     *
+     * <p>所以拦在<b>开工之前</b>（{@link com.specflow.history.RunStore#refeed} 调用它）：
+     * 对不上就当场拒掉这一次「下一轮」，并把人该怎么改说清——
+     * 一次什么都没喂进去的运行，看上去和正常运行一模一样，那比一句拒绝糟得多。
+     *
+     * @return 每一条对不上的原话；全对得上时是空表
+     */
+    public static List<String> problems(List<PlanReview.TestCase> declared, TestOutcome tests,
+                                        List<Integer> picked) {
+        List<Integer> wanted = picked == null ? List.of() : picked.stream()
+                .filter(index -> index != null)
+                .distinct()
+                .sorted()
+                .toList();
+        if (wanted.isEmpty()) {
+            return List.of();
+        }
+        List<PlanReview.TestCase> cases = declared == null ? List.of() : declared;
+        List<TestOutcome.Failure> failures = tests == null ? List.of() : tests.failures();
+        List<String> problems = new ArrayList<>();
+        for (Integer index : wanted) {
+            PlanReview.TestCase one = caseOf(cases, index);
+            if (one == null) {
+                problems.add("第 " + index + " 条不在那一轮冻结的用例清单里（清单上是第 "
+                        + join(cases.stream().map(PlanReview.TestCase::index).toList()) + " 条）");
+                continue;
+            }
+            TestOutcome.Failure failure = failureOf(failures, index);
+            if (failure == null) {
+                problems.add("第 " + index + " 条在那一轮的失败清单里没有（那一轮它没失败，"
+                        + "或者压根没验到）");
+                continue;
+            }
+            if (one.expected().isEmpty() && failure.expected().isEmpty()) {
+                problems.add("第 " + index + " 条取不到期望（清单那一栏是空的，失败行也没写期望）");
+            }
+            if (failure.actual().isEmpty()) {
+                problems.add("第 " + index + " 条取不到实际（失败行没说实际是什么）");
+            }
+        }
+        return problems;
+    }
+
+    /** 编号写成「1、2、3」。 */
+    private static String join(List<Integer> indexes) {
+        StringBuilder out = new StringBuilder();
+        for (Integer index : indexes) {
+            out.append(out.length() == 0 ? "" : "、").append(index);
+        }
+        return out.toString();
     }
 
     /**

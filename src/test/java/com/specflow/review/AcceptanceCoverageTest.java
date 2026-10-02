@@ -64,6 +64,93 @@ class AcceptanceCoverageTest {
     }
 
     /**
+     * <b>正常路径不许误报</b>：模型那一栏的写法本来就是多样的——
+     * 照抄全文、只写编号、把两条并在一格里、中间多几个全角空格。
+     *
+     * <p>为什么专门钉这一条：这条核对的灵敏度是被实测量过的（照抄旧验收时它当场报了 5/5），
+     * 而它的代价其实是<b>假红</b>——把接上的说成没接上，人就会去改一份本来就对的东西，
+     * 改两次之后没人再看这两个数。所以真实写法那几种都得算「接上了」。
+     */
+    @Test
+    @DisplayName("正常路径不误报：照抄全文 / 只写编号 / 一格里写两条 / 全角空格都算接上")
+    void doesNotCryWolfOnTheNormalPath() {
+        AcceptanceCoverage.Report report = AcceptanceCoverage.check(
+                List.of("A1：金额四档分别返回 0.00、0.05、0.10、0.28",
+                        "A2：会员加成叠加后封顶 0.30",
+                        "A3：返回保留两位小数",
+                        "A4：非法入参抛 IllegalArgumentException"),
+                List.of(
+                        // ① 照抄全文
+                        testCase(1, "A1：金额四档分别返回 0.00、0.05、0.10、0.28"),
+                        // ② 只写编号（验收标准常常写成「A2：……」，而它只会写 A2）
+                        testCase(2, "A2"),
+                        // ③ 一格里写两条
+                        testCase(3, "A2：会员加成叠加后封顶 0.30；A3：返回保留两位小数"),
+                        // ④ 全角空格只算排版差异
+                        testCase(4, "A4：非法入参抛\u3000IllegalArgumentException")));
+
+        assertThat(report.uncovered()).as("一条都不该报").isEmpty();
+        assertThat(report.unmappedMust()).isEmpty();
+        assertThat(report.ok()).isTrue();
+        assertThat(report.summarize()).contains("覆盖核对通过");
+    }
+
+    /**
+     * <b>实测那一次：照抄的是上一版验收文本 → 当场全报零覆盖。</b>
+     *
+     * <p>现场是这样的：我在两次「检查」之间把 A1~A5 的措辞改了（同义，但字变了），
+     * 而模型那一栏照抄的是<b>上一版</b>的原文——它报了 {@code uncovered: 5/5}。
+     * 这个数是准的：屏幕上的验收标准确实一条都没被提到，旧文本对不回任何一条新标准。
+     * 这一条把它钉住——「验收文本变了要报 uncovered」是这套核对存在的理由之一。
+     */
+    @Test
+    @DisplayName("照抄上一版验收文本：当场全报零覆盖（实测里那一次 uncovered 5/5）")
+    void reportsCopiedOldAcceptanceTextAsUncovered() {
+        // 新一版验收标准（措辞改过，还加了 A6/A7）
+        List<String> criteria = List.of(
+                "A1：金额分档按分位取值，依次为 0.00、0.05、0.10、0.28",
+                "A2：会员等级在其中叠加，GOLD 加 0.10 后封顶 0.30",
+                "A3：返回值的两位小数用四舍五入",
+                "A4：非法入参一律抛 IllegalArgumentException",
+                "A5：标签前缀超过 8 个字符时截短并加省略号");
+        // 用例那一栏照抄的是上一版的原文：同义，但一个字都不一样
+        List<PlanReview.TestCase> cases = List.of(
+                testCase(1, "金额四档：0.00/0.05/0.10/0.28"),
+                testCase(2, "会员加成叠加，封顶 0.30"),
+                testCase(3, "返回保留两位小数"),
+                testCase(4, "非法入参抛异常"),
+                testCase(5, "标签前缀截短"));
+
+        AcceptanceCoverage.Report report = AcceptanceCoverage.check(criteria, cases);
+
+        assertThat(report.uncoveredCount()).as("5 条新验收标准一条都没被提到").isEqualTo(5);
+        assertThat(report.uncovered()).containsExactlyElementsOf(criteria);
+        assertThat(report.unmappedMust())
+                .as("同一个错位在两个数上都露出来：这 5 条必须过用例的指向也对不回新标准")
+                .containsExactly(1, 2, 3, 4, 5);
+        assertThat(report.summarize()).contains("5 条验收标准一条用例都没覆盖");
+    }
+
+    /**
+     * 宽松的那一侧（<b>有意的</b>）：旧文本正好是新文本的一段时，仍算接上。
+     *
+     * <p>为什么允许：判据是「双向包含」，「那一栏只写编号 / 只写前半句」正是它要认的写法
+     * （见 {@link AcceptanceCoverage} 的类注释）。收紧成「必须逐字相等」会让
+     * 「A3」这种写法全变成假红——而假红的代价是这两个数没人再看。
+     * 这一条只是把边界写下来，不是缺陷：要连「半句也算没接上」都报，就得换一套判据。
+     */
+    @Test
+    @DisplayName("形如「两位小数」这种旧文本是新文本的一段：仍算接上（宽松是有意的）")
+    void treatsAStaleFragmentAsCoveredOnPurpose() {
+        AcceptanceCoverage.Report report = AcceptanceCoverage.check(
+                List.of("A3：返回值的两位小数用四舍五入"),
+                List.of(testCase(1, "两位小数")));
+
+        assertThat(report.uncovered()).isEmpty();
+        assertThat(report.ok()).isTrue();
+    }
+
+    /**
      * 只写编号也算接上：验收标准常常写成「A1：……」，而模型那一栏只会写 {@code A1}。
      * 只认全文照抄的话，这条判据会被假红淹掉——而假红的代价是没人再看它。
      */

@@ -985,9 +985,8 @@ const {
   confirmCases, regenBlockHtml, regenProblemHtml, regenTraceHtml, traceRateHtml, coverageRates,
   coverageProblemsHtml, caseTrace, caseAcceptance,
   testsActionsHtml, testsPanelHtml, rateOfAll,
-  VERDICT, verdictLabel, verdictsOf, settlementText,
+  VERDICT, verdictLabel, verdictsOf, settlementText, caseListForTests,
 } = caseApi;
-
 check(caseLevel({ level: 'MUST' }) === 'MUST' && caseLevel({ level: '可选' }) === 'UNKNOWN',
     '分级只认引擎那四个枚举名；认不出来的按「未标」，不替它升级成「必须过」');
 check(caseLevelMeta('SHOULD')[2] === '建议过', '档位带着中文标签');
@@ -1078,8 +1077,14 @@ const report = {
 check(failureKind('ASSERTION')[1] === '断言没过' && failureKind('TEST_CODE')[1] === '测试代码问题'
     && failureKind('ENVIRONMENT')[1] === '环境起不来' && failureKind('TIMEOUT')[1] === '测试超时'
     && failureKind('BLOCKED')[1] === '脚本报跑不起来'
-    && failureKind('UNRUNNABLE')[1] === '它的代码编不过',
-    '六档各有各的说法（合并成一句「测试没过」，用户就会去翻产品代码）');
+    && failureKind('UNRUNNABLE')[1] === '它的代码编不过'
+    && failureKind('BLOCKED_COMMAND')[1] === '被安全拦截',
+    '七档各有各的说法（合并成一句「测试没过」，用户就会去翻产品代码）');
+check(failureSource('BLOCKED_COMMAND').includes('引擎亲见')
+    && failureSource('BLOCKED_COMMAND').includes('没落盘')
+    && failureSource('BLOCKED_COMMAND').includes('没执行'),
+    '「被安全拦截」那一档写明是引擎亲见的、而且一个字节都没落盘也没执行：'
+        + JSON.stringify(failureSource('BLOCKED_COMMAND')));
 check(failureSource('ENVIRONMENT').includes('引擎亲见')
     && failureSource('BLOCKED').includes('仅供参考')
     && failureSource('ASSERTION').includes('谁错了由你判'),
@@ -1105,6 +1110,17 @@ check(!failRowHtml({ ...failure, opinion: '' }, caseSample, new Set(), new Map()
     .includes('fail-guess'), '它没说谁错时那一段整个不出现（不留一个空壳占位置）');
 check(failRowHtml({ ...failure, testCase: '', expected: '', actual: '' }, caseSample, new Set(), new Map())
     .includes('（没写）'), '脚本没写期望/实际时明说「没写」，不留空行让人以为是漏显示');
+// 「被安全拦截」也是失败清单里的一行：它不属于某一条用例（整批产物没落地），
+// 但不能因此消失在界面上——用户 2026-10-02 拍板的就是「记成一条看得见的失败」
+const blockedRow = failRowHtml({
+  kind: 'BLOCKED_COMMAND', testCase: '', expected: '',
+  actual: '被安全拦截：生成的测试产物里有高危命令，已经拒绝落盘、也不会执行：tools/…/run.cmd 里的「rm -rf "$OUT_DIR"」',
+  opinion: '',
+}, caseSample, new Set(), new Map());
+check(blockedRow.includes('被安全拦截') && blockedRow.includes('危险命令被拦下'),
+    '被安全拦截那一行画得出来（标签 + 凭什么这么判）：' + JSON.stringify(blockedRow.slice(0, 160)));
+check(blockedRow.includes('rm -rf') && blockedRow.includes('这条失败不属于某一条用例'),
+    '拒绝原因原文在里面，并说清它不是某一条用例的下场');
 check(failText.includes('data-pick="2"'), '每条失败带一个勾选框，勾了才能回喂给开发');
 check(failRowHtml(failure, caseSample, new Set([2]), new Map()).includes('data-pick="2" checked'),
     '勾上的那条画出来就是勾着的');
@@ -1292,6 +1308,11 @@ check(refeedNote(fed).includes('2 条失败') && refeedNote(fed).includes('7、8
     '结果面板上说清这一轮带着哪几条失败去改的：' + JSON.stringify(refeedNote(fed).slice(0, 60)));
 check(refeedNote(fed).includes('不含测试代码与断言'),
     '并且说清回喂里不给测试代码（给了它就会照着断言改代码）');
+// 编号的口径：它是**上一轮冻结的那份清单**里的编号。实测撞上过两轮清单不一致——
+// 界面上那份新的方案里第 7 条是另一条用例，而失败清单里的 7 说的是上一轮那条
+check(refeedNote(fed).includes('冻结的那份用例清单'),
+    '说清编号/语义/期望取自上一轮冻结的那份清单：'
+        + JSON.stringify(refeedNote(fed).slice(-80)));
 check(refeedNote({ refeed: { cases: [7], text: '## 上一轮的测试失败' } }).includes('用例 7'),
     '留档里那份是 {cases, text}：两种形状都要认，历史里才画得出来');
 check(refeedNote({}) === '' && refeedNote(null) === '',
@@ -1332,6 +1353,24 @@ check([...toggleAllPicks(picksReport, new Set())].join() === '2,3,5', '「全选
 check(toggleAllPicks(picksReport, new Set([2, 3, 5])).size === 0, '再点一下就是「取消全选」');
 check([...toggleAllPicks(picksReport, new Set([2]))].join() === '2,3,5',
     '只勾了一半时点它是「全勾上」，不是清空');
+
+// ---------- 冻结清单：失败清单该对着哪一份画 ----------
+// 实测里张冠李戴的那一次，界面这一侧也有一份责任：屏幕上正摆着一份**新方案**，
+// 而这份失败清单是上一轮跑的，两边的第 7 条不是同一条用例——按新方案画标题就整行错位。
+// 所以有冻结清单（留档里的 testCases）时一律用它，它才是「跑出这份结果的那份清单」。
+console.log('失败清单对着的那份清单：');
+const planBackup = state.plan;
+const frozenBackup = state.testsCases;
+state.testsCases = [{ index: 7, what: '冻结清单里的第 7 条' }];
+state.plan = { cases: [{ index: 7, what: '新方案里的第 7 条' }] };
+check(caseListForTests()[0].what === '冻结清单里的第 7 条',
+    '有冻结清单时用它画（同一编号在两份清单里可能是两条不同的用例）：'
+        + JSON.stringify(caseListForTests()[0].what));
+state.testsCases = null;
+check(caseListForTests()[0].what === '新方案里的第 7 条',
+    '还没跑过测试（没有冻结清单）时退回界面上那份方案，不空着');
+state.testsCases = frozenBackup;
+state.plan = planBackup;
 
 // ---------- 验收覆盖核对（通过率旁边那两个数） ----------
 console.log('覆盖核对那两个计数：');

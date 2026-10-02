@@ -189,18 +189,29 @@ public final class RunStore {
      * 谁就在把「回喂了什么」交给一个可以旧、可以被改坏的调用方（实测过界面上「已回喂」是假的：
      * 引擎里根本没有这条路）。
      *
-     * <p>勾中的编号在上一轮那份清单里找不到时<b>不拦</b>：人点的是「这几条要修」，
-     * {@link Refeed#of} 会把找不到的那几条如实标出来（「清单里没有这一条」）——
-     * 为一次对不上号拒绝整轮，代价比喂一条带说明的记录大得多。
+     * <p><b>勾中的编号要逐项核过才放行。</b>回喂是按编号说话的，而编号只在「跑出这份失败清单的那一轮」
+     * 所冻结的用例清单里有意义——那一轮的清单、那一轮的失败清单，两个都在这条留档里。
+     * 对不上（编号不在清单里 / 那一轮它没失败 / 期望与实际取不到）就<b>当场拒掉这一次「下一轮」</b>，
+     * 并把哪一条、差什么原样报出来。实测撞上过一次错位：编号取自上一轮留档、语义取自新一轮清单，
+     * 喂出去的那一条既没失败、也没期望/实际，整段话自相矛盾，而钱已经花了。
+     * 拒掉一次运行的代价，比喂一段自相矛盾的话小得多——后者看上去和正常运行一模一样。
      *
      * @param picked 人勾中的用例编号；空表示这一次不是「下一轮」（{@link Refeed#none()}）
-     * @throws IllegalStateException 勾了编号、但上一轮压根没有可回喂的失败清单
+     * @throws IllegalStateException 勾了编号、但上一轮压根没有可回喂的失败清单，
+     *                               或者勾中的编号与那一轮冻结的清单对不上
      */
     public Refeed refeed(List<Integer> picked) {
         if (picked == null || picked.isEmpty()) {
             return Refeed.none();
         }
         RunRecord latest = tested();
+        List<String> problems = Refeed.problems(latest.testCases(), latest.tests(), picked);
+        if (!problems.isEmpty()) {
+            throw new IllegalStateException("回喂被拦下：这几条对不上上一轮冻结的那份用例清单——"
+                    + String.join("；", problems)
+                    + "。清单可能被重新生成过（再点一次「先检查」会换一份）："
+                    + "先按屏幕上那份清单（界面上写的就是那一轮冻结的那一份）重新勾一次，再点「下一轮」。");
+        }
         return Refeed.of(latest.testCases(), latest.tests(), latest.targets(), picked);
     }
 
