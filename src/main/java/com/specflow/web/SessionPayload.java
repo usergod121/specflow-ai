@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 会话视图（§19）的载荷：界面顶部那条状态、历史轮次、以及两个撤回按钮的可用性。
+ * 会话视图（§19）的载荷：界面顶部那条状态、历史轮次、以及「撤回本轮」那一枚的可用性。
  *
  * <p><b>为什么单独成类。</b>它是<b>算给界面看的</b>，不是留档：留档那边是逐轮的记录，
  * 而这里要把 N 轮折成一句话（第几轮、两个通过率、成本、能不能撤）。把它写在
@@ -17,8 +17,8 @@ import java.util.Map;
  * ——一个说这一轮怎么样，一个说这件事到现在怎么样。只给一个，另一个就得靠界面自己乘除，
  * 而两个数的口径（停用的用例不进分母、被撤回的轮次不进累计）必须只有一处说了算。
  *
- * <p><b>为什么连「为什么不能撤」也要给。</b>两个撤回按钮会有点不动的时候（那一轮自己回滚了、
- * 会话里已经没有留着的改动）。给一个灰按钮而不说为什么，用户只会以为界面坏了。
+ * <p><b>为什么连「为什么不能撤」也要给。</b>那一枚撤销按钮会有点不动的时候（那一轮自己回滚了、
+ * 已经撤过了）。给一个灰按钮而不说为什么，用户只会以为界面坏了。
  */
 final class SessionPayload {
 
@@ -45,9 +45,7 @@ final class SessionPayload {
             payload.put("consecutiveFailing", 0);
             payload.put("softHint", null);
             payload.put("canUndoRound", false);
-            payload.put("canUndoSession", false);
             payload.put("undoRoundWhy", "还没有会话：先点「运行」跑第一轮");
-            payload.put("undoSessionWhy", "还没有会话：先点「运行」跑第一轮");
             payload.put("roundPassed", 0);
             payload.put("roundTotal", 0);
             payload.put("sessionPassed", 0);
@@ -69,9 +67,7 @@ final class SessionPayload {
         // 空串在 JS 里也是假值，两种写法混着用迟早有一处忘了判
         payload.put("softHint", session.softHint().isEmpty() ? null : session.softHint());
         payload.put("canUndoRound", session.canUndoRound());
-        payload.put("canUndoSession", session.canUndoSession());
         payload.put("undoRoundWhy", session.undoRoundWhy());
-        payload.put("undoSessionWhy", session.undoSessionWhy());
         payload.put("roundPassed", current == null ? 0 : current.passed());
         payload.put("roundTotal", current == null ? 0 : current.total());
         payload.put("sessionPassed", session.passed());

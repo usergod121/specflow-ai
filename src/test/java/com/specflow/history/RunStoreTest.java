@@ -831,12 +831,13 @@ class RunStoreTest {
         assertThat(settlement.at()).isNotBlank();
         assertThat(settlement.failing()).containsExactly(1, 3);
         assertThat(settlement.failures()).as("带着几条失败接受——界面与留档都用它").isEqualTo(2);
-        assertThat(settlement.summarize()).contains("已接受").contains("2 条失败用例");
+        // 这两条钉的是单次运行的口径（false = 不属于任何会话）
+        assertThat(settlement.summarize(false)).contains("已接受").contains("2 条失败用例");
         assertThat(store.load(id).settlement().failing()).containsExactly(1, 3);
 
         // 中断走的是同一栏：两条收场路在记录里必须是同一件事的两种取值
         RunRecord interrupted = store.settle(id, RunRecord.Settlement.INTERRUPT, List.of(2));
-        assertThat(interrupted.settlement().summarize()).contains("已中断");
+        assertThat(interrupted.settlement().summarize(false)).contains("已中断");
         assertThat(interrupted.settlement().failing()).containsExactly(2);
     }
 

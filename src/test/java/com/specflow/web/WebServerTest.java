@@ -1130,10 +1130,12 @@ class WebServerTest {
         assertThat(root.resolve("tools/20260930-170000"))
                 .as("产物当着用户的面删掉，而且这事儿得说得出来").doesNotExist();
         // 留档里那一栏：怎么收的场 + 当时带着几条失败（这次没跑过用例，所以是 0）
-        JsonNode settlement = body(get("/api/run-detail?id=" + encode(latestRunId())))
-                .path("settlement");
-        assertThat(settlement.path("choice").asText()).isEqualTo("ACCEPT");
-        assertThat(settlement.path("summary").asText()).contains("已接受");
+        JsonNode detail = body(get("/api/run-detail?id=" + encode(latestRunId())));
+        assertThat(detail.path("settlement").path("choice").asText()).isEqualTo("ACCEPT");
+        assertThat(detail.path("settlementSummary").asText())
+                .as("收场那一行由记录这一层算：会话里的中断说「回到会话最初」，"
+                        + "单次运行说「运行开始前」——同一档收场两句话（见 RunRecord.settlementSummary）")
+                .contains("已接受");
     }
 
     /** 一条「跑过测试、留了产物」的记录，用来验收场要按留档删产物。 */
@@ -1172,32 +1174,37 @@ class WebServerTest {
      *
      * <p>这一条盯的是<b>路由与状态码</b>：路径接错了、或者没有会话时回了 200 加一份空壳，
      * 界面都会显示成一个「点不动的第 0 轮」——而用户看到的是一个永远撤不了的会话视图。
-     * 没有会话时那两句「为什么撤不了」也要回得来：灰按钮不解释，用户只会反复点它。
+     * 没有会话时那句「为什么撤不了」也要回得来：灰按钮不解释，用户只会反复点它。
+     *
+     * <p>「撤回整个会话」那一条路<b>已经不存在了</b>（它和中断合成一个动作，走 /api/rollback）：
+     * 这里连它返回 404 一起钉住。留着一条半死不活的接口，下一个人就会以为那条路还在
+     * ——而它背后已经没有实现了，点下去只会拿到一个「未知路径」。
      */
     @Test
-    @DisplayName("会话：没有会话时查得到「没有」并说清为什么撤不了；两个撤销各走各的接口")
+    @DisplayName("会话：没有会话时查得到「没有」并说清为什么撤不了；只剩撤回本轮一条撤销")
     void sessionRoutesAreVisible() throws Exception {
         JsonNode none = body(get("/api/session"));
         assertThat(none.path("present").asBoolean()).isFalse();
         assertThat(none.path("canUndoRound").asBoolean()).isFalse();
-        assertThat(none.path("canUndoSession").asBoolean()).isFalse();
         assertThat(none.path("undoRoundWhy").asText())
                 .as("没有会话时要把理由回给界面").contains("还没有会话");
 
         assertThat(get("/api/session/undo-round").statusCode()).as("撤销只接受 POST").isEqualTo(405);
-        assertThat(get("/api/session/undo-session").statusCode()).isEqualTo(405);
         HttpResponse<String> undoRound = post("/api/session/undo-round", "{}");
         assertThat(undoRound.statusCode()).isEqualTo(409);
         assertThat(undoRound.body()).contains("没有开着的会话");
-        assertThat(post("/api/session/undo-session", "{}").statusCode()).isEqualTo(409);
+
+        assertThat(post("/api/session/undo-session", "{}").statusCode())
+                .as("合并之后这条路没了：一个动作一个端点，不留兼容壳").isEqualTo(404);
+        assertThat(get("/api/session/undo-session").statusCode()).isEqualTo(404);
     }
 
     /**
      * 会话整个走一遍 HTTP：两轮 → 查得到 → 撤回本轮 → 接受。
      *
      * <p>为什么值得在接口层再走一遍（引擎那一层 {@code SessionSettleTest} 已经走过）：
-     * 「两个撤销接到两个不同的接口上」这件事只在路由上，而它们接反的代价是把用户攒的
-     * 整个会话一次弄没——两个按钮点下去之前在界面上长得一模一样。
+     * 「那一步撤销接在哪个接口上」这件事只在路由上，而它接错的代价是把这一轮之外的东西
+     * 也一起撤掉——那一枚按钮和「中断」在界面上长得几乎一样。
      */
     @Test
     @DisplayName("会话：两轮之后查得到第 2 轮；撤回本轮只回退一轮；接受让会话收场")

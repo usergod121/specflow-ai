@@ -22,15 +22,16 @@ import java.util.TreeSet;
  * <b>一次会话</b>：N 轮，由用户一轮一轮驱动（§19）。
  *
  * <p>用户的口径是「一直到满意」，但引擎<b>不加自动循环</b>：每一轮都要人点「下一轮」才开，
- * 会话只有两个出口——接受（定稿）或中断（回滚）。所以这个类不是一台状态机，
+ * 会话只有两个出口——接受（定稿）或中断（回到会话最初）。所以这个类不是一台状态机，
  * 它是<b>一次折叠</b>：把属于同一个会话 id 的那几条运行留档，按轮次序号折成
- * 「现在第几轮、每轮什么结论、两个撤回到哪一步」。折出来而不是另存一份状态，
+ * 「现在第几轮、每轮什么结论、这一轮还能不能撤」。折出来而不是另存一份状态，
  * 是因为状态文件与留档迟早对不上，而对不上的表现是「界面上说第 3 轮、引擎里其实第 2 轮」。
  *
  * <p><b>「哪几轮还算数」怎么折</b>（三条判据，缺一条就会数错）：
  * <ul>
- *   <li><b>被撤回</b>（{@code settlement} 是 {@code UNDO_ROUND} / {@code UNDO_SESSION}）：
- *       这一轮的改动已经被撤掉了，它不再进累计通过率，连着的失败也不从它数起；</li>
+ *   <li><b>被撤回</b>（{@code settlement} 是 {@code UNDO_ROUND}，或者老记录里的
+ *       {@code UNDO_SESSION}）：这一轮的改动已经被撤掉了，它不再进累计通过率；
+ *       连着的失败也不从它数起；</li>
  *   <li><b>自己回滚了</b>（跑失败、被中断、模型说缺料）：它压根没在磁盘上留下东西——
  *       判据是<b>它那段时间里没有快照</b>，而不是去数状态名。状态名是另一件事，
  *       而 {@code NEEDS_ENVIRONMENT} 这一档开发阶段回滚、测试阶段保留（同一名字两种事实）；</li>
@@ -38,12 +39,8 @@ import java.util.TreeSet;
  *       要的正是这一轮那份快照，它恢复到的是<b>上一轮结束时</b>的样子。</li>
  * </ul>
  *
- * <p><b>快照和轮次怎么对上</b>：按时间窗口。快照目录名是拍它的那一刻（毫秒），
- * 而每一轮的开工时刻记在留档的 {@code startedAt} 里，且快照一定拍在开工之后、
- * 下一轮开工之前（一次只跑一个运行）。于是「落在第 k 轮窗口里的那份快照」就是第 k 轮拍的。
- * 这么做而不是在留档里存一个快照名：快照目录名是一个可以重命名的东西
- * （校验通过就加 {@code .pending} 后缀），把一个会变的字符串钉进留档，
- * 就会多出一种「留档说快照叫 A、磁盘上只有 A.pending」的假故障。
+ * <p><b>快照和轮次怎么对上：按时间窗口</b>（这是本类里唯一一处「靠时间猜」的地方，
+ * 风险见 {@link #snapshotIn}）。
  */
 public record Session(String id, List<Round> rounds) {
 
@@ -202,9 +199,9 @@ public record Session(String id, List<Round> rounds) {
      *
      * <p>判据是「这个会话里<b>有没有哪一轮</b>带着出口那一档」，而不是「最后那一轮的收场是什么」：
      * 收场是<b>会话级</b>的动作，落档时会给当时还没收场的每一轮都写上同一档（见 {@code Teardown}），
-     * 但<b>被撤回过的那几轮不覆盖</b>——它们保留 {@code UNDO_ROUND} / {@code UNDO_SESSION}，
-     * 因为那才是那一轮真实的下场。于是「最后那一轮」完全可能顶着一个撤回档，
-     * 而会话其实已经接受过了：只看最后那一轮，会把一个已经收场的会话永远当成开着的。
+     * 但<b>被撤回过的那几轮不覆盖</b>——它们保留 {@code UNDO_ROUND}（以及老记录里的
+     * {@code UNDO_SESSION}），因为那才是那一轮真实的下场。于是「最后那一轮」完全可能顶着一个
+     * 撤回档，而会话其实已经接受过了：只看最后那一轮，会把一个已经收场的会话永远当成开着的。
      *
      * <p>撤回<b>不算</b>收场：撤完会话还开着，用户随时能接着跑下一轮
      * （见 {@code RunRecord.Settlement.closes}）。
@@ -232,7 +229,9 @@ public record Session(String id, List<Round> rounds) {
         Round round = new Round(record.session().round(), record.id(), record.status(), record.detail(),
                 record.startedAt(), record.finishedAt() == null ? "" : record.finishedAt(),
                 record.attempts(), millisOf(record),
-                snapshot, undone, choice, settlement == null ? "" : settlement.summarize(),
+                // 收场那句话由记录那一层算（`RunRecord.settlementSummary`）：会话里的中断
+                // 撤的是整个会话，说法和单次运行不一样，而「属不属于会话」只有它知道
+                snapshot, undone, choice, record.settlementSummary(),
                 stillFailing(record),
                 cases, tests, record.changes(), record.verdicts(),
                 sorted(record.disabledIndexes()), refeed, record.coverage());
@@ -275,9 +274,30 @@ public record Session(String id, List<Round> rounds) {
     /**
      * 落在 {@code [from, until)} 这段时间里的那份快照（没有就返回 {@code null}）。
      *
-     * <p>{@code until} 是下一轮的开工时刻；最后那一轮传 {@code null} = 不设上界。
-     * 两头都是开区间外加上界闭的写法：快照一定拍在开工之后（录制器先建记录、
-     * 引擎再拍快照），也一定拍在下一轮开工之前（一次只跑一个运行）。
+     * <p>判据的来路：快照目录名是拍它的那一刻（毫秒），而每一轮的开工时刻记在留档的
+     * {@code startedAt} 里，且快照一定拍在开工之后（录制器先建记录、引擎再拍快照）、
+     * 下一轮开工之前（一次只跑一个运行）。于是「落在第 k 轮窗口里的那份快照」就是第 k 轮拍的。
+     * {@code until} 是下一轮的开工时刻；最后那一轮传 {@code null} = 不设上界。
+     *
+     * <p><b>为什么不干脆在留档里存一个快照名</b>（这样就没有「猜」了）：快照目录名是一个
+     * <b>会变</b>的东西（过了校验就加 {@code .pending} 后缀），把一个会变的字符串钉进留档，
+     * 就多出一种「留档说快照叫 A、磁盘上只有 A.pending」的假故障。
+     *
+     * <p><b>⚠️ 这条判据的风险（用户 2026-10-03 拍板「先这样」，但风险必须写在这里）：
+     * 它假设两个时间戳的精度是一致的，而它们本来不是。</b>
+     * 留档的 {@code startedAt} 是 {@code LocalDateTime.toString()}——带<b>纳秒</b>
+     * （{@code 2026-10-03T12:35:55.541343500}），快照名只到<b>毫秒</b>
+     * （{@code …-123555-541}）。精度对不上时窗口会整体错位：同一毫秒里拍的那份快照
+     * 会被算成「比开工还早」，于是<b>这一轮认不到自己的快照</b>——它被当成「没留下改动」，
+     * 那一枚撤销按钮变灰、累计通过率把它漏掉。<b>这个坑真踩过一次</b>（§19.3），
+     * 现在两边一律 {@link #parse} 到毫秒兜住。
+     *
+     * <p>兜不住的那一种只剩「<b>窗口和窗口本身对不上</b>」：同一毫秒里开两轮
+     * （{@code from} 与 {@code until} 相等），后一轮会认领到前一轮的快照，
+     * 也就是<b>撤回调错一份快照</b>、或者某一轮被当成没留下改动。真实运行里每一轮要几分钟，
+     * 不可能发生；测试里靠 30ms 的间隔避开它（见 {@code SessionSettleTest.session}）。
+     * 以后真要做「闪电一样快的无模型运行」，这条判据就得换成「在留档里存一个稳定 ID
+     * + 快照目录名里带上那个 ID」，而不是把窗口调得更细。
      */
     private static String snapshotIn(String from, String until, List<String> names) {
         LocalDateTime start = parse(from);
@@ -317,7 +337,7 @@ public record Session(String id, List<Round> rounds) {
      * 而留档的 {@code startedAt} 是 {@code LocalDateTime.toString()}——它带着<b>纳秒</b>
      * （{@code 2026-10-03T12:35:55.541343500}）。两边按原样比，同一毫秒里拍的那份快照会被算成
      * 「比开工还早」，于是这一轮被认为「没留下改动」——实测就是这么踩到的：
-     * 会话里每一轮都认不到自己的快照，两个撤回按钮全灰。
+     * 会话里每一轮都认不到自己的快照，那一枚撤销按钮全灰。
      * 往下取整只会把窗口放宽，不会把别人的快照算进来（那一轮的开工时刻差着几十毫秒以上）。
      */
     private static LocalDateTime parse(String name) {
@@ -351,7 +371,7 @@ public record Session(String id, List<Round> rounds) {
     /**
      * 还<b>算数</b>的轮次：没被撤回、改动还在磁盘上。
      *
-     * <p>三个地方问它：累计通过率（被撤回的不算）、两个撤回动作要动哪几份快照、
+     * <p>三个地方问它：累计通过率（被撤回的不算）、那一步撤销要动哪份快照、
      * 以及「这一次运行能不能开工」（开着的会话，它自己那几份快照不算挡路）。
      */
     public List<Round> live() {
@@ -435,27 +455,6 @@ public record Session(String id, List<Round> rounds) {
         }
         if (last.removed()) {
             return "最后一轮没在磁盘上留下改动（它自己回滚了）：这会儿没有可撤的东西";
-        }
-        return "";
-    }
-
-    /**
-     * 「撤回整个会话」现在能不能点。
-     *
-     * <p>它要撤的是会话里<b>还留着改动</b>的那几轮，从最早那一轮撤起——所以
-     * 没有这样的轮次时就没什么可撤的（磁盘本来就在会话最开始的样子）。
-     */
-    public boolean canUndoSession() {
-        return undoSessionWhy().isEmpty();
-    }
-
-    /** 「撤回整个会话」点不了的原因，一句人话；能点时空串。 */
-    public String undoSessionWhy() {
-        if (rounds.isEmpty()) {
-            return "这个会话一轮都还没跑过";
-        }
-        if (live().isEmpty()) {
-            return "这个会话里已经没有还留着的改动了：磁盘本来就在会话最开始的样子";
         }
         return "";
     }

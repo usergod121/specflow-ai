@@ -31,8 +31,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <p>为什么要这一份：桩能证明「命令拼对了」，证明不了「docker 认这套命令」——
  * 而这一批的产物恰恰是<b>交给 docker 执行的东西</b>（compose 文件、exec 的参数、
- * down 的范围）。这台机器上没有 Docker 时它整类跳过（{@link #requireDocker}），
- * 所以它不会给别的环境添麻烦。
+ * down 的范围）。这台机器上没有可用的 Docker 时它整类跳过（{@link #requireDocker}），
+ * 所以它不会给别的环境添麻烦；跳过时那句话会说清是<b>命令找不到</b>还是
+ * <b>daemon 没起来</b>——这两件事要做的事差着十万八千里。
  *
  * <p><b>安全红线（本类每个测试都守）：</b>
  * <ul>
@@ -533,7 +534,7 @@ class RealDockerEnvironmentTest {
         assertThat(stateOf(before)).isEqualTo("running");
         assertThat(new RunStore(root.resolve(RunStore.DEFAULT_DIR))
                 .load(new RunStore(root.resolve(RunStore.DEFAULT_DIR)).latestId())
-                .settlement().summarize())
+                .settlement().summarize(false))
                 .as("留档里写下这次是怎么收的场").contains("已接受");
         assertThat(environment.status().leftovers()).as("收场不制造残留").isZero();
         // 这个测试要的正是「容器还留着」，所以最后由它自己真收一次，再自检零残留：
@@ -616,10 +617,54 @@ class RealDockerEnvironmentTest {
 
     // ---------- 辅助：真 docker 查询 ----------
 
-    /** 没装 Docker / daemon 没起时整类跳过（这台机器上有，所以它真的会跑）。 */
+    /**
+     * 没装 Docker / daemon 没起时整类跳过。
+     *
+     * <p><b>跳过时那句话必须说准是哪一档</b>（{@link DockerProbe} 那三档的理由）：命令找不到
+     * 要去装，daemon 没起来只要点一下 Docker Desktop 的图标——合成一句「本机没有可用的 Docker」，
+     * 用户第一件事就是去重装一个他本来就装好的东西。实测踩过：这台机器上 docker CLI 在 PATH 上、
+     * busybox 与 redis 镜像也都在，只是 Docker Desktop 没开，而报告上写的是「没有可用的 Docker」。
+     *
+     * <p>探的仍然是 PATH 上那一条 {@code docker}（这个类后面那一串查询命令用的也是它）：
+     * 换成 {@link DockerProbe} 那套「常见安装路径」兜底，会让这一句和后续命令用的不是同一条命令
+     * ——那会把一次「跳过」变成一片「查询失败」。
+     */
     private void requireDocker() {
         CommandRunner.Result result = docker.run(List.of("docker", "version"), Map.of(), root, 30);
-        assumeTrue(result.ok(), "本机没有可用的 Docker，跳过真容器验证");
+        assumeTrue(result.ok(), skipReason(result));
+    }
+
+    /**
+     * 跳过真容器验证时那句话：<b>命令找不到</b> / <b>命令在但用不了</b>（多半是 daemon 没起）。
+     *
+     * <p>这两件事用户要做的不一样，所以分两句说；原始错误原样带上——「用不了」的那几种里
+     * 除了 daemon 没起，还有 context 配错、权限不够，那几种从原文里看得出。
+     */
+    private static String skipReason(CommandRunner.Result result) {
+        if (!result.started()) {
+            return "这台机器上找不到 docker 命令，跳过真容器验证（装上 Docker 再跑）";
+        }
+        return "docker 命令在，但它用不了（最常见的是 daemon 没起来：Windows 上先启动 "
+                + "Docker Desktop），跳过真容器验证：" + result.firstLine();
+    }
+
+    /**
+     * 这条<b>不需要 docker</b>：它钉的是「跳过时那句话」本身。
+     *
+     * <p>写错那句话的代价不是红的测试，而是一份<b>误导人的报告</b>——报告说「本机没有可用的
+     * Docker」，而用户机器上装着，于是他跑去重装。所以它得有一条断言看着。
+     */
+    @Test
+    @DisplayName("跳过真容器验证时，那句话说的是哪一档（命令找不到 / daemon 没起来）")
+    void explainsWhichKindOfSkipItIs() {
+        assertThat(skipReason(CommandRunner.Result.notStarted("不是内部或外部命令")))
+                .as("命令找不到：要去装")
+                .contains("找不到 docker 命令").doesNotContain("daemon");
+        assertThat(skipReason(CommandRunner.Result.finished(1,
+                "failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine")))
+                .as("命令在但用不了：要说清是 daemon 那一档，并把 docker 的原话带上")
+                .contains("daemon 没起来").contains("Docker Desktop")
+                .contains("failed to connect to the docker API");
     }
 
     /** 镜像不在本机时跳过，而不是自己去网上拉（这台机器上两个都在）。 */

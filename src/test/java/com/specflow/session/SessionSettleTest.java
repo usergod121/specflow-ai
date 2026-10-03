@@ -3,6 +3,9 @@ package com.specflow.session;
 import com.specflow.TestSpecs;
 import com.specflow.agent.AgentListener;
 import com.specflow.agent.AgentResult;
+import com.specflow.env.EnvConfigLoader;
+import com.specflow.env.FakeCommandRunner;
+import com.specflow.env.TestEnvironment;
 import com.specflow.history.RunRecord;
 import com.specflow.history.RunRecorder;
 import com.specflow.history.RunStore;
@@ -19,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -29,29 +33,38 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 会话的四个动作（§19）：接受、中断、撤回本轮、撤回整个会话——在真磁盘上走一遍。
+ * 会话的三个动作（§19）：接受、中断并回到会话最初、撤回本轮——在真磁盘上走一遍。
  *
- * <p>为什么要真磁盘：这四个动作的差别全都在「动哪几份快照、把文件恢复成谁的样子」上，
+ * <p>为什么要真磁盘：这三个动作的差别全都在「动哪几份快照、把文件恢复成谁的样子」上，
  * 而这件事只有拿真的文件比才看得准。纯折叠那一层（{@link SessionTest}）已经钉住了
  * 「哪几轮算数」，这里钉的是另半个问题：<b>点下去之后磁盘上到底变成了什么</b>。
  *
- * <p>两个撤销粒度是这一批最容易做错的地方，而做错的样子很安静：
- * 「撤回本轮」撤到了别人的改动、或者「撤回整个会话」只撤了最后一轮——
- * 界面上都会显示成一句「已撤回」，用户要过很久才会发现自己的代码回到了奇怪的地方。
+ * <p>「撤回本轮」是这一批最容易做错的地方，而做错的样子很安静：
+ * 它撤到了别人的改动——界面上显示成一句「已撤回本轮」，用户要过很久才会发现
+ * 自己的代码回到了奇怪的地方。另一个曾经独立存在的「撤回整个会话」已经和中断合并
+ * （它们连动几份快照都一样，见 {@code Teardown}），这里只剩三个动作。
  */
-@DisplayName("会话：接受 / 中断 / 撤回本轮 / 撤回整个会话")
+@DisplayName("会话：接受 / 中断并回到会话最初 / 撤回本轮")
 class SessionSettleTest {
 
     @TempDir
     Path root;
 
-    // ---------- 两个撤销粒度 ----------
+    /** 声明里带一条 reset：会话收场时要跑它（清环境数据），而不是把容器收掉。 */
+    private static final String DECLARATION = """
+            image: "eclipse-temurin:17"
+            workdir: "/work"
+            reset:
+              - "rm -rf /data/*"
+            """;
+
+    // ---------- 一步撤销 ----------
 
     /**
      * 撤回本轮 = 回到<b>上一轮结束时</b>的样子，会话还开着。
      *
-     * <p>「还开着」是这条路与「中断」的全部差别：用户想的是「这一轮不算，我再来一遍」，
-     * 而不是「这件事不做了」。把它做成中断，等于逼人把整个会话扔掉重新开。
+     * <p>「还开着」是这条路与「中断并回到会话最初」的全部差别：用户想的是「这一轮不算，
+     * 我再来一遍」，而不是「这件事不做了」。把它也做成中断，等于逼人把整个会话扔掉重新开。
      */
     @Test
     @DisplayName("撤回本轮：回到上一轮结束时的样子，只删这一轮的产物，会话还开着")
@@ -75,27 +88,6 @@ class SessionSettleTest {
                 .as("第 1、2 轮还留着改动").containsExactly(1, 2);
         assertThat(after.canUndoRound())
                 .as("第 3 轮已经撤过：要接着跑就点「下一轮」").isFalse();
-    }
-
-    @Test
-    @DisplayName("撤回整个会话：回到会话最开始的样子，会话仍然开着")
-    void undoSessionGoesBackToTheVeryStart() throws IOException {
-        session(3);
-
-        Teardown.Done done = Teardown.undoSession(root, ProjectConfig.DEFAULT, store(), null);
-
-        assertThat(Files.readString(file())).as("回到会话最开始").isEqualTo("v0\n");
-        assertThat(snapshots()).as("三份快照一份不剩").isEmpty();
-        assertThat(artifacts(1)).doesNotExist();
-        assertThat(artifacts(3)).doesNotExist();
-        assertThat(done.summarize()).contains("已撤回整个会话").contains("会话还开着");
-
-        Session after = store().session(snapshotRoot()).orElseThrow();
-        assertThat(after.rounds()).extracting(Session.Round::settlement)
-                .containsExactly(RunRecord.Settlement.UNDO_SESSION,
-                        RunRecord.Settlement.UNDO_SESSION, RunRecord.Settlement.UNDO_SESSION);
-        assertThat(after.live()).isEmpty();
-        assertThat(after.canUndoSession()).as("已经没有还留着的改动了").isFalse();
     }
 
     /**
@@ -144,20 +136,52 @@ class SessionSettleTest {
                         RunRecord.Settlement.ACCEPT);
     }
 
+    /**
+     * 中断并回到会话最初：<b>合并后的那个动作</b>，五件事一件都不许少——
+     * 结束会话、文件回到会话起点、清环境数据、删测试产物、留档记录。
+     *
+     * <p>为什么要一条条钉住：这五件事里任何一件漏掉，界面上都只显示成一句「已中断」。
+     * 尤其是<b>删产物</b>与<b>清数据</b>——它们不是当场看得见的（要等下次翻 {@code tools/}
+     * 或者下次跑测试拿到一份脏数据），而那两样正是「下一次运行莫名其妙地红」的来源。
+     * 它同时是「整个会话一次处置」的落点：三份快照、三份产物，一次清干净。
+     */
     @Test
-    @DisplayName("中断：撤到会话最开始、会话收场（不再开着）")
+    @DisplayName("中断并回到会话最初：文件回到会话起点、会话结束、产物删净、环境数据重置、留档记中断")
     void interruptRollsBackTheWholeSessionAndClosesIt() throws IOException {
+        declare(DECLARATION);
         session(3);
+        FakeCommandRunner docker = dockerReady();
+        TestEnvironment environment = initialized(docker);
 
-        Teardown.Done done = Teardown.settle(root, ProjectConfig.DEFAULT, store(), null,
+        Teardown.Done done = Teardown.settle(root, ProjectConfig.DEFAULT, store(), environment,
                 Teardown.Choice.INTERRUPT);
 
         assertThat(Files.readString(file())).as("中断 = 回到会话最开始").isEqualTo("v0\n");
-        assertThat(snapshots()).isEmpty();
-        assertThat(done.summarize()).contains("已中断").contains("会话最开始");
+        assertThat(snapshots()).as("三份快照一份不剩").isEmpty();
+        for (int k = 1; k <= 3; k++) {
+            assertThat(artifacts(k)).as("第 " + k + " 轮的测试产物也要删").doesNotExist();
+        }
+        assertThat(docker.ran("exec -T app sh -c rm -rf /data/*"))
+                .as("清环境数据：这一笔做的是 reset（不是把容器收掉）").isTrue();
+        assertThat(docker.ran("down")).as("容器留着复用：收场不是关环境").isFalse();
+        assertThat(done.summarize()).contains("已中断并回到会话最初").contains("会话最开始")
+                .contains("环境数据已重置");
         assertThat(done.summarize()).as("中断是出口，不许说「会话还开着」")
                 .doesNotContain("会话还开着");
+        assertThat(done.summarize()).as("「结束会话」这件事必须在回音里说出来——"
+                + "不说的话，用户以为它和「撤回本轮」一样还开着").contains("会话到此为止");
         assertThat(store().session(snapshotRoot())).as("中断是出口：会话到此为止").isEmpty();
+        assertThat(store().sessionRecords(sessionId(), allRecords()))
+                .as("每一轮都落上「已中断」，而且那句话说的是会话最初，不是「这个运行开始前」")
+                .extracting(record -> record.settlement().choice())
+                .containsExactly(RunRecord.Settlement.INTERRUPT, RunRecord.Settlement.INTERRUPT,
+                        RunRecord.Settlement.INTERRUPT);
+        assertThat(store().sessionRecords(sessionId(), allRecords()).get(1).settlementSummary())
+                .as("留档里那句收场话说的必须是「回到会话最初」（不是「这个运行开始前」）")
+                .contains("会话最初");
+        assertThat(loadRound(2).settlementSummary())
+                .as("界面上历史那一行用的就是同一句")
+                .contains("会话最初");
     }
 
     /**
@@ -251,6 +275,48 @@ class SessionSettleTest {
     /** 这几条记录属于的那个会话 id（= 第 1 轮那条记录的 id）。 */
     private String sessionId() {
         return allRecords().get(0).session().id();
+    }
+
+    /**
+     * 折一次会话，取第 n 轮。
+     *
+     * <p>为什么不用 {@code store().session(...)}：会话收场之后它按定义就查不到了
+     * （那是「还开着吗」的判据），而这里要看的正是收场之后那一轮的留档怎么说。
+     */
+    private Session.Round loadRound(int round) {
+        return Session.of(sessionId(), allRecords(), snapshots()).rounds().stream()
+                .filter(one -> one.round() == round).findFirst().orElseThrow();
+    }
+
+    /** 写一份 {@code .specflow/env.yaml}：只有声明了环境，收场才会去清数据。 */
+    private void declare(String source) throws IOException {
+        Path path = root.resolve(EnvConfigLoader.relativePath());
+        Files.createDirectories(path.getParent());
+        Files.writeString(path, source, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 一个已经初始化过的环境（假 docker）。
+     *
+     * <p>收场清的是<b>活着</b>的环境的数据（跑一次 {@code reset}）：没初始化过就没有 compose 文件，
+     * 也就没有可重置的东西——所以这一条必须先起一次，否则测的是另一条分支。
+     */
+    private TestEnvironment initialized(FakeCommandRunner docker) {
+        TestEnvironment environment = new TestEnvironment(root, docker);
+        environment.up();
+        return environment;
+    }
+
+    /** 假 runner：探得到 docker、查询类命令一律空输出、up 与 init/reset 都成功。 */
+    private static FakeCommandRunner dockerReady() {
+        return new FakeCommandRunner()
+                .ok("version", "fake docker 1.0")
+                .ok("ps -a", "")
+                .ok("volume ls", "")
+                .ok("network ls", "")
+                .ok("down", "")
+                .ok("up -d --wait", "")
+                .ok("exec -T app", "");
     }
 
     private Path snapshotRoot() {

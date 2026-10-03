@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 会话在服务这一环上的接线（§19）：<b>跑第一轮会自动开一个会话、接着跑就是它的下一轮、
- * 门禁认得自己人、两个撤回到得了磁盘</b>。
+ * 门禁认得自己人、那一步撤回到得了磁盘</b>。
  *
  * <p>为什么这一条必须走真服务 + 假模型：<b>「一次会话 = N 轮」这件事没有单独的开关</b>。
  * 界面从来不告诉引擎「这是下一轮」——引擎自己从留档里看出「有一个会话开着」，
@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * （门禁照旧），用户只能一轮一接受。<b>两边各自的测试都会是绿的</b>，
  * 所以这里用两次真运行把「第 1 轮、第 2 轮」钉住。
  */
-@DisplayName("会话：跑一轮、接着跑一轮、两个撤回")
+@DisplayName("会话：跑一轮、接着跑一轮、撤回本轮")
 class SessionRunTest {
 
     @TempDir

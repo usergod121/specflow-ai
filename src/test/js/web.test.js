@@ -1213,9 +1213,12 @@ check(verdictsOf({ verdicts: [{ index: 2, owner: 'KNOWN' }, { index: 3, owner: '
     'verdicts 变成「编号 → 判断」的表');
 check(verdictsOf({}).size === 0 && verdictsOf(null).size === 0,
     '没人判过（老记录里也没有这一栏）时是空表');
-check(settlementText({ choice: 'ACCEPT', summary: '已接受（改动留在磁盘上）；当时带着 2 条失败用例（用例 1、3）' })
-    .includes('带着 2 条失败用例'), '收场那一行直接用留档里那句结论（带着几条失败是重点）');
-check(settlementText(null) === '' && settlementText({}) === '',
+check(settlementText({ settlement: { choice: 'ACCEPT' },
+  settlementSummary: '已接受（改动留在磁盘上）；当时带着 2 条失败用例（用例 1、3）' })
+    .includes('带着 2 条失败用例'), '收场那一行直接用引擎算好的那句结论（带着几条失败是重点）');
+check(settlementText({ settlement: { choice: 'INTERRUPT' } }) === 'INTERRUPT',
+    '老记录里没有那句结论时退回枚举名：不编一句中文，也不留一行空白');
+check(settlementText(null) === '' && settlementText({}) === '' && settlementText({ settlement: {} }) === '',
     '没收过场的记录不画这一行');
 
 // ---------- 四个动作 ----------
@@ -1333,9 +1336,7 @@ const sessionPayload = {
   consecutiveFailing: 3,
   softHint: '连续 3 轮都还有失败：看一眼是不是需求本身要改，或者用例写错了。这只是提醒，不影响你继续。',
   canUndoRound: true,
-  canUndoSession: true,
   undoRoundWhy: '',
-  undoSessionWhy: '',
   roundPassed: 3,
   roundTotal: 5,
   sessionPassed: 8,
@@ -1443,42 +1444,41 @@ const sessionActions = testsActionsHtml(bigReport, caseSample, new Set([2]), new
     { pending: true, session: sessionPayload });
 check(sessionActions.includes('接受（整个会话定稿）') && !sessionActions.includes('接受这批改动'),
     '会话里「接受」改成「接受（整个会话定稿）」（此刻它的粒度就是整个会话）');
-check(sessionActions.includes('中断（回滚整个会话）') && !sessionActions.includes('中断 / 恢复到初始'),
-    '会话里「中断」改成「中断（回滚整个会话）」');
-check(sessionActions.includes('data-act="undo-round"') && sessionActions.includes('data-act="undo-session"'),
-    '同一行里补上两枚次要按钮：撤回本轮 / 撤回整个会话');
-check(sessionActions.includes('>撤回本轮</button>') && sessionActions.includes('>撤回整个会话</button>'),
-    '两枚按钮的文案就是「撤回本轮」「撤回整个会话」（粒度写在字面上）');
-check(/data-act="undo-round"[^>]*title="撤回本轮：/.test(sessionActions)
-    && /data-act="undo-session"[^>]*title="撤回整个会话：/.test(sessionActions),
+check(/data-act="interrupt"[^>]*>中断并回到会话最初<\/button>/.test(sessionActions)
+    && !sessionActions.includes('中断 / 恢复到初始'),
+    '会话里那一枚出口叫「中断并回到会话最初」（按钮上那行字是拿正则取的，不能靠 title 里也写着'
+        + '这半句蒙过去）：' + JSON.stringify((sessionActions.match(/<button[^>]*data-act="interrupt"[^>]*>[^<]*/) || [''])[0]));
+check(sessionActions.includes('会话到此为止') && sessionActions.includes('想重新来过就再点「运行」'),
+    '它的 title 说清「结束会话」这件事（点了之后还能不能接着跑，用户只能从这儿知道）');
+check(sessionActions.includes('data-act="undo-round"') && !sessionActions.includes('data-act="undo-session"'),
+    '会话里只剩一枚撤销（撤回本轮）：另一个「撤回整个会话」和中断在文件上是同一个动作，'
+        + '已经合并——两枚几乎同名的按钮并排摆着，点错的那一下不是撤多了就是白撤');
+check(sessionActions.includes('>撤回本轮</button>'), '那一枚的文案就是「撤回本轮」（粒度写在字面上）');
+check(/data-act="undo-round"[^>]*title="撤回本轮：/.test(sessionActions),
     '能撤时 title 说清撤了会回到哪儿：'
         + JSON.stringify((sessionActions.match(/<button[^>]*data-act="undo-round"[^>]*>/) || [''])[0]));
 check(!/data-act="undo-(round|session)"[^>]* disabled/.test(sessionActions),
-    '能撤的那两枚不带 disabled（灰着还能点、或者亮着点不动，都是在骗人）');
+    '能撤的那一枚不带 disabled（灰着还能点、或者亮着点不动，都是在骗人）');
 
 const stuckActions = testsActionsHtml(bigReport, caseSample, new Set([2]), new Map(),
   { pending: true,
-    session: { ...sessionPayload, canUndoRound: false, canUndoSession: false,
-      undoRoundWhy: '这一轮已经撤过了，没什么可回的',
-      undoSessionWhy: '会话里已经没有还留在磁盘上的改动了' } });
+    session: { ...sessionPayload, canUndoRound: false,
+      undoRoundWhy: '这一轮已经撤过了，没什么可回的' } });
 check(/data-act="undo-round" disabled title="这一轮已经撤过了，没什么可回的"/.test(stuckActions),
     '撤不动时 disabled + title 用服务端那句 undoRoundWhy（灰按钮不解释，用户只会反复点它）：'
         + JSON.stringify((stuckActions.match(/data-act="undo-round"[^>]*/) || [''])[0]));
-check(/data-act="undo-session" disabled title="会话里已经没有还留在磁盘上的改动了"/.test(stuckActions),
-    '撤回整个会话同理，理由各用各的那一句：'
-        + JSON.stringify((stuckActions.match(/data-act="undo-session"[^>]*/) || [''])[0]));
 
-console.log('两个撤销粒度各打哪儿：');
+console.log('那一枚撤销打哪儿，以及并掉的那条路：');
 check(testActionPath('undo-round') === '/api/session/undo-round',
     '撤回本轮 → /api/session/undo-round（只回滚最后一轮留下的改动）');
-check(testActionPath('undo-session') === '/api/session/undo-session',
-    '撤回整个会话 → /api/session/undo-session（回到会话最开始）');
+check(testActionPath('undo-session') === '',
+    '「撤回整个会话」这个动作已经不存在了：它接不到任何接口上（不留兼容壳）');
 check(startsRun('undo-round') === false && startsRun('undo-session') === false,
-    '两个撤销都不许顺手开一轮运行（每一轮都由用户点「下一轮」）');
-const sessionPaths = ['next-round', 'regenerate', 'accept', 'interrupt', 'undo-round', 'undo-session']
+    '撤销不许顺手开一轮运行（每一轮都由用户点「下一轮」）');
+const sessionPaths = ['next-round', 'regenerate', 'accept', 'interrupt', 'undo-round']
     .map(testActionPath);
 check(new Set(sessionPaths).size === sessionPaths.length,
-    '六条路两两不同（接到同一个接口上就是「点张三打了李四」）：' + sessionPaths.join(','));
+    '五条路两两不同（接到同一个接口上就是「点张三打了李四」）：' + sessionPaths.join(','));
 
 console.log('某一轮的终态说法：');
 check(roundStatusMeta('TESTS_FAILED')[1] === resultTable.STATUS_TEXT.TESTS_FAILED[1]
@@ -1512,7 +1512,7 @@ check(/if \(state\.session && state\.session\.present\) \{[\s\S]{0,160}?box\.inn
 const sessionRefreshes = (indexLf.match(/refreshSession\(\)/g) || []).length;
 check(sessionRefreshes === 5,
     '会话状态的刷新点是四处（另加定义那一处）：进项目、运行终态、「接受 / 中断」做完、'
-        + '两个撤销做完——少一处，状态条就停在上一次的数字上：' + sessionRefreshes);
+        + '撤回本轮做完——少一处，状态条就停在上一次的数字上：' + sessionRefreshes);
 
 console.log('重新生成那一块（等人放行）：');
 const regen = {

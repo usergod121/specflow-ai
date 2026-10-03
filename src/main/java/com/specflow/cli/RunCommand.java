@@ -40,6 +40,14 @@ import java.util.regex.Pattern;
  *   <li>{@code 4} 卡在环境/依赖上（磁盘的去留见结论里那句话）</li>
  *   <li>{@code 5} 上一次的改动还没处置，本次一个字节都没碰（先跑 accept 或 rollback）</li>
  * </ul>
+ *
+ * <p><b>命令行不进会话（有意为之，用户 2026-10-03 拍板「先这样」）。</b>
+ * 一次 {@code run} 就是一件事：跑完就结束，跑出来的留档 {@code session} 是 {@code null}，
+ * 永远不属于任何会话——命令行没有「下一轮」这个动作，也就没有「同一个会话的第几轮」可言
+ * （会话是界面上的东西，见 {@code RunService.nextRound}）。
+ * {@code specflow accept} / {@code rollback} 照样能收掉界面上开着的那个会话（同一个
+ * {@code Teardown.settle}），但这一条命令开不出一个新会话，也接不上一个已有会话的下一轮。
+ * 老用法因此一个字节都没变。
  */
 @Command(name = "run", description = "按 spec 让模型产出补丁，校验后落盘")
 public final class RunCommand implements Callable<Integer> {

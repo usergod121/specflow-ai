@@ -240,6 +240,17 @@ public final class RunService implements AgentListener {
      * 全部留档才答得准的事。同理，<b>「下一轮」不需要界面声明自己是下一轮</b>——
      * 会话开着的时候，任何一次新运行都是它的下一轮；会话只有接受和中断两个出口，
      * 这也正是用户要的口径（引擎不加自动循环，但也不许在会话中间偷偷开一个新的）。
+     *
+     * <p><b>CLI 永远不进会话（有意为之，用户 2026-10-03 拍板「先这样」）</b>：
+     * 这一句只被 Web 这一侧调用，{@code specflow run} 那条路根本不问「现在第几轮」
+     * ——它一次就是一件事，跑完就结束，跑出来的留档 {@code session} 是 {@code null}
+     * （见 {@code RunRecorder.start}）。所以会话是<b>界面上的东西</b>：命令行下没有
+     * 「下一轮」这个动作，也就没有「同一个会话的第 2 轮」可言。
+     * 两件事因此是允许的、也是唯一的形状：① 命令行跑出来的记录永远不属于任何会话；
+     * ② 命令行 {@code accept} / {@code rollback} 能<b>收掉</b>界面上开着的会话
+     * （它们走的是同一份 {@code Teardown.settle}），但它<b>开不出</b>一个会话、
+     * 也接不上一个会话的下一轮。要让 CLI 也进会话，改的就是这里（把这一句也交给命令行），
+     * 而不是在留档那一层造假。
      */
     private static RunRecord.SessionRef nextRound(Session open) {
         return open == null
@@ -488,7 +499,7 @@ public final class RunService implements AgentListener {
     }
 
     /**
-     * 会话视图（§19）：第几轮、本轮与会话累计两个通过率、本轮成本、两个撤回能不能点、
+     * 会话视图（§19）：第几轮、本轮与会话累计两个通过率、本轮成本、那一步撤销能不能点、
      * 以及历史轮次。没有会话时给一份「还没有会话」的同形载荷（见 {@link SessionPayload}）。
      *
      * <p>它和 {@code /api/pending} 的分工：那个说的是「磁盘上还留着什么没处置」，
@@ -500,27 +511,19 @@ public final class RunService implements AgentListener {
     }
 
     /**
-     * 撤回本轮：文件回到<b>上一轮结束时</b>的样子，会话还开着。
+     * 撤回本轮：文件回到<b>上一轮结束时</b>的样子，会话还开着（§19 里<b>唯一</b>的一步撤销）。
      *
-     * <p>为什么它和「中断」不能合成一个按钮：中断是会话的出口（撤完就不再往下跑了），
-     * 撤回本轮只是一步撤销——用户随时可以点「下一轮」再来一遍。两件事在磁盘上做的
-     * 动作差着一份快照，说成一句话就会逼出「想重来一轮的人只能把整个会话扔掉」。
+     * <p>为什么它和「中断并回到会话最初」不能合成一个按钮：中断是会话的出口
+     * （撤完就不再往下跑了），撤回本轮只是一步撤销——用户随时可以点「下一轮」再来一遍。
+     * 两件事在磁盘上差着一份快照，说成一句话就会逼出「想重来一轮的人只能把整个会话扔掉」。
+     * （和它<b>长得像</b>的那个「撤回整个会话」已经和中断合并了，那个合并是对的：
+     * 它们连动几份快照都一样，差别只有会话还开不开。）
      *
      * @throws IllegalStateException 有任务在跑、没有开着的会话、或者最新那一轮没有可撤的东西
      */
     public Teardown.Done undoRound() {
         requireIdle("撤回本轮");
         return Teardown.undoRound(projectRoot, project, store, environment);
-    }
-
-    /**
-     * 撤回整个会话：文件回到<b>会话最开始</b>的样子，会话仍然开着。
-     *
-     * @throws IllegalStateException 有任务在跑、没有开着的会话、或者会话里已经没有留着的改动
-     */
-    public Teardown.Done undoSession() {
-        requireIdle("撤回整个会话");
-        return Teardown.undoSession(projectRoot, project, store, environment);
     }
 
     /**

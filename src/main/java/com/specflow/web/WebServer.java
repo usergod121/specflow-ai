@@ -232,10 +232,10 @@ public final class WebServer implements AutoCloseable {
                 case "/api/pending" -> Http.sendJson(exchange, 200, now.runs().pending());
                 case "/api/accept" -> decidePending(now, exchange, false);
                 case "/api/rollback" -> decidePending(now, exchange, true);
-                // 会话（§19）：走几轮了、两个通过率、成本、两个撤回粒度
+                // 会话（§19）：走几轮了、两个通过率、成本、还能不能撤回本轮
+                // （「撤回整个会话」和「中断」已经合成一个动作，走的是上面的 /api/rollback）
                 case "/api/session" -> Http.sendJson(exchange, 200, now.runs().session());
-                case "/api/session/undo-round" -> undoSession(now, exchange, false);
-                case "/api/session/undo-session" -> undoSession(now, exchange, true);
+                case "/api/session/undo-round" -> undoRound(now, exchange);
                 case "/api/run-detail" -> Http.sendJson(exchange, 200,
                         now.runs().history().load(Http.query(exchange, "id", "")));
                 case "/api/templates" -> now.workspace().templates(exchange);
@@ -735,19 +735,20 @@ public final class WebServer implements AutoCloseable {
     }
 
     /**
-     * 撤回：本轮 / 整个会话（§19）。会话仍然开着，用户可以接着点「下一轮」。
+     * 撤回本轮（§19）：会话仍然开着，用户可以接着点「下一轮」。
+     *
+     * <p>它是会话里<b>唯一</b>的一步撤销——「撤回整个会话」与「中断」在文件上做的是同一件事，
+     * 已经合成一个动作（{@code /api/rollback}）。这里剩下的这一枚只管退一步。
      *
      * <p>和 {@link #decidePending} 一样，没有可撤的东西时抛
      * {@link IllegalStateException} → 409，并且<span>带着「为什么不能撤」那句话</span>
-     * ——两个按钮长得几乎一样，而它们点不动的原因完全不同（这一轮自己回滚了 /
-     * 会话里已经没有留着的改动），说成一句「不能撤」等于让人去猜。
+     * ——这一轮自己回滚了、或者已经撤过了，两句的原因完全不同，说成一句「不能撤」等于让人去猜。
      */
-    private void undoSession(OpenProject project, HttpExchange exchange, boolean whole)
-            throws IOException {
+    private void undoRound(OpenProject project, HttpExchange exchange) throws IOException {
         if (!Http.requirePost(exchange)) {
             return;
         }
-        Teardown.Done done = whole ? project.runs().undoSession() : project.runs().undoRound();
+        Teardown.Done done = project.runs().undoRound();
         Http.sendJson(exchange, 200, Map.of("done", true, "teardown", done.summarize()));
     }
 

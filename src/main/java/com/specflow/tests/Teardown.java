@@ -39,33 +39,42 @@ import java.util.List;
  * 为一条清理命令把整个请求变成 500，用户会以为自己的决定没生效——而它其实生效了。
  * 收不掉的如实报出来（十五.9：清理做不到 100%），不假装收干净了。
  *
- * <p><b>会话的四个动作走同一份实现</b>（§19）。会话（N 轮）和单次运行的差别只有「动几份快照、
+ * <p><b>会话的三个动作走同一份实现</b>（§19）。会话（N 轮）和单次运行的差别只有「动几份快照、
  * 落几轮的档」，四件事的顺序、前置条件、best-effort 的口径一模一样：
  * <ul>
  *   <li>{@link Choice#ACCEPT} 接受：留文件、删快照、删产物、清数据、整个会话定稿；</li>
- *   <li>{@link Choice#INTERRUPT} 中断：撤到<b>会话最开始</b>，然后收摊（会话到此为止）；</li>
- *   <li>{@link Choice#UNDO_ROUND} 撤回本轮：撤到<b>上一轮结束时</b>，会话还开着；</li>
- *   <li>{@link Choice#UNDO_SESSION} 撤回整个会话：撤到<b>会话最开始</b>，会话仍然开着。</li>
+ *   <li>{@link Choice#INTERRUPT} <b>中断并回到会话最初</b>：撤到<b>会话最开始</b>，
+ *       然后收摊（会话到此为止）——会话的出口有两个，它是回滚的那一个；</li>
+ *   <li>{@link Choice#UNDO_ROUND} 撤回本轮：撤到<b>上一轮结束时</b>，会话还开着
+ *       （它是<b>唯一</b>的一步撤销）。</li>
  * </ul>
- * 中断和撤回整个会话在文件上做的是同一件事（都回到会话最开始），差别在<b>会话要不要接着跑</b>：
- * 中断是出口，撤回是「重来一遍」。把这一条写清楚，是因为界面上这两个按钮长得几乎一样，
- * 而它们的后果一个是结束、一个是继续。
+ *
+ * <p><b>「撤回整个会话」为什么没了</b>（用户 2026-10-03 拍板）：它和中断在文件上做的
+ * 本来就是同一件事（都回到会话最开始、都清环境数据、都删测试产物、都留档），
+ * 差别只有<b>会话要不要接着跑</b>。把这一条差别交给用户在一个几乎同名的按钮上猜，
+ * 代价是「想接着跑的人把整个会话扔掉、想收工的人以为自己又开了一轮」——
+ * 而这两个后果都不该由一次点击的措辞来决定。现在只剩一个动作，
+ * 按钮上就写着它的全部后果：<b>中断并回到会话最初</b>（会话到此为止，想重来就再点「运行」）。
  */
 public final class Teardown {
 
     private static final Logger log = LoggerFactory.getLogger(Teardown.class);
 
-    /** 用户把这次运行（或者这个会话）怎么了结的（十五.8 的两种收场 + §19 的两种撤销）。 */
+    /** 用户把这次运行（或者这个会话）怎么了结的（十五.8 的两种收场 + §19 的一步撤销）。 */
     public enum Choice {
 
         /** 接受：磁盘上的改动留着。 */
         ACCEPT(RunRecord.Settlement.ACCEPT),
-        /** 中断（恢复到初始）：文件按快照回到这次运行（会话）开始前。 */
+        /**
+         * 中断并回到会话最初：文件按快照回到这次运行（会话）开始前，会话到此为止。
+         *
+         * <p>会话里它撤的是<b>整个会话</b>（磁盘上挂着的每份快照都撤掉，于是回到会话最开始）；
+         * 单次运行时撤的就是那一次运行。同一个动作，两种范围——范围由「磁盘上挂着谁」决定，
+         * 不需要用户选。
+         */
         INTERRUPT(RunRecord.Settlement.INTERRUPT),
-        /** 撤回本轮：只回滚最后一轮，文件回到上一轮结束时的样子。 */
-        UNDO_ROUND(RunRecord.Settlement.UNDO_ROUND),
-        /** 撤回整个会话：文件回到会话最开始的样子。 */
-        UNDO_SESSION(RunRecord.Settlement.UNDO_SESSION);
+        /** 撤回本轮：只回滚最后一轮，文件回到上一轮结束时的样子，会话还开着。 */
+        UNDO_ROUND(RunRecord.Settlement.UNDO_ROUND);
 
         private final String recorded;
 
@@ -112,9 +121,12 @@ public final class Teardown {
             String scope = rounds > 0 ? "整个会话 " + rounds + " 轮" : "这次运行";
             StringBuilder out = new StringBuilder(switch (choice) {
                 case ACCEPT -> "已接受：" + scope + "的改动留在磁盘上";
-                case INTERRUPT -> "已中断：恢复 " + files + " 个文件到" + startOf() + "的样子";
+                // 会话里的中断就是「回到会话最初」：文案与按钮同一句话，
+                // 用户点完才知道自己刚才撤到的是会话最开始，而不是最后一轮的起点
+                case INTERRUPT -> rounds > 0
+                        ? "已中断并回到会话最初：恢复 " + files + " 个文件到会话最开始的样子"
+                        : "已中断：恢复 " + files + " 个文件到这次运行开始前的样子";
                 case UNDO_ROUND -> "已撤回本轮：恢复 " + files + " 个文件到上一轮结束时的样子";
-                case UNDO_SESSION -> "已撤回整个会话：恢复 " + files + " 个文件到会话最开始的样子";
             });
             out.append("；删掉快照");
             out.append(artifacts.isEmpty() ? "（这次没有测试产物）"
@@ -126,18 +138,17 @@ public final class Teardown {
                 // 这里再说一句「没有需要重置的环境数据」就是假话（它明明有，只是没清成）
                 out.append("；没有需要重置的环境数据");
             }
-            if (choice == Choice.UNDO_ROUND || choice == Choice.UNDO_SESSION) {
+            if (choice == Choice.UNDO_ROUND) {
                 out.append("。会话还开着：接着跑就点「下一轮」");
+            } else if (choice == Choice.INTERRUPT && rounds > 0) {
+                // 「结束会话」这件事必须在回音里说出来：不说的话，用户以为它和「撤回本轮」一样
+                // 还开着，接着点「下一轮」时才发现自己已经开了一个新会话
+                out.append("。会话到此为止：想重新来过就再点「运行」开一个新会话");
             }
             if (!problems.isEmpty()) {
                 out.append("。没收掉的：").append(String.join("；", problems));
             }
             return out.toString();
-        }
-
-        /** 「回到哪」的那半句话：会话撤销回会话最开始，单次运行回这次运行开始前。 */
-        private String startOf() {
-            return rounds > 0 ? "会话最开始" : "这次运行开始前";
         }
     }
 
@@ -187,40 +198,26 @@ public final class Teardown {
     /**
      * 撤回本轮：文件回到<b>上一轮结束时</b>的样子，会话还开着。
      *
+     * <p>它是<b>唯一</b>的一步撤销（「撤回整个会话」已经和中断合成一个动作，见类注释）。
+     * 留下的这一步与中断的分工：中断是会话的出口（撤完就不再往下跑了），
+     * 撤回本轮只是退一步——用户想的是「这一轮不算，我再来一遍」，
+     * 而不是「这件事不做了」。把它也做成中断，等于逼人把整个会话扔掉重新开。
+     *
      * @throws IllegalStateException 没有开着的会话，或者最新那一轮没有可撤的东西
      *                               （它自己回滚了 / 已经撤过了）
      */
     public static Done undoRound(Path projectRoot, ProjectConfig project, RunStore store,
                                  TestEnvironment environment) {
-        return undo(projectRoot, project, store, environment, Choice.UNDO_ROUND);
-    }
-
-    /**
-     * 撤回整个会话：文件回到<b>会话最开始</b>的样子，会话仍然开着。
-     *
-     * <p>和 {@link Choice#INTERRUPT} 的差别只有一个：会话要不要接着跑。
-     * 中断是出口，撤回是「重来一遍」。
-     *
-     * @throws IllegalStateException 没有开着的会话，或者这个会话里已经没有还留着的改动
-     */
-    public static Done undoSession(Path projectRoot, ProjectConfig project, RunStore store,
-                                   TestEnvironment environment) {
-        return undo(projectRoot, project, store, environment, Choice.UNDO_SESSION);
-    }
-
-    private static Done undo(Path projectRoot, ProjectConfig project, RunStore store,
-                             TestEnvironment environment, Choice choice) {
         Path root = projectRoot.toAbsolutePath().normalize();
         Session session = store.session(snapshotRoot(root, project)).orElse(null);
         if (session == null) {
             throw new IllegalStateException("现在没有开着的会话：没有可撤回的东西");
         }
-        boolean allowed = choice == Choice.UNDO_ROUND ? session.canUndoRound() : session.canUndoSession();
-        if (!allowed) {
-            throw new IllegalStateException(choice == Choice.UNDO_ROUND
-                    ? session.undoRoundWhy() : session.undoSessionWhy());
+        if (!session.canUndoRound()) {
+            // 拦在开工之前：不拦的话它会去撤<b>上一轮</b>那份快照，而用户点的是「撤回本轮」
+            throw new IllegalStateException(session.undoRoundWhy());
         }
-        return settleSession(root, project, store, environment, session, choice);
+        return settleSession(root, project, store, environment, session, Choice.UNDO_ROUND);
     }
 
     // ---------- 会话：一次处置覆盖 N 轮 ----------
@@ -283,19 +280,14 @@ public final class Teardown {
     /**
      * 这一步要落档的是哪几轮。
      *
-     * <p>规则只有两条：<b>撤回只动它该动的那几轮</b>（本轮 / 整个会话里还留着改动的那几轮），
-     * <b>接受与中断覆盖所有还没收场的轮次</b>——但<b>不覆盖</b>已经写下的撤回：
-     * 一轮被撤回过就是撤回过，后来接受整个会话并不会把那一轮的改动变回磁盘上，
-     * 把它改写成「已接受」就是留档撒谎。
+     * <p>规则只有两条：<b>撤回本轮只动它自己那一轮</b>，<b>接受与中断覆盖所有还没收场的轮次</b>
+     * ——但<b>不覆盖</b>已经写下的撤回：一轮被撤回过就是撤回过，后来接受整个会话并不会
+     * 把那一轮的改动变回磁盘上，把它改写成「已接受」就是留档撒谎。
      */
     private static List<String> settledRounds(Session session, Choice choice) {
         List<String> ids = new ArrayList<>();
         if (choice == Choice.UNDO_ROUND) {
             session.current().ifPresent(round -> ids.add(round.recordId()));
-            return ids;
-        }
-        if (choice == Choice.UNDO_SESSION) {
-            session.chain().forEach(round -> ids.add(round.recordId()));
             return ids;
         }
         for (Session.Round round : session.rounds()) {
@@ -313,7 +305,10 @@ public final class Teardown {
      * <p>几份快照叠在一起时<b>从最近的一份往回撤</b>：同一批文件会被写好几遍，
      * 而最早那份最后写，于是结局是「会话最初的样子」——它同时也是最保守的那一版。
      * 只撤最早那一份是不行的：每份快照只记得自己那次的目标文件，
-     * 后面几轮改到别的文件时，那些改动就留下来了（而用户点的是「撤到最开始」）。
+     * 后面几轮改到别的文件时，那些改动就留下来了（而用户点的是「回到会话最初」）。
+     *
+     * <p>「撤回本轮」走到这里时 {@code waiting} 已经被筛成<b>只有最新那一份</b>
+     * （见 {@link #settleSession}），所以从最近一份往回撤 = 只撤这一轮。
      */
     private static int restore(List<WorkspaceSnapshot> waiting, Choice choice) {
         if (choice == Choice.ACCEPT || waiting.isEmpty()) {

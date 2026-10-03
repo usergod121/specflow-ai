@@ -239,7 +239,7 @@ class RunServiceTest {
         RunRecord.Settlement settlement = store.load(store.latestId()).settlement();
         assertThat(settlement.choice()).isEqualTo(RunRecord.Settlement.ACCEPT);
         assertThat(settlement.failing()).containsExactly(2);
-        assertThat(settlement.summarize()).contains("带着 1 条失败用例").contains("用例 2");
+        assertThat(settlement.summarize(false)).contains("带着 1 条失败用例").contains("用例 2");
         assertThat(artifacts).doesNotExist();
     }
 

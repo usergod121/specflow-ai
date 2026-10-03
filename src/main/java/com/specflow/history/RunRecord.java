@@ -141,6 +141,13 @@ public record RunRecord(
     /**
      * 这次运行属于<b>哪个会话的第几轮</b>（会话 = N 轮，见 {@code Session}）。
      *
+     * <p><b>这一栏为空 = 这次运行不属于任何会话</b>，命令行跑出来的记录就永远是这一档
+     * （{@code specflow run} 一次就是一件事，它没有「下一轮」这个动作）。这是<b>有意为之</b>
+     * 的取舍，用户 2026-10-03 拍板「先这样」：让 CLI 也进会话，等于给它添一个
+     * 「这件事还没完、要不要接着跑」的状态，而命令行下没有一个地方能让它接着跑。
+     * 命令行照样能<b>收掉</b>界面上开着的会话（{@code accept} / {@code rollback} 走同一个
+     * {@code Teardown.settle}），但开不出一个、也接不上一个——详见 {@code RunService.nextRound}。
+     *
      * <p>为什么是「会话 id + 轮次序号」两个字段，而不是一条链（上一轮是哪条记录）：
      * 轮次序号就是链——第 N 轮的上一轮必然是第 N-1 轮，而序号还顺带答得出
      * 「这是第几轮」这个界面上要显示、事后也最常被问到的数。存一条指针链的话，
@@ -293,6 +300,23 @@ public record RunRecord(
     }
 
     /**
+     * 收场那一行（历史详情里「收场：…」那一句）；没收过场是空串。
+     *
+     * <p>为什么要把它算在<b>记录</b>这一层、而不是让 {@link Settlement} 自己说：
+     * 会话里的中断撤的是<b>整个会话</b>，单次运行的中断撤的是那一次运行——同一档收场两句话，
+     * 而「这条记录属不属于一个会话」只有这里知道（{@code session} 那一栏）。
+     * 说错这一句的代价很具体：用户翻到某一轮，以为文件回到了「这一次运行之前」，
+     * 其实回到了几轮之前。
+     *
+     * <p>它只序列化、不读回来（{@code READ_ONLY}），所以老记录照样读得出来
+     * ——那句话是按 {@code choice} 现算的。
+     */
+    @JsonProperty(value = "settlementSummary", access = JsonProperty.Access.READ_ONLY)
+    public String settlementSummary() {
+        return settlement == null ? "" : settlement.summarize(session != null);
+    }
+
+    /**
      * 人对<b>一条失败用例</b>的判断（十五.6）。
      *
      * <p>三档不是三种严重度，而是「接下来该谁动手」：产品代码错了就回喂给开发，
@@ -360,7 +384,8 @@ public record RunRecord(
      * 而它过几天再看就不明显了：失败清单还挂在记录里，但「人是知道它红着也接受了」这件事，
      * 只有这一栏说得出来。
      *
-     * @param choice  {@link #ACCEPT}（保留改动）或 {@link #INTERRUPT}（恢复到运行前）
+     * @param choice  {@link #ACCEPT}（保留改动）/ {@link #INTERRUPT}（回到起点，会话到此为止）/
+     *                {@link #UNDO_ROUND}（只撤回本轮）
      * @param at      收场的时间，ISO 格式
      * @param failing 收场那一刻<b>还带着的失败用例编号</b>。中断时同样记下来：
      *                文件是回滚了，但「它当时红在哪几条上」是这次运行的结论，不该跟着一起没
@@ -369,7 +394,13 @@ public record RunRecord(
 
         /** 接受：磁盘上的改动留着，快照与测试产物删掉。 */
         public static final String ACCEPT = "ACCEPT";
-        /** 中断（恢复到初始）：文件按快照回到运行前，快照与测试产物删掉。 */
+        /**
+         * 中断并回到会话最初：文件按快照回到这次运行（会话）开始前，快照与测试产物删掉。
+         *
+         * <p>会话里它撤的是<b>整个会话</b>（磁盘上挂着的每份快照都撤掉），而且<b>会话到此为止</b>
+         * ——想重来就再点「运行」开一个新会话。把范围写在这里，是因为
+         * {@link #summarize(boolean)} 要靠它说出「回到会话最初」还是「回到这次运行开始前」。
+         */
         public static final String INTERRUPT = "INTERRUPT";
         /**
          * 撤回本轮：这一轮的改动被撤掉，磁盘回到<b>上一轮结束时</b>的样子。
@@ -379,7 +410,13 @@ public record RunRecord(
          */
         public static final String UNDO_ROUND = "UNDO_ROUND";
         /**
-         * 撤回整个会话：磁盘回到<b>会话最开始</b>的样子，会话仍然开着。
+         * <b>历史档（不再产生）</b>：2026-10-03 之前「撤回整个会话」是独立于中断的一个动作
+         * （文件同样回到会话最开始，只是会话还开着），用户拍板把它和中断合并成一个动作
+         * （见 {@code Teardown}），于是这个值从此不再被写下。
+         *
+         * <p><b>为什么留着它</b>：那之前跑出来的会话留档里写着它，而删掉这个判据的后果不是
+         * 报错，是<b>账悄悄错了</b>——那几轮会被当成「它自己回滚了」重新计入累计通过率，
+         * 历史里也会把「我撤了它」读成「它没做成」（§18.23.3 那条「老记录仍可读」的同一笔账）。
          */
         public static final String UNDO_SESSION = "UNDO_SESSION";
 
@@ -399,6 +436,8 @@ public record RunRecord(
          *
          * <p>会话里「哪几轮还算数」就靠它折出来：被撤掉的轮次不进累计通过率，
          * 也不再有可撤的快照。
+         *
+         * <p>{@link #UNDO_SESSION} 只可能来自老记录（见那个常量的注释）。
          */
         public static boolean undoes(String choice) {
             return UNDO_ROUND.equals(normalizeChoice(choice))
@@ -421,12 +460,21 @@ public record RunRecord(
             return failing.size();
         }
 
-        /** 给界面与历史的一行。 */
-        @JsonProperty(value = "summary", access = JsonProperty.Access.READ_ONLY)
-        public String summarize() {
+        /**
+         * 收场那一行（历史里那一句：怎么收的场 + 当时带着几条失败）。
+         *
+         * <p><b>范围这个词为什么是一个参数</b>：会话里的中断撤的是<b>整个会话</b>
+         * （文件回到会话最开始），单次运行的中断撤的是那一次运行——同一档收场，两句话。
+         * 而「这条记录属不属于一个会话」只有 {@link RunRecord} 这一层知道，
+         * 所以由它传进来，而不是在这里猜。说错这一句的代价是：用户以为文件回到了
+         * 「这一次运行之前」，其实回到了几轮之前。
+         */
+        public String summarize(boolean inSession) {
             String what = switch (choice) {
                 case ACCEPT -> "已接受（改动留在磁盘上）";
-                case INTERRUPT -> "已中断（文件恢复到这个运行开始前）";
+                case INTERRUPT -> inSession
+                        ? "已中断并回到会话最初（文件回到会话最开始的样子）"
+                        : "已中断（文件恢复到这个运行开始前）";
                 case UNDO_ROUND -> "已撤回本轮（文件回到上一轮结束时的样子）";
                 case UNDO_SESSION -> "已撤回整个会话（文件回到会话最开始的样子）";
                 default -> "已收场：" + choice;
