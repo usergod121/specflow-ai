@@ -451,6 +451,58 @@ class RunServiceTest {
         service.shutdown();
     }
 
+    /**
+     * 上一轮的失败**一条都不属于某条用例**（脚本自己说它没跑起来）时，拒回喂的那句话要说清
+     * 「这几条根本没被验过」，并指出下一步是「重新生成」。
+     *
+     * <p>真项目实测（2026-10-04）：那一轮 5 条用例在界面上全画成红的，可失败清单里只有一条
+     * 「脚本报跑不起来」、`testCase` 是空的——人一条也勾不动。旧口径一律回
+     * 「清单可能被重新生成过，先按屏幕上的清单重新勾一次」，而屏幕上根本勾不动：
+     * **那句话把人指到了一个走不通的方向**。
+     */
+    @Test
+    @DisplayName("上一轮一条用例的结论都没报出来：拒回喂，并说清该点「重新生成」")
+    void refusesRefeedWhenNothingWasVerified() throws Exception {
+        Files.writeString(root.resolve("Foo.java"), "old\n");
+        recordNeverVerifiedRun();
+        RunService service = service();
+
+        RunRequest request = RunRequest.of(null, "把 a 改成 2", null, null, null,
+                List.of("Foo.java"), null, null, null, null, 0, 1, null, List.of(1), null);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.start(request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("回喂被拦下")
+                .hasMessageContaining("没有被验过")
+                .hasMessageContaining("重新生成")
+                .hasMessageNotContaining("重新勾一次");
+        service.shutdown();
+    }
+
+    /**
+     * 造一条「跑过测试、但脚本一条用例的结论都没报出来」的记录——真项目实测里就是这个形状：
+     * 逐条账把每条都记成没过，失败清单里却只有一条不属于任何用例的「脚本报跑不起来」。
+     */
+    private void recordNeverVerifiedRun() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        List<com.specflow.review.PlanReview.TestCase> cases = List.of(
+                new com.specflow.review.PlanReview.TestCase(1, "a 变成 2", "读 Foo.java 里的 a",
+                        com.specflow.review.PlanReview.TestCase.Level.MUST, "a == 2", "无"),
+                new com.specflow.review.PlanReview.TestCase(2, "加完之后项目还能编译", "跑一次编译",
+                        com.specflow.review.PlanReview.TestCase.Level.SHOULD, "编译通过", "无"));
+        TestOutcome tests = new TestOutcome("tools/20261004-002735", List.of(), 1, 1,
+                VerificationResult.failed("测试脚本", "run", "一条用例的结论都没报出来"),
+                List.of(new TestOutcome.Failure(TestOutcome.Failure.Kind.BLOCKED, "",
+                        "", "BLOCKED | gson jar not found under lib or libs", "")),
+                List.of(new TestOutcome.CaseResult(1, false),
+                        new TestOutcome.CaseResult(2, false)), List.of());
+        AgentListener recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                com.specflow.review.PlanReview.of("做点事", "", List.of(), List.of(), cases),
+                AgentListener.NOOP);
+        ((RunRecorder) recorder).testsFinished(tests);
+        recorder.finished(AgentResult.testsFailed(1, List.of(), List.of(), "脚本没跑起来"));
+    }
+
     /** 等到这次运行收场（它的终态事件发出来为止）。 */
     private static void awaitIdle(RunService service) throws InterruptedException {
         for (int attempt = 0; attempt < 400 && service.hub().running(); attempt++) {

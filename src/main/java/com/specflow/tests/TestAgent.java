@@ -12,6 +12,7 @@ import com.specflow.review.PlanReview;
 import com.specflow.spec.Spec;
 import com.specflow.template.TemplateRegistry;
 import com.specflow.util.SafePathResolver;
+import com.specflow.verify.CompileVerifier;
 import com.specflow.verify.VerificationContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -496,8 +497,11 @@ public final class TestAgent {
     private String ask(Spec spec, List<PlanReview.TestCase> cases, TestArtifacts artifacts,
                        TestSettings settings, Map<String, String> variables,
                        TestOutcome previous, String refusal) {
+        // 「这个项目怎么构建」每一版都要带：每一版它都得重新决定「依赖从哪来」。
+        // 它和下面那两段互不覆盖——那两段说的是「上一版错在哪」，只在重试那一版才有
         String message = assembler.userMessage(spec, templates)
-                + "\n" + TestProtocol.caseList(cases);
+                + "\n" + TestProtocol.caseList(cases)
+                + "\n" + TestProtocol.buildNotice(CompileVerifier.compileCommandOf(spec, project));
         if (refusal != null && !refusal.isBlank()) {
             message = message + "\n" + TestProtocol.refusalNotice(refusal);
         } else if (previous != null) {

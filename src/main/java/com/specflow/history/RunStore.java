@@ -6,6 +6,7 @@ import com.specflow.review.PlanReview;
 import com.specflow.session.Session;
 import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.tests.Refeed;
+import com.specflow.tests.TestOutcome;
 import com.specflow.util.ProjectFiles;
 
 import java.io.IOException;
@@ -265,12 +266,37 @@ public final class RunStore {
         }
         List<String> problems = Refeed.problems(latest.testCases(), latest.tests(), picked);
         if (!problems.isEmpty()) {
-            throw new IllegalStateException("回喂被拦下：这几条对不上上一轮冻结的那份用例清单——"
-                    + String.join("；", problems)
-                    + "。清单可能被重新生成过（再点一次「先检查」会换一份）："
-                    + "先按屏幕上那份清单（界面上写的就是那一轮冻结的那一份）重新勾一次，再点「下一轮」。");
+            throw new IllegalStateException(refeedRefusal(latest, problems));
         }
         return Refeed.of(latest.testCases(), latest.tests(), latest.targets(), picked);
+    }
+
+    /**
+     * 回喂被拒时给用户的那句话。
+     *
+     * <p><b>两种「对不上」要分开说。</b>2026-10-04 的真项目实测：那一轮脚本一条用例的结论都没报出来
+     * （它自己说它没跑起来），失败清单里于是没有任何一条属于某条用例——界面上 5 条全画成红的，
+     * 人却一条也勾不动。旧口径一律回「清单可能被重新生成过，先按屏幕上的清单重新勾一次」，
+     * 而屏幕上根本勾不动：**那句话把人指到了一个走不通的方向**。
+     */
+    private static String refeedRefusal(RunRecord record, List<String> problems) {
+        if (!reportedAnyCase(record)) {
+            return "回喂被拦下：上一轮脚本一条用例的结论都没报出来（它自己说它没跑起来，"
+                    + "失败清单里也就没有哪一条属于某条用例），所以这几条**没有被验过**——"
+                    + "把没验过的用例喂给开发，等于拿一件没发生的事去换一轮模型调用。"
+                    + "先点「重新生成」换一版测试代码，让它真的跑起来、报出逐条结论，"
+                    + "再决定回喂哪几条。";
+        }
+        return "回喂被拦下：这几条对不上上一轮冻结的那份用例清单——" + String.join("；", problems)
+                + "。清单可能被重新生成过（再点一次「先检查」会换一份）："
+                + "先按屏幕上那份清单（界面上写的就是那一轮冻结的那一份）重新勾一次，再点「下一轮」。";
+    }
+
+    /** 那一轮有没有「属于某一条用例的失败」。没有 ⇒ 脚本压根没报出逐条结论。 */
+    private static boolean reportedAnyCase(RunRecord record) {
+        TestOutcome tests = record.tests();
+        return tests != null && tests.failures().stream()
+                .anyMatch(failure -> failure.testCase() != null && !failure.testCase().isBlank());
     }
 
     /**

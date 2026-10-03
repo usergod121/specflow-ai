@@ -3,7 +3,10 @@ package com.specflow.tests;
 import com.specflow.TestSpecs;
 import com.specflow.llm.ChatMessage;
 import com.specflow.llm.LlmClient;
+import com.specflow.project.BuildConfig;
+import com.specflow.project.LlmConfig;
 import com.specflow.project.ProjectConfig;
+import com.specflow.project.SnapshotConfig;
 import com.specflow.review.PlanReview;
 import com.specflow.spec.Spec;
 import com.specflow.template.TemplateRegistry;
@@ -349,6 +352,9 @@ class TestAgentTest {
         assertThat(outcome.calls()).as("两版就是两次真实调用").isEqualTo(2);
         assertThat(llm.user()).as("重试那次要把上一版的原始错误带上：重掷骰子只会再错一遍")
                 .contains("上一版测试代码没跑起来").contains("cannot find symbol");
+        assertThat(llm.user()).as("重试那一版同样要带「这个项目怎么构建」："
+                        + "它每一版都得重新决定依赖从哪来，不是只在第一版需要")
+                .contains("这个项目怎么构建");
     }
 
     /**
@@ -591,6 +597,54 @@ class TestAgentTest {
                 .contains("必须过")
                 .as("清单后面要再点一句：编号与期望都得照抄")
                 .contains("expect");
+    }
+
+    /**
+     * 项目自己的构建命令必须交到模型手里。
+     *
+     * <p>真项目实测（2026-10-04，JDK17 + Maven + 一个第三方库）：三版入口脚本都卡在同一句
+     * 「gson jar not found under lib or libs | place gson jar in lib\」——它把依赖路径
+     * <b>猜</b>成了一个没人满足的约定，还把它当成对用户的要求。根因不是模型笨：
+     * 那七次调用的提示词里 `pom.xml` 与 `mvn` 各出现 <b>0 次</b>——
+     * 协议让它「看项目本身」，却一个字都没告诉它这个项目长什么样。
+     *
+     * <p>这条钉住「那条命令真的在用户消息里」，以及「不许自己发明一个放 jar 的约定」这句话还在。
+     */
+    @Test
+    @DisplayName("项目自己的构建命令交给模型：拿不到依赖类路径，是它猜出一个约定的根因")
+    void sendsTheProjectBuildCommandToTheModel() {
+        FakeLlm llm = llm(answer -> block(answer.entry(), anchoredScript(0, "PASS | 1", "PASS | 2")));
+        ProjectConfig project = new ProjectConfig(
+                new BuildConfig("mvn -q -o -DskipTests compile"), LlmConfig.DEFAULT,
+                SnapshotConfig.DEFAULT);
+
+        new TestAgent(root, project, TemplateRegistry.empty(), llm).run(spec(), cases());
+
+        assertThat(llm.user())
+                .as("构建命令要原样进用户消息——它来自 project.yaml，引擎不猜语言")
+                .contains("这个项目怎么构建")
+                .contains("mvn -q -o -DskipTests compile");
+        assertThat(llm.user())
+                .as("并且明说：不许发明「把 jar 放到某个目录」这种没人会满足的约定")
+                .contains("不要把「请把 jar 放到某处」当成对用户的要求");
+    }
+
+    /**
+     * 没配编译命令时，那一段要<b>如实说没配</b>，而不是整段消失。
+     *
+     * <p>整段消失的话，模型看到的就是「协议让它看项目、消息里却什么都没有」——
+     * 与真项目那次的处境一模一样，它会转头去猜。
+     */
+    @Test
+    @DisplayName("没配编译命令：那一段照样在，只是如实说没配")
+    void saysSoWhenNoBuildCommandIsConfigured() {
+        FakeLlm llm = llm(answer -> block(answer.entry(), anchoredScript(0, "PASS | 1", "PASS | 2")));
+
+        agent(llm).run(spec(), cases());
+
+        assertThat(llm.user())
+                .contains("这个项目怎么构建")
+                .contains("没有配编译命令");
     }
 
     // ---------- 集成测试：两个入口、环境变量（十五.5） ----------

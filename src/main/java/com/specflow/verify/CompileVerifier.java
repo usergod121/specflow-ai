@@ -1,6 +1,9 @@
 package com.specflow.verify;
 
 import com.specflow.exception.SpecflowException;
+import com.specflow.project.BuildConfig;
+import com.specflow.project.ProjectConfig;
+import com.specflow.spec.Spec;
 import com.specflow.spec.VerifySpec;
 import com.specflow.util.ProcessOutput;
 import org.slf4j.Logger;
@@ -76,11 +79,33 @@ public final class CompileVerifier implements Verifier {
      * 这样个别任务临时换一条更快的命令不需要改项目配置。
      */
     private String resolveCommand(VerificationContext context) {
-        String fromSpec = context.spec().verify().compileCommand();
+        return compileCommandOf(context.spec(), context.project());
+    }
+
+    /**
+     * 这一次真正会跑的那条编译命令：spec 里写了就用 spec 的，否则用 {@code project.yaml} 的。
+     *
+     * <p><b>公开出来，是为了让「这条命令从哪来」只有一处。</b>用它的一共两处：编译校验自己，
+     * 以及测试生成那一段（见 {@code TestProtocol.buildNotice}）。后者是 2026-10-04 才接上的——
+     * 在那之前，引擎天天用这条命令编译这个项目，却一个字都没告诉写测试的那个模型，
+     * 真项目上于是表现成「它把第三方 jar 的路径猜成一个约定，再要求用户把 jar 放进去」。
+     *
+     * <p>两处各解析一遍的话，以后再加一种「命令从哪来」的来源，必然只改一处。
+     *
+     * <p><b>它对什么输入都要给得出答案</b>（{@code spec} 可为 null，{@code ProjectConfig.build()}
+     * 也可能是 null——手工 {@code new} 出来的配置就是这样，{@code ProjectConfig.of()} 才负责补默认值）。
+     * 这不是替谁擦屁股：调用方里有测试生成那一条，它拿到的是调用方给的配置，
+     * 没有理由要求对方先归一化过。
+     *
+     * @return 命令（已去掉首尾空白）；两处都没配时返回 {@code null}
+     */
+    public static String compileCommandOf(Spec spec, ProjectConfig project) {
+        String fromSpec = spec == null ? null : spec.verify().compileCommand();
         if (fromSpec != null && !fromSpec.isBlank()) {
             return fromSpec.strip();
         }
-        String fromProject = context.project().build().compile();
+        BuildConfig build = project == null ? null : project.build();
+        String fromProject = build == null ? null : build.compile();
         return fromProject == null || fromProject.isBlank() ? null : fromProject.strip();
     }
 
