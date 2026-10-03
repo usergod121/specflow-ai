@@ -231,8 +231,12 @@ public interface AgentListener {
      *
      * @param cases 补完之后的那份清单（期望、分级、验收标准与第一段<b>逐字相同</b>）
      * @param note  给人和留档的一句话：补了几条、哪几条没补上、有没有出现过「想改期望被拦下」
+     * @param calls 为这一段花掉的模型调用次数。它<b>不算开发轮次</b>（和生成施工单那几次一样），
+     *              但一样是用户掏的钱：会话视图上「这一轮花了 N 次调用」把它算进去。
+     *              单独一个参数而不是让人去 {@code note} 那句话里认数字——留档里的账
+     *              必须是结构化的，从一句人话里抠数字，那句话一改账就错了
      */
-    default void casesRefined(List<PlanReview.TestCase> cases, String note) {
+    default void casesRefined(List<PlanReview.TestCase> cases, String note, int calls) {
     }
 
     /** 任务结束，无论成败都会触发一次。 */

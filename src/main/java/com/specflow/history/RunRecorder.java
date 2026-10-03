@@ -160,6 +160,18 @@ public final class RunRecorder implements AgentListener {
      */
     private final RunRecord.SessionRef session;
 
+    /**
+     * <b>这一轮的钱花在哪几处</b>里，不走轮次账的那两处。
+     *
+     * <p>开发轮次在 {@code AgentResult.attempts} 里、生成测试代码那几次在
+     * {@code TestOutcome.calls} 里，写记录时都拿得到；而这两笔是<b>跑的过程中路过</b>的
+     * （开工前现生成施工单、第二段补「怎么测」），当时不记下来，跑完就只剩时间线上那一句话
+     * 「为它花了 1 次模型调用」——从人话里抠数字来做账，是账迟早错掉的那条路。
+     * 所以它们各自在自己的回调里记一个数，写记录时拼成 {@code RunRecord.Cost}。
+     */
+    private int scheduleCalls;
+    private int caseHowCalls;
+
     private RunRecorder(RunStore store, AgentListener delegate, Spec spec, PlanReview approved,
                         Refeed refeed, List<RunRecord.CaseSwitch> caseSwitches,
                         RunRecord.SessionRef session) {
@@ -236,6 +248,9 @@ public final class RunRecorder implements AgentListener {
                               int probeCalls) {
         this.stepsSource = source.name();
         this.planSteps = List.copyOf(resolved);
+        // 为这份单子花掉的调用同样进这一轮的成本（见 scheduleCalls）：它不是轮次，
+        // 但它是这一轮真花掉的钱
+        this.scheduleCalls = probeCalls;
         // 单步执行（现生成的施工单核不过、或者压根没跑过检查）时引擎**不发步级事件**，
         // 于是留档里一步都没有。留着这一份，写记录时才能替它补上一条（见 stepsOf）
         this.singleStep = resolved.size() == 1 ? resolved.get(0) : null;
@@ -368,15 +383,18 @@ public final class RunRecorder implements AgentListener {
      * 少并这一步，被停用的用例会从留档里消失，「恢复」再也按不回来（那是不可逆的删除）。
      */
     @Override
-    public void casesRefined(List<PlanReview.TestCase> cases, String note) {
+    public void casesRefined(List<PlanReview.TestCase> cases, String note, int calls) {
         if (cases != null) {
             this.refinedCases = CaseHowStage.merge(
                     approved == null ? List.of() : approved.cases(), cases);
         }
+        // 为第二段花掉的调用记下来（见 caseHowCalls）：它在时间线上也有一句话，
+        // 但那句话是给人看的，账不能从它里面抠
+        this.caseHowCalls = calls;
         if (note != null && !note.isBlank()) {
             record(round, "info", note);
         }
-        delegate.casesRefined(this.refinedCases != null ? this.refinedCases : cases, note);
+        delegate.casesRefined(this.refinedCases != null ? this.refinedCases : cases, note, calls);
     }
 
     @Override
@@ -409,8 +427,13 @@ public final class RunRecorder implements AgentListener {
                 : (approved == null ? List.of() : approved.cases());
         RunRecord record = new RunRecord(id, startedAt, result.status().name(), spec.template(),
                 spec.prompt(), spec.acceptance(), contextOf(spec), spec.trace().requirementId(),
-                spec.targets(), result.attempts(), result.detail(),
+                spec.targets(), result.attempts(),
+                // 这一轮的成本：四处调用各记各的，加在一起才是用户掏的钱（见 RunRecord.Cost）
+                cost(result),
+                result.detail(),
                 approved == null ? List.of() : approved.missing(),
+                // 本轮的改动：引擎那一份已经是**所有步并起来**的（见 DevelopmentAgent.RoundChanges），
+                // 不是最后一步那一份——多步的一轮丢改动，正是 §19.13 抓到的那个 bug
                 changesOf(result.changes()), stepsOf(result), planSteps, stepsSource,
                 cases, tests, environment,
                 // 判决、收场、重新生成过哪几份产物，都是**跑完之后**人写的（见 RunStore.judge /
@@ -444,6 +467,23 @@ public final class RunRecorder implements AgentListener {
     /** 这次开工时停用着的那几条用例编号。 */
     private Set<Integer> disabledIn() {
         return RunRecord.CaseSwitch.disabledIn(caseSwitches);
+    }
+
+    /**
+     * 这一轮的成本：四处调用各记各的（口径见 {@link RunRecord#modelCalls()}）。
+     *
+     * <p>为什么要分开记而不是在这里加成一个数：总数看不出「钱花在哪」——实测那一轮
+     * 界面上写着「1 次调用」而实际 3 次，光把 1 改成 3，下次再对不上还是一样查不出原因。
+     * 四项分别对得上时间线上的那几句话，所以它是可核对的。
+     *
+     * <p>四项的来路：开发轮次来自运行结果（与界面上「第 N 轮」同一个数）、施工单那几次
+     * 与第二段那一次是跑的过程中路过时记下的（见 {@link #scheduleCalls} / {@link #caseHowCalls}）、
+     * 生成测试代码那几次在测试结论里（{@code TestOutcome.calls}，含轮内自动重生成的那一版）。
+     * 没走到的那几段是 0，不编数。
+     */
+    private RunRecord.Cost cost(AgentResult result) {
+        return new RunRecord.Cost(result.attempts(), scheduleCalls, caseHowCalls,
+                tests == null ? 0 : tests.calls());
     }
 
     private static List<RunRecord.Change> changesOf(List<PatchApplier.FileChange> changes) {

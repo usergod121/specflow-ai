@@ -74,7 +74,11 @@ class RunStoreTest {
     /** 直接写记录，不经过 {@code RunRecorder}：它的 id 是毫秒时间戳，同一个测试里连写几条会撞名。 */
     private static RunRecord record(String id, String status, String detail) {
         return new RunRecord(id, "2026-01-01T00:00", status, null, "改点东西", List.of(),
-                List.of(), null, List.of("Foo.java"), 1, detail, List.of(), List.of(), List.of(),
+                List.of(), null, List.of("Foo.java"), 1,
+                // 成本明细留空：这一档测的是「cost 为 null 时怎么读」（写出去的 JSON 里是
+                // "cost": null）。磁盘上真实的老留档连这个键都没有，那一种形状由
+                // readsLegacyRecordWithoutNewFields 钉着——两者是不同的读法，都要认
+                null, detail, List.of(), List.of(), List.of(),
                 List.of(), null, List.of(), null, null,
                 // 判决、收场、重新生成过哪几份产物：都是跑完之后人写的那几笔，直接造时留空。
                 // 覆盖核对、回喂、「它没有改动」这三笔同理：这一条不涉及测试阶段。
@@ -919,6 +923,11 @@ class RunStoreTest {
         assertThat(record.verdicts()).as("老记录里也没有这一项").isNull();
         assertThat(record.settlement()).as("收场是这一批新加的").isNull();
         assertThat(record.regenerated()).isNull();
+        // 成本明细（§19.13 新加的那一栏）同理：这份 JSON 里<b>压根没有</b> cost 这个键，
+        // 缺的键必须被当成 null 交给记录的构造器。不认这个形状的后果不是「少一个数」，
+        // 而是 `RunStore.read` 静默跳过整条记录——历史里少一条，这一栏一个字节都没留下
+        assertThat(record.cost()).as("老记录的 JSON 里没有这一栏 → null，而不是读失败").isNull();
+        assertThat(record.modelCalls()).as("退回 attempts：那是老留档里唯一记过的钱").isEqualTo(1);
     }
 
     /**
@@ -968,6 +977,73 @@ class RunStoreTest {
 
     private static PatchApplier.FileChange change(String path, String diff) {
         return new PatchApplier.FileChange(Path.of(path), path, false, 10, diff);
+    }
+
+    /**
+     * 一轮的成本要数<b>全</b>：开发轮次之外，还有现生成施工单、第二段补「怎么测」、生成测试代码
+     * 三处调用——它们都不进轮次账，但都是用户掏的钱。
+     *
+     * <p>为什么值得钉住：「这一轮花了 N 次调用」以前只数开发轮次，实测里第 2 轮界面写着 1、
+     * 实际是 3（开发 1 + 第二段 1 + 生成测试 1，§19.13）。数字小一半不会报错，
+     * 只会让人以为这工具很省——而且没有任何地方能看出它错在哪，所以这里两项都要钉：
+     * 四项明细各自是多少，以及加起来是不是那个总数。
+     *
+     * <p>{@code attempts}（轮次账）一个字都不许跟着变：界面上「第 N 轮」和它同一个口径。
+     */
+    @Test
+    @DisplayName("这一轮的成本数得全：开发轮次之外，施工单、第二段、生成测试那几次也算")
+    void countsEveryCallTheRoundSpent() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP);
+
+        // 开工前现生成施工单花了 2 次（第一次不合规、回喂之后再要了一次）；开发一轮；第二段补
+        // 「怎么测」被期望对不上打回一次、共 2 次；测试代码生成 2 版（第一版一条结论都没跑出来）
+        recorder.stepsResolved(List.of(step(1, "一次做完", false)),
+                AgentListener.StepsSource.GENERATED, 2);
+        recorder.roundStarted(1);
+        recorder.filesApplied(1, List.of(change("Foo.java", "+实现")));
+        recorder.verificationFinished(1, List.of(VerificationResult.passed("编译校验", "mvn", "")));
+        recorder.casesRefined(List.of(), "第二段补上了 1 条用例的「怎么测」…为它花了 2 次模型调用。", 2);
+        recorder.testsFinished(new TestOutcome("tools/20260930-120000",
+                List.of("tools/20260930-120000/run.cmd"), 2, 0,
+                VerificationResult.passed("测试脚本", "run", ""), List.of(),
+                List.of(new TestOutcome.CaseResult(1, true)), List.of()));
+        recorder.finished(AgentResult.success(1, List.of(change("Foo.java", "+实现")), List.of()));
+
+        RunRecord record = store.load(store.list().get(0).id());
+
+        assertThat(record.attempts()).as("轮次账不变：这一轮开发了一个轮次").isEqualTo(1);
+        assertThat(record.cost()).as("四处各记各的：开发 / 施工单 / 第二段 / 生成测试")
+                .isEqualTo(new RunRecord.Cost(1, 2, 2, 2));
+        assertThat(record.modelCalls()).as("会话视图上「这一轮花了 N 次调用」的那个 N")
+                .isEqualTo(7);
+        assertThat(record.cost().total()).as("四项加起来就是总数，没有第五处悄悄漏在外面")
+                .isEqualTo(record.modelCalls());
+    }
+
+    /**
+     * 老记录里没有 {@code cost} 那一栏：不许按今天的口径替它编一个数，退回它唯一有的那个。
+     *
+     * <p>「编一个看起来更全的数」比少一个数糟得多：留档是唯一还答得出「当时花了多少」的地方，
+     * 它一旦开始猜，之后就再也分不清哪几轮是真账。
+     *
+     * <p>这一条走的是 {@code save} 一圈，所以写出去的 JSON 里<b>有</b> {@code "cost": null}
+     * 这一栏；磁盘上<b>真实的老留档</b>是另一种形状——<b>压根没有这个键</b>
+     * （见 {@link #readsLegacyRecordWithoutNewFields}，那边钉着缺键也要读得出来）。
+     * 两种形状都要认：前者是今天的代码写出来的，后者是历史文件。
+     */
+    @Test
+    @DisplayName("老记录（cost 那栏是 null）退回 attempts：不替它编一个更全的数")
+    void fallsBackToAttemptsForOldRecordsWithoutCost() {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        // record(...) 直接造记录，不经录制器：这一条要钉的是「cost 为 null 时怎么读」
+        store.save(record("20260101-000000-001", "SUCCESS", "改动已落盘"));
+
+        RunRecord old = store.load("20260101-000000-001");
+
+        assertThat(old.cost()).isNull();
+        assertThat(old.modelCalls()).as("退回开发轮次：那是这份留档里唯一记过的数").isEqualTo(1);
     }
 
     private void record(RunStore store, String detail) {

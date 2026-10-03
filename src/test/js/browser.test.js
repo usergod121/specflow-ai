@@ -4396,6 +4396,9 @@ async function main() {
       canUndoRound: true, undoRoundWhy: '',
       roundPassed: 1, roundTotal: 2, sessionPassed: 3, sessionTotal: 5,
       roundCalls: 7, roundMillis: 96000, roundDuration: '1 分 36 秒',
+      // 成本那句的来历（§19.13）：四处加起来必须等于 roundCalls——数字和明细对不上，
+      // 用户就会以为那句来历是编的。这里刻意四项都有值（开发 3 + 施工单 2 + 第二段 1 + 生成 1 = 7）
+      roundCost: { development: 3, schedule: 2, caseHow: 1, testGen: 1 },
       current: {
         round: 3, recordId: '20261003-103000-000', status: 'TESTS_FAILED',
         detail: '测试没过', startedAt: '2026-10-03T10:30:00', finishedAt: '2026-10-03T10:31:36',
@@ -4415,7 +4418,11 @@ async function main() {
             { index: 2, file: 'tools/20990101-000000/UnitTests.java', line: 9 }],
           output: 'PASS | 1\nFAIL | 2 | compiled | not compiled\n' },
         changes: [{ path: 'src/main/java/com/demo/Foo.java', created: false, bytes: 29,
-          diff: '-    int a = 1;\n+    int a = 2;\n' }],
+          diff: '-    int a = 1;\n+    int a = 2;\n' },
+          // 一轮两步的真实形状（§19.13）：第二步新建的那个类也挂在本轮改动里，
+          // 界面必须把它一起画出来——少画一个，用户会以为这一轮只动了一个文件
+          { path: 'src/main/java/com/demo/TextStats.java', created: true, bytes: 613,
+            diff: '+class TextStats {\n+}\n' }],
         verdicts: [{ index: 2, owner: 'CODE', at: '2026-10-03T10:32:00',
           label: '开发 AI 错了（已回喂）' }],
         disabled: [], refeed: [2], coverage: null, failing: true,
@@ -4493,6 +4500,17 @@ async function main() {
         '累计那个数带着口径（不写，用户会按「会话里所有轮次」去理解它）');
     check(bar31.includes('这一轮花了 7 次调用') && bar31.includes('1 分 36 秒'),
         '成本可见：这一轮的调用次数与耗时都在状态条上：' + JSON.stringify(bar31));
+    const cost31 = await evaluate(`(() => {
+      const cost = document.querySelector('#session .session-cost');
+      return { text: cost.textContent, title: cost.title };
+    })()`);
+    check(cost31.title.includes('这一轮的调用花在哪：开发 3 · 现生成施工单 2 · 补「怎么测」 1 · 生成测试 1'),
+        '成本那句的来历在真页面上悬停可见（§19.13：这个数以前只数开发轮次，'
+            + '实测第 2 轮显示 1、实际 3——只把数改大，用户看到一个自己解释不了的数字）：'
+            + JSON.stringify(cost31.title));
+    check(cost31.title.includes('检查阶段那一次、以及跑完之后点「重新生成」那几次不算在这一轮里'),
+        '口径连着「不算的是什么」一起说（不说清，用户会以为检查阶段那一次也算在里面）：'
+            + JSON.stringify(cost31.title));
     check(await evaluate(`document.getElementById('pending').textContent.trim()`) === '',
         '会话开着时待处置面板是空的（处置只有一处）');
     check(String(await evaluate(`document.getElementById('run').title`)).includes('会话'),
@@ -4532,7 +4550,9 @@ async function main() {
         round: Number(one.dataset.round), gone: one.dataset.gone, text: one.textContent,
       }));
       return { tag: box.tagName, open: box.open, blocks,
-               diff: box.querySelector('.session-round-block[data-round="3"] .diff').textContent };
+               diff: box.querySelector('.session-round-block[data-round="3"] .diff').textContent,
+               diffs: [...box.querySelectorAll('.session-round-block[data-round="3"] .diff')]
+                 .map(one => one.textContent) };
     })()`);
     check(history31.tag === 'DETAILS' && history31.open === false,
         '历史轮次折着放（一轮一块，跑上五轮就把结果顶出屏幕了）');
@@ -4547,6 +4567,14 @@ async function main() {
     check(history31.diff.includes('int a = 2'),
         '轮次间 diff 画在那一轮底下（第 N 轮相对第 N-1 轮改了什么）：'
             + JSON.stringify(history31.diff));
+    // 一轮多步的改动要画全（§19.13）：留档那一栏以前只有最后一步，界面上于是少一个文件
+    check(history31.blocks[0].text.includes('修改 src/main/java/com/demo/Foo.java')
+            && history31.blocks[0].text.includes('新建 src/main/java/com/demo/TextStats.java'),
+        '一轮里所有步改了哪些文件都要列出来（少一个，用户会以为这一轮没动那个文件）：'
+            + JSON.stringify(history31.blocks[0].text.slice(0, 200)));
+    check(history31.diffs.length === 2 && history31.diffs.join('|').includes('int a = 2')
+            && history31.diffs.join('|').includes('class TextStats'),
+        '两份 diff 都画出来（轮次间 diff 看的就是它）：' + JSON.stringify(history31.diffs.length));
     check(history31.blocks[1].text.includes('已撤回（回到第 1 轮结束时的样子）')
             && history31.blocks[1].gone === 'true',
         '被撤回的那一轮说的是「回到第 1 轮结束时的样子」（它自己那一轮不算在「上一轮」里）：'

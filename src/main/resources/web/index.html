@@ -6905,6 +6905,34 @@ function regenTraceHtml(trace) {
 // 跟着别的动作一起排。
 
 /**
+ * 成本那句话的<b>来历</b>：这一轮的钱花在哪几处（悬停时看得见）。
+ *
+ * <p>为什么非要说出来：这个数以前只数开发轮次，实测里第 2 轮显示 1、实际 3（§19.13）。
+ * 光把它改大，用户看到的是一个自己解释不了的数字；把四处摊开，他才看得懂
+ * 「原来补「怎么测」和生成测试也算在这一轮里」——也就是 §19.13 定下来的那个口径。
+ *
+ * <p>零的那几处不列：一轮里没走到施工单生成、没跑测试是常事，列一串「0」只会把
+ * 真正花过钱的那两处埋掉。四项全零（或引擎没给这一栏，老记录就是这样）时返回空串，
+ * 界面于是不画这句来历——「算不出来」和「一分钱没花」是两件事。
+ */
+function costBreakdown(cost) {
+  if (!cost) {
+    return '';
+  }
+  const parts = [];
+  const add = (label, value) => {
+    if (Number(value || 0) > 0) {
+      parts.push(label + ' ' + Number(value));
+    }
+  };
+  add('开发', cost.development);
+  add('现生成施工单', cost.schedule);
+  add('补「怎么测」', cost.caseHow);
+  add('生成测试', cost.testGen);
+  return parts.join(' · ');
+}
+
+/**
  * 顶部状态条。
  *
  * <p>纯函数，理由和别的面板一样：这里全是「喂一份载荷、看那几句话对不对」的判断，
@@ -6930,6 +6958,9 @@ function sessionBarHtml(session, opts = {}) {
   // 分母口径跟着那一轮停用了哪几条走（见 casePassRate）：引擎那一条里没有它时退回屏幕上这份
   const disabled = new Set((round.disabled || spare.disabled || []).map(Number));
   const tiers = cases.length ? casePassRate(cases, tests, disabled) : '';
+  // 成本那一句的来历（见 costBreakdown）：说不出来时那句 title 整个不出现，
+  // 而不是留一个悬停上去什么都没有的空提示
+  const costWhy = costBreakdown(session.roundCost);
   // 耗时只认服务端算好的那句人话（拿不到时是空串）：自己拿毫秒拼一个「7 分 1 秒」，
   // 迟早和引擎那边的说法不一样——而这两个数说的是同一件事
   const duration = session.roundDuration || '';
@@ -6942,7 +6973,10 @@ function sessionBarHtml(session, opts = {}) {
       + '<span class="session-item">会话累计通过率 <b>'
           + Number(session.sessionPassed || 0) + '/' + Number(session.sessionTotal || 0) + '</b></span>'
       + '<span class="session-note">会话累计只算没被撤回的轮次</span>'
-      + '<span class="session-cost">这一轮花了 ' + Number(session.roundCalls || 0) + ' 次调用'
+      + '<span class="session-cost"'
+          + (costWhy ? ' title="这一轮的调用花在哪：' + escapeHtml(costWhy)
+              + '（检查阶段那一次、以及跑完之后点「重新生成」那几次不算在这一轮里）"' : '')
+          + '>这一轮花了 ' + Number(session.roundCalls || 0) + ' 次调用'
           + (duration ? ' · ' + escapeHtml(duration) : '') + '</span>'
       + '</div>'
       + (session.softHint

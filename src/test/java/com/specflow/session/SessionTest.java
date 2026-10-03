@@ -187,7 +187,44 @@ class SessionTest {
                 .as("只有撤回档、没有出口那一档：会话还开着").isFalse();
     }
 
+    // ---------- 成本 ----------
+
+    /**
+     * 会话视图上「这一轮花了 N 次调用」取的是<b>整轮的成本</b>，不是开发轮次数。
+     *
+     * <p>实测抓到的现场（§19.13）：第 2 轮界面上写着「这一轮花了 1 次调用」，而那一轮
+     * 实际调了 3 次（开发 1 + 第二段补「怎么测」1 + 生成测试代码 1）。数字少一半不会报错，
+     * 只会让人以为这工具很省——所以这里连「老记录怎么读」一起钉住。
+     */
+    @Test
+    @DisplayName("这一轮的调用次数是整轮的成本：开发 + 第二段 + 生成测试，老记录退回开发轮次")
+    void roundCallsIsTheWholeCostOfTheRound() {
+        RunRecord counted = costed(1, new RunRecord.Cost(1, 0, 1, 1));
+        RunRecord old = costed(4, null);
+
+        assertThat(Session.of(SESSION, List.of(counted), List.of()).current().orElseThrow().calls())
+                .as("开发 1 + 第二段 1 + 生成测试 1：只数开发轮次就会显示成 1")
+                .isEqualTo(3);
+        assertThat(Session.of(SESSION, List.of(counted), List.of()).current().orElseThrow().cost())
+                .as("明细一起带上：界面靠它说清这个数是怎么来的")
+                .isEqualTo(new RunRecord.Cost(1, 0, 1, 1));
+        assertThat(Session.of(SESSION, List.of(old), List.of()).current().orElseThrow().calls())
+                .as("老记录没有 cost 那一栏：退回 attempts，不替它编一个更全的数")
+                .isEqualTo(4);
+        assertThat(Session.of(SESSION, List.of(old), List.of()).current().orElseThrow().cost())
+                .as("算不出来时明细是 null（界面于是不画那句来历）").isNull();
+    }
+
     // ---------- 辅助 ----------
+
+    /** 一轮「开发轮次是 attempts、成本明细由调用方给」的留档（老记录传 {@code null}）。 */
+    private static RunRecord costed(int attempts, RunRecord.Cost cost) {
+        return new RunRecord("20261003-100000-000", "2026-10-03T10:00:00.000", "SUCCESS_UNVERIFIED",
+                null, "把 a 改成 2", List.of(), List.of(), null, List.of("Foo.java"), attempts, cost,
+                "结论", List.of(), List.of(), List.of(), List.of(), null, null, null, null,
+                List.of(), null, null, List.of(), null, null, null, null,
+                new RunRecord.SessionRef(SESSION, 1), "2026-10-03T10:01:00.000");
+    }
 
     private static PlanReview.TestCase testcase(int index, PlanReview.TestCase.Level level) {
         return new PlanReview.TestCase(index, "用例" + index, "", level, "期望" + index, "无");
@@ -214,7 +251,9 @@ class SessionTest {
         List<RunRecord.CaseSwitch> switches = RunRecord.CaseSwitch.append(List.of(), disabled,
                 true, startedAt);
         return new RunRecord(id, startedAt, status, null, "把 a 改成 2", List.of(), List.of(),
-                null, List.of("Foo.java"), 3, "结论", List.of(),
+                null, List.of("Foo.java"), 3,
+                // 成本明细留空：这些轮次造的是「老记录」那一档（没有 cost 这一栏）
+                null, "结论", List.of(),
                 List.of(new RunRecord.Change("Foo.java", false, 10, "-a\n+b")),
                 List.of(), List.of(), null, cases, tests, null,
                 List.of(), settlement, null, List.of(),

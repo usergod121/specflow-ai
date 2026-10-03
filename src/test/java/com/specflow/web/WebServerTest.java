@@ -1141,7 +1141,9 @@ class WebServerTest {
     /** 一条「跑过测试、留了产物」的记录，用来验收场要按留档删产物。 */
     private RunRecord recordWithTests(String directory) {
         return new RunRecord("20260930-170000", "2026-09-30T17:00", "TESTS_FAILED", null, "做点什么",
-                List.of(), List.of(), null, List.of("src/main/java/com/demo/Foo.java"), 1, "一条没过",
+                List.of(), List.of(), null, List.of("src/main/java/com/demo/Foo.java"), 1,
+                // 成本明细留空（老记录的形状）：这一条只关心收场怎么删产物
+                null, "一条没过",
                 List.of(), List.of(), List.of(), List.of(), null, List.of(),
                 new com.specflow.tests.TestOutcome(directory, List.of(directory + "/run.cmd"), 1, 1,
                         com.specflow.verify.VerificationResult.failed("测试脚本", "run", "一条没过"),
@@ -1225,6 +1227,11 @@ class WebServerTest {
                 .as("轮次间 diff：这一轮改了哪个文件").isEqualTo("Foo.java");
         assertThat(payload.path("roundCalls").asInt())
                 .as("成本要看得见：这一轮调了几次模型").isEqualTo(1);
+        assertThat(payload.path("roundCost").path("development").asInt())
+                .as("那个数还要说得出来历（§19.13）：这一轮只花在开发上，另外三处是 0")
+                .isEqualTo(1);
+        assertThat(payload.path("roundCost").path("caseHow").asInt()).isZero();
+        assertThat(payload.path("roundCost").path("testGen").asInt()).isZero();
 
         HttpResponse<String> undone = post("/api/session/undo-round", "{}");
         assertThat(undone.statusCode()).as(undone.body()).isEqualTo(200);

@@ -703,9 +703,14 @@ public final class RunService implements AgentListener {
      *       有没有出现过「它想把期望改掉、被机器拦下」。这些话不进留档，
      *       事后翻记录的人就分不清「这一栏空着是因为没验，还是因为第二段没补成功」。</li>
      * </ul>
+     *
+     * <p>{@code calls}（为第二段花掉的调用次数）这里<b>不用</b>：那一笔账由录制器记进留档
+     * （见 {@code RunRecorder.caseHowCalls}），界面上的成本数字从会话载荷里来。
+     * 收下它但不记，是为了两个监听器对同一个回调的签名一致——各写一套，漏掉的那个
+     * 迟早是「界面上说 2 次、留档里说 1 次」。
      */
     @Override
-    public void casesRefined(List<PlanReview.TestCase> cases, String note) {
+    public void casesRefined(List<PlanReview.TestCase> cases, String note, int calls) {
         if (cases != null) {
             refinedCases = List.copyOf(cases);
         }

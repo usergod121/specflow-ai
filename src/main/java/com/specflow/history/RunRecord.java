@@ -37,7 +37,11 @@ import java.util.TreeSet;
  * @param context   当时给模型的上下文依赖。它同样是「当时依据什么」的一部分：
  *                  引用形态只记路径，文件早改了；内联文本则被截断过（见 {@link RunRecorder}）
  * @param targets   本次允许改动的文件
- * @param attempts  实际调用了模型几次
+ * @param attempts  <b>开发轮次</b>：装配一次上下文、写一次代码那种轮。它与 {@code cost} 不是一个数：
+ *                  这里只数开发循环里那几次，见 {@link #modelCalls()}
+ * @param cost      <b>这一轮的钱花在哪几处</b>的明细（见 {@link Cost}）。有了它，
+ *                  「这一轮花了 N 次调用」才数得全，而且事后翻记录的人答得出那个 N 是怎么来的。
+ *                  老记录里没有这一栏，读出来是 {@code null}（那时候只有 {@code attempts} 这一个数）
  * @param detail    面向人的结论
  * @param missing   检查阶段报出的缺失依赖；没跑过检查时为空
  * @param changes   落盘过的改动（失败时这些改动已回滚，但差异本身留在这里）
@@ -117,6 +121,7 @@ public record RunRecord(
         String requirementId,
         List<String> targets,
         int attempts,
+        Cost cost,
         String detail,
         List<PlanReview.MissingItem> missing,
         List<Change> changes,
@@ -297,6 +302,67 @@ public record RunRecord(
      */
     public Set<Integer> disabledIndexes() {
         return CaseSwitch.disabledIn(caseSwitches);
+    }
+
+    /**
+     * 这一轮<b>一共调了几次模型</b>——会话视图上「这一轮花了 N 次调用」的那个 N。
+     *
+     * <p><b>它和 {@code attempts} 不是一个口径，这就是它存在的理由。</b>{@code attempts} 是
+     * <b>开发轮次</b>（第 1 轮、第 2 轮……），而一轮下来还有几处调用的钱是分开记的：
+     * 开工前现生成施工单那几次、第二段补「怎么测」那一次、生成测试代码那几次
+     * （含轮内「一条结论都没跑出来」时的自动重生成）。这些都不进轮次账，但都是用户掏的钱。
+     * 实测抓到的现场：第 2 轮界面上写着「这一轮花了 1 次调用」而实际是 3 次
+     * （开发 1 + 第二段 1 + 生成测试 1），见 §19.13。
+     *
+     * <p><b>算进这一轮的是什么、不算的又是什么</b>（口径只在这里说一次，别处一律引用它）：
+     * <ul>
+     *   <li>算：<b>点一次「运行」到它收场</b>这段时间里的全部模型调用，即 {@link Cost} 那四项；</li>
+     *   <li>不算：检查阶段那一次（它发生在轮次<b>之前</b>，是另一件事），
+     *       以及人在跑完之后点「测试代码错了 → 重新生成」那几次
+     *       （那是轮次之外的另一个动作，引擎里它不写成一次运行）。</li>
+     * </ul>
+     *
+     * <p>老记录里没有 {@code cost} 这一栏，那时只留下 {@code attempts} 这一个数——
+     * 退回它，而不是按今天的口径替它编一个（编出来的数看着更全，其实是假的）。
+     */
+    public int modelCalls() {
+        return cost == null ? attempts : cost.total();
+    }
+
+    /**
+     * 这一轮的钱花在哪几处。
+     *
+     * <p>为什么把明细一起落档，而不是只存一个总数：总数变了（从只数开发轮次改成数全）
+     * 却看不出变在哪，事后翻记录的人只会怀疑那个数。四项都对得上时间线上的那几句话
+     * （「为它花了 1 次模型调用」），所以它是可核对的，不是另说一套。
+     *
+     * @param development <b>开发轮次</b>：装配一次上下文、调一次模型、改一次代码那种轮。
+     *                    它与 {@code RunRecord.attempts} 同一个数——同一个东西不存两份，
+     *                    这里留着是为了让四项加起来就是总数（缺一项，总数就成了减法的结果）
+     * @param schedule    <b>开工前现生成施工单</b>花掉的调用（检查阶段给过单子时是 0；
+     *                    重来一次时算它花的全部次数，见 {@code DevelopmentAgent.generateSteps}）
+     * @param caseHow     <b>第二段</b>给每一条用例补「怎么测」花掉的调用。期望被改了会整批打回再要一次，
+     *                    所以它可能是 2（见 {@code CaseHowStage.MAX_ATTEMPTS}）
+     * @param testGen     <b>生成测试代码</b>花掉的调用（一次运行里的生成，含
+     *                    「一条结论都没跑出来」时带着原始错误自动重生成的那一版，
+     *                    所以它可能是 2，见 {@code TestAgent.MAX_GENERATIONS}）。
+     *                    没跑到测试阶段时是 0
+     */
+    public record Cost(int development, int schedule, int caseHow, int testGen) {
+
+        public Cost {
+            // 负数只可能来自调用方算错：它是「花了多少次」，而次数不可能是负的。
+            // 放过去的话，一个负号会悄悄把总数变小，而总数是要给人看的钱
+            if (development < 0 || schedule < 0 || caseHow < 0 || testGen < 0) {
+                throw new IllegalArgumentException("调用次数不可能是负的：" + development + "/"
+                        + schedule + "/" + caseHow + "/" + testGen);
+            }
+        }
+
+        /** 这一轮一共花了几次（= {@link RunRecord#modelCalls()}）。 */
+        public int total() {
+            return development + schedule + caseHow + testGen;
+        }
     }
 
     /**
@@ -549,7 +615,7 @@ public record RunRecord(
     private RunRecord with(List<Verdict> newVerdicts, Settlement newSettlement,
                            List<String> newRegenerated) {
         return new RunRecord(id, startedAt, status, template, prompt, acceptance, context,
-                requirementId, targets, attempts, detail, missing, changes, steps, planSteps,
+                requirementId, targets, attempts, cost, detail, missing, changes, steps, planSteps,
                 stepsSource, testCases, tests, environment, newVerdicts, newSettlement,
                 newRegenerated, timeline, coverage, refeed, unchanged, caseSwitches,
                 session, finishedAt);
@@ -558,7 +624,7 @@ public record RunRecord(
     /** 换「谁什么时候停用了哪几条」那一栏（追加式流水，见 {@link CaseSwitch}）。 */
     public RunRecord withCaseSwitches(List<CaseSwitch> newCaseSwitches) {
         return new RunRecord(id, startedAt, status, template, prompt, acceptance, context,
-                requirementId, targets, attempts, detail, missing, changes, steps, planSteps,
+                requirementId, targets, attempts, cost, detail, missing, changes, steps, planSteps,
                 stepsSource, testCases, tests, environment, verdicts, settlement,
                 regenerated, timeline, coverage, refeed, unchanged, newCaseSwitches,
                 session, finishedAt);

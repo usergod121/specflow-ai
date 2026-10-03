@@ -362,7 +362,9 @@ public final class DevelopmentAgent {
         int budget = spec.verify().roundBudget(steps.list().size());
         boolean split = steps.split();
         int rounds = 0;
-        List<PatchApplier.FileChange> lastChanges = List.of();
+        // <b>本轮的改动是「所有步」并起来的那一份</b>，不是最后一步那一份（见 RoundChanges）：
+        // 留档里的 changes、界面上的轮次间 diff、第二段拿到的 diff 都取它
+        RoundChanges roundChanges = new RoundChanges();
         List<VerificationResult> lastResults = List.of();
         StepState lastState = StepState.SUCCESS;
         // 单步执行时进入点就是运行起点，拍一次就够；分步时每一步各拍一次
@@ -375,8 +377,11 @@ public final class DevelopmentAgent {
             if (split && listener.cancelled()) {
                 log.info("收到中断请求，停在下一步之前（已完成 {} 轮）", rounds);
                 closeRun(snapshot, true, rounds, "人工中断");
-                return AgentResult.cancelled(rounds, lastChanges, lastResults);
+                return AgentResult.cancelled(rounds, roundChanges.list(), lastResults);
             }
+            // 本步<b>进入点</b>那一版账：本步回滚重试时用它退回去（见 restoreStep 的调用点）。
+            // 拍在步首而不是落盘处，因为「这一步开始前」才是它的含义
+            Map<String, PatchApplier.FileChange> roundAtStepEntry = roundChanges.snapshot();
             if (split) {
                 // 进入点只存内存：它只服务于「本步重试前回滚」这一件事，用完即弃。
                 // 落盘的话，崩溃之后它会变成一个和 WorkspaceSnapshot 抢恢复判据的目录
@@ -402,12 +407,12 @@ public final class DevelopmentAgent {
                     if (listener.cancelled()) {
                         log.info("收到中断请求，停在下一轮之前（已完成 {} 轮）", rounds);
                         closeRun(snapshot, split, rounds, "人工中断");
-                        return AgentResult.cancelled(rounds, lastChanges, lastResults);
+                        return AgentResult.cancelled(rounds, roundChanges.list(), lastResults);
                     }
                     // 总轮次是最后一道闸（0 = 不设闸，见 VerifySpec.roundBudget）
                     if (budget > 0 && rounds >= budget) {
                         // 这一轮还没落盘：单步时磁盘仍等于运行起点，分步时前面几步还在
-                        return fail(snapshot, split, rounds, lastChanges, lastResults,
+                        return fail(snapshot, split, rounds, roundChanges.list(), lastResults,
                                 "总轮次已用尽（上限 " + budget + " 轮）。"
                                         + (split ? "施工单共 " + steps.list().size() + " 步，" : "")
                                         + "要么调大 verify.max-rounds，要么把这一步拆小一点");
@@ -448,7 +453,7 @@ public final class DevelopmentAgent {
                         if (conflictRetries >= MAX_CONFLICT_RETRIES) {
                             log.warn("补丁冲突重试次数已用尽：{}", e.getMessage());
                             // 这一轮一个字节都没写：单步时磁盘仍等于运行起点，分步时前面几步还在
-                            return fail(snapshot, split, rounds, lastChanges, lastResults,
+                            return fail(snapshot, split, rounds, roundChanges.list(), lastResults,
                                     "补丁始终无法应用：" + e.getMessage());
                         }
                         conflictRetries++;
@@ -466,7 +471,7 @@ public final class DevelopmentAgent {
                         closeRun(snapshot, true, rounds, "落盘失败");
                         throw e;
                     }
-                    lastChanges = applied.changes();
+                    roundChanges.add(applied.changes());
                     lastResults = applied.results();
 
                     VerificationResult failure = firstFailure(applied.results());
@@ -486,7 +491,7 @@ public final class DevelopmentAgent {
                         log.warn("校验失败且不是改代码能解决的：{}", failure.output());
                         // 这一轮的改动还在盘上（还没走到回滚那一步），所以必须撤
                         closeRun(snapshot, true, rounds, "校验失败且不是改代码能解决的");
-                        return AgentResult.needsEnvironment(rounds, lastChanges, lastResults,
+                        return AgentResult.needsEnvironment(rounds, roundChanges.list(), lastResults,
                                 CompileFailure.explain(failure.output()) + System.lineSeparator()
                                         + "磁盘已回滚到本次运行前。");
                     }
@@ -508,14 +513,14 @@ public final class DevelopmentAgent {
                     if (signature.equals(lastFailureSignature)) {
                         log.warn("连续两轮同一个错误，本步停止重试：{}", signature);
                         // 同样：本轮的改动还在盘上
-                        return fail(snapshot, true, rounds, lastChanges, lastResults,
+                        return fail(snapshot, true, rounds, roundChanges.list(), lastResults,
                                 "第 " + step.index() + " 步连续两轮都卡在同一个错误上，再重试也是白试："
                                         + System.lineSeparator() + "  " + signature);
                     }
                     lastFailureSignature = signature;
                     if (verificationRetries >= spec.verify().maxRetry()) {
                         log.warn("第 {} 步的校验重试次数已用尽：{}", step.index(), failure.verifier());
-                        return fail(snapshot, true, rounds, lastChanges, lastResults,
+                        return fail(snapshot, true, rounds, roundChanges.list(), lastResults,
                                 "第 " + step.index() + " 步的校验未通过且重试次数已用尽："
                                         + RepairFeedback.summarize(applied.results()));
                     }
@@ -524,6 +529,10 @@ public final class DevelopmentAgent {
                     // 回滚到本步的进入点再重试：改动留在盘上的话，
                     // 下一轮的锚点必然对不上（它看到的是 run 开始时那份上下文）
                     restoreStep(entry, step, rounds, split, "校验未通过");
+                    // 磁盘回到本步进入点了，账也要跟着退回去：那一版已经不在盘上了，
+                    // 留着它就是留档里一条「改过但又没了」的假改动（和 RunRecorder 里
+                    // 那本步级账的清空是同一件事，见 stepRestored）
+                    roundChanges.restore(roundAtStepEntry);
                     messages.add(ChatMessage.user(RepairFeedback.forVerification(failure)));
                 }
             } finally {
@@ -538,7 +547,7 @@ public final class DevelopmentAgent {
         // 只有人硬放的、最后一步被标成中间态的单子会走到这儿
         if (lastState == StepState.INTERMEDIATE) {
             log.warn("施工单最后一步是中间态且编译未通过，这次运行不能算成功");
-            return fail(snapshot, true, rounds, lastChanges, lastResults,
+            return fail(snapshot, true, rounds, roundChanges.list(), lastResults,
                     "施工单最后一步被标成「中间态」且编译未通过：磁盘上的代码可能编不过。"
                             + "施工单本该保证最后一步之后项目能编译，请修正施工单后重跑");
         }
@@ -553,11 +562,11 @@ public final class DevelopmentAgent {
         if (approved != null && !approved.cases().isEmpty() && listener.cancelled()) {
             log.info("收到中断请求，测试阶段没开始就停下");
             closeRun(snapshot, true, rounds, "人工中断");
-            return AgentResult.cancelled(rounds, lastChanges, lastResults);
+            return AgentResult.cancelled(rounds, roundChanges.list(), lastResults);
         }
         TestOutcome tests;
         try {
-            tests = testPhase(spec, approved, lastChanges);
+            tests = testPhase(spec, approved, roundChanges.list());
         } catch (EnvProblem problem) {
             // 环境起不来：这就是十五.5 里那一档「立刻停 + 原始错误 + 待办」。
             // 落成环境问题的测试结论，下面那段收场会**留下现场**并把原因交给人——
@@ -577,7 +586,7 @@ public final class DevelopmentAgent {
                 // 这一步和下面测试没过那一档是同一个动作，所以不能再走 closeRun（那会回滚）
                 snapshot.markPending();
             }
-            return AgentResult.needsEnvironment(rounds, lastChanges, withTests(lastResults, tests),
+            return AgentResult.needsEnvironment(rounds, roundChanges.list(), withTests(lastResults, tests),
                     tests.detail());
         }
         if (snapshot != null) {
@@ -591,10 +600,10 @@ public final class DevelopmentAgent {
             // 测试产物照旧留在 tools/ 里，等用户看完失败清单自己决定走哪条路。
             // 回喂要等人点「下一轮」（那时才带上 refeed，见 Refeed）
             log.info("测试没全过，改动留在磁盘上等人处置（判定：{}）", tests.worst());
-            return AgentResult.testsFailed(rounds, lastChanges, withTests(lastResults, tests),
+            return AgentResult.testsFailed(rounds, roundChanges.list(), withTests(lastResults, tests),
                     tests.detail());
         }
-        return finish(rounds, lastChanges, withTests(lastResults, tests));
+        return finish(rounds, roundChanges.list(), withTests(lastResults, tests));
     }
 
     /**
@@ -633,7 +642,7 @@ public final class DevelopmentAgent {
         // （见 CaseHowStage），对不上就整批打回重来。
         CaseHowStage.Result refined = new CaseHowStage(assembler, templates, llm)
                 .fill(spec, approved.cases(), changes);
-        listener.casesRefined(refined.cases(), refined.note());
+        listener.casesRefined(refined.cases(), refined.note(), refined.calls());
         // 先说起点再动手：这一段里界面拿不到任何进度（只有一次模型调用加一次脚本执行），
         // 「开始了、大概要多久、中途停不下来」这三件事只能由引擎在这一刻告诉界面。
         // 条数用补完之后那份：它和上面那一行「怎么测」说的是同一件事
@@ -1270,6 +1279,64 @@ public final class DevelopmentAgent {
 
     /** 落盘与校验的成对结果，避免用可变字段在方法之间传值。 */
     private record Applied(List<PatchApplier.FileChange> changes, List<VerificationResult> results) {
+    }
+
+    /**
+     * <b>本轮</b>的改动：所有步并起来的那一份。
+     *
+     * <p><b>为什么必须单独攒一份。</b>引擎每一步各落一次盘，而
+     * {@link AgentResult#changes()} 以前拿的是「最后一次落盘」那一份——多步的一轮跑完，
+     * 前面几步的改动就没了。实测踩到过（§19.13）：一轮两步，第一步新建 {@code TextStats.java}、
+     * 第二步新建 {@code Label.java}，留档里的 {@code changes} 与界面上的轮次间 diff
+     * 都只剩 {@code Label.java}——那一轮到底改了什么，看起来只有一半。会话视图是给
+     * 「这件事到现在做了什么」用的，丢一半改动会让人误判。
+     *
+     * <p>三条规矩：
+     * <ul>
+     *   <li><b>按路径归并</b>：两步碰同一个文件时后一步的账覆盖前一步（字节数与 diff
+     *       都是那一刻磁盘上的样子），只有「新建」是<b>或</b>——本轮新建过它，这一轮就算新建。
+     *       每一步各自的那一份仍然逐字留在 {@code steps[].changes} 里（见 {@code RunRecorder}），
+     *       所以「哪一步写的哪一版」照样查得到，两边不互相顶替；</li>
+     *   <li><b>步内重试要退回去</b>：那一版已经被回滚了，账留着就是一条「改过但又没了」的
+     *       假改动（见 {@link #restoreStep} 的调用点）；</li>
+     *   <li><b>整轮回滚时留着</b>：它记的是「已经回滚了的改动」，{@code AgentResult.changes}
+     *       从以前起就是这个口径（回滚之后磁盘上再也算不出差异，留档是唯一还记得的地方）。</li>
+     * </ul>
+     */
+    private static final class RoundChanges {
+
+        /** 按路径归并；{@link LinkedHashMap} 的顺序 = 第一次碰它的顺序，和界面上那几块 diff 一致。 */
+        private final Map<String, PatchApplier.FileChange> byPath = new LinkedHashMap<>();
+
+        /** 把这一步刚落盘的那一份并进来。 */
+        void add(List<PatchApplier.FileChange> changes) {
+            for (PatchApplier.FileChange change : changes) {
+                PatchApplier.FileChange before = byPath.get(change.relative());
+                byPath.put(change.relative(),
+                        before != null && before.created() && !change.created()
+                                // 本轮新建过它，后来又被改过：对这一轮而言它仍然是「新建」。
+                                // 只改这一个比特，字节数与 diff 仍用最后那一版的（那是盘上的样子）
+                                ? new PatchApplier.FileChange(change.file(), change.relative(), true,
+                                        change.bytes(), change.diff())
+                                : change);
+            }
+        }
+
+        /** 此刻的样子。步首拍一份，本步回滚之后拿它退回去。 */
+        Map<String, PatchApplier.FileChange> snapshot() {
+            return new LinkedHashMap<>(byPath);
+        }
+
+        /** 退回某一步开始前那副样子：那一步写进去的账整批撤掉。 */
+        void restore(Map<String, PatchApplier.FileChange> snapshot) {
+            byPath.clear();
+            byPath.putAll(snapshot);
+        }
+
+        /** 本轮的改动（每次现取一份不可变列表：调用方是各处收场，谁也不该改到内部那一份）。 */
+        List<PatchApplier.FileChange> list() {
+            return List.copyOf(byPath.values());
+        }
     }
 
     /**

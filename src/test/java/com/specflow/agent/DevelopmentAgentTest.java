@@ -1409,6 +1409,111 @@ class DevelopmentAgentTest {
     }
 
     @Test
+    @DisplayName("一轮多步：留档里的改动是**所有步**并起来的那一份，不是最后一步")
+    void keepsEveryStepsChangesAsTheRoundsChanges() throws IOException {
+        // 一轮两步、一步新建一个文件——实测里正是这一种漏掉了第一步新建的那个类：
+        // 第一步建 TextStats.java、第二步建 Label.java，留档与轮次间 diff 只剩后者（§19.13）
+        ScriptedLlm llm = new ScriptedLlm(
+                create("New.java", "class New {\n    int n = 1;\n}"),
+                create("Other.java", "class Other {\n    int o = 2;\n}"));
+        Spec spec = TestSpecs.spec(List.of("New.java", "Other.java"));
+        PlanReview approved = planWithSteps(step(1, "先建 New", false, "New.java"),
+                step(2, "再建 Other", false, "Other.java"));
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+
+        AgentResult result = new DevelopmentAgent(root, ProjectConfig.DEFAULT,
+                TemplateRegistry.empty(), llm, List.of(new ScriptedVerifier(passed())),
+                RunRecorder.start(store, spec, approved, AgentListener.NOOP)).run(spec, approved);
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(result.changes()).extracting(PatchApplier.FileChange::relative)
+                .as("运行结果里就该是两步的改动").containsExactly("New.java", "Other.java");
+
+        RunRecord record = store.load(store.list().get(0).id());
+        assertThat(record.changes()).extracting(RunRecord.Change::path)
+                .as("留档里也要全：界面上的轮次间 diff 读的就是它，丢一半会让人误判这一轮做了什么")
+                .containsExactly("New.java", "Other.java");
+        assertThat(record.changes()).allSatisfy(change ->
+                assertThat(change.created()).as("两个都是这一步新建的").isTrue());
+        assertThat(record.steps()).extracting(RunRecord.Step::index)
+                .as("两步各自的账照旧").containsExactly(1, 2);
+        assertThat(record.steps().get(0).changes()).extracting(RunRecord.Change::path)
+                .as("每一步自己那一份不动：哪一步写了哪一版，翻 steps 查得到")
+                .containsExactly("New.java");
+        assertThat(record.steps().get(1).changes()).extracting(RunRecord.Change::path)
+                .containsExactly("Other.java");
+    }
+
+    /**
+     * 两步碰同一个文件时并成<b>一条</b>，不是两条。
+     *
+     * <p>两条的话，界面上的「改了哪些文件」会把同一个文件说两遍、diff 画两遍；
+     * 而合并后只剩「最后那一刻的样子」也不要紧——每一步各自那一版逐字留在
+     * {@code steps[].changes} 里，两边合起来才是完整且可追溯的那份账。
+     */
+    @Test
+    @DisplayName("两步碰同一个文件：并成一条，「新建」只要本轮建过一次就算新建")
+    void mergesTheSameFileAcrossSteps() {
+        ScriptedLlm llm = new ScriptedLlm(
+                create("New.java", "class New {\n    int n = 1;\n}"),
+                patch("New.java", "    int n = 1;", "    int n = 2;"));
+        Spec spec = TestSpecs.spec(List.of("New.java"));
+        PlanReview approved = planWithSteps(step(1, "先建出来", false, "New.java"),
+                step(2, "再改一处", false, "New.java"));
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+
+        AgentResult result = new DevelopmentAgent(root, ProjectConfig.DEFAULT,
+                TemplateRegistry.empty(), llm, List.of(new ScriptedVerifier(passed())),
+                RunRecorder.start(store, spec, approved, AgentListener.NOOP)).run(spec, approved);
+
+        assertThat(result.changes()).singleElement().satisfies(change -> {
+            assertThat(change.relative()).isEqualTo("New.java");
+            assertThat(change.created())
+                    .as("本轮新建过它：后面那一步是「修改」，但这一轮对这个文件而言就是新建").isTrue();
+            assertThat(change.diff()).as("差异用最后那一版的").contains("int n = 2;");
+        });
+        RunRecord record = store.load(store.list().get(0).id());
+        assertThat(record.changes()).extracting(RunRecord.Change::path)
+                .as("并成一条，不重复").containsExactly("New.java");
+        assertThat(record.steps()).hasSize(2);
+        assertThat(record.steps().get(0).changes()).extracting(RunRecord.Change::diff)
+                .as("第一步新建那一版照旧留在它自己名下").singleElement()
+                .satisfies(diff -> assertThat(diff).contains("int n = 1;"));
+    }
+
+    /**
+     * 步内重试前被回滚掉的那一版，<b>不许留在本轮改动里</b>。
+     *
+     * <p>它和 {@link #stepChangesAreForgottenWhenTheStepRolledBack} 是同一件事的两半：
+     * 那一半管的是步级账（{@code steps[].changes}），这一半管的是本轮这份并集。
+     * 只在一边抹掉，留档里就会出现「这一轮改了 New.java」而磁盘上根本没有它——
+     * 而这一栏正是用户事后判断「我的代码现在是什么样」的依据。
+     */
+    @Test
+    @DisplayName("步内重试回滚掉的那一版，本轮改动里也不许留着")
+    void forgetsRolledBackAttemptsFromTheRoundsChanges() {
+        // 第一步改 Foo（过）→ 第二步第一版新建 New.java（校验没过、回滚），重试那一版改建 Other.java
+        ScriptedLlm llm = new ScriptedLlm(
+                patch("int a = 1;", "int a = 2;"),
+                create("New.java", "class New {\n    int n = 1;\n}"),
+                create("Other.java", "class Other {\n    int o = 2;\n}"));
+        Spec spec = TestSpecs.spec(List.of("Foo.java", "New.java", "Other.java"));
+        PlanReview approved = planWithSteps(step(1, "先改 Foo", false, "Foo.java"),
+                step(2, "再建一个", false, "New.java"));
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+
+        AgentResult result = new DevelopmentAgent(root, ProjectConfig.DEFAULT,
+                TemplateRegistry.empty(), llm, List.of(new ScriptedVerifier(passed(), failed(), passed())),
+                RunRecorder.start(store, spec, approved, AgentListener.NOOP)).run(spec, approved);
+
+        assertThat(result.status()).isEqualTo(AgentResult.Status.SUCCESS);
+        assertThat(result.changes()).extracting(PatchApplier.FileChange::relative)
+                .as("第一步的改动留着；被回滚掉的那一版不许进来")
+                .containsExactly("Foo.java", "Other.java");
+        assertThat(root.resolve("New.java")).as("回滚是实的：那个文件确实没了").doesNotExist();
+    }
+
+    @Test
     @DisplayName("回滚按目标清单全部文件做，不只是这一步声明过的那些")
     void rollsBackFilesTheStepNeverDeclared() throws IOException {
         Files.writeString(root.resolve("Bar.java"), BAR_ORIGINAL);
@@ -1686,6 +1791,16 @@ class DevelopmentAgentTest {
     private String patch(String file, String search, String replace) {
         return "<<<<<<< SEARCH " + file + "\n" + search + "\n=======\n" + replace
                 + "\n>>>>>>> REPLACE\n";
+    }
+
+    /**
+     * <b>新建</b>一个文件的补丁块：SEARCH 那一栏留空。
+     *
+     * <p>为什么不复用 {@link #patch}：它会把空锚点写成「一个空行」，那是另一个形状
+     * （协议里「整份新建」就是 SEARCH 栏直接跟分隔行，见 {@code SearchReplaceStrategy}）。
+     */
+    private static String create(String file, String content) {
+        return "<<<<<<< SEARCH " + file + "\n=======\n" + content + "\n>>>>>>> REPLACE\n";
     }
 
     /** 一份施工单：给出的每一步都动 Foo.java，除非另说。 */

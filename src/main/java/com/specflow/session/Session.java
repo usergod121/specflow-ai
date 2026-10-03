@@ -69,7 +69,11 @@ public record Session(String id, List<Round> rounds) {
      * @param detail            这一轮面向人的结论
      * @param startedAt         开工时刻，ISO 格式
      * @param finishedAt        跑完时刻，ISO 格式；老记录里没有 → 空串（耗时那一栏于是不显示）
-     * @param calls             这一轮调了几次模型（{@code RunRecord.attempts}）
+     * @param calls             这一轮花了<b>几次模型调用</b>（{@code RunRecord.modelCalls}）：
+     *                          开发轮次 + 现生成施工单 + 第二段补「怎么测」+ 生成测试代码，
+     *                          口径与不算进来的那两笔见那一边的注释。老记录只有开发轮次
+     * @param cost              这一轮那几笔调用的明细（老记录没有这一栏时是 {@code null}）；
+     *                          界面把它摊在成本那句话上，让「这个数是怎么来的」看得见
      * @param millis            这一轮耗时（毫秒）；算不出来时是 0
      * @param snapshot          这一轮拍的那份快照的目录名；没拍到（或者已经撤掉了）是 {@code null}
      * @param undone            这一轮被<b>人撤回了</b>
@@ -92,6 +96,7 @@ public record Session(String id, List<Round> rounds) {
             String startedAt,
             String finishedAt,
             int calls,
+            RunRecord.Cost cost,
             long millis,
             String snapshot,
             boolean undone,
@@ -228,7 +233,9 @@ public record Session(String id, List<Round> rounds) {
         TestOutcome tests = record.tests();
         Round round = new Round(record.session().round(), record.id(), record.status(), record.detail(),
                 record.startedAt(), record.finishedAt() == null ? "" : record.finishedAt(),
-                record.attempts(), millisOf(record),
+                // 成本用 modelCalls 而不是 attempts：attempts 只是开发轮次，一轮下来
+                // 还有第二段、生成测试那几笔（口径见 RunRecord.modelCalls），实测差过 1 vs 3
+                record.modelCalls(), record.cost(), millisOf(record),
                 // 收场那句话由记录那一层算（`RunRecord.settlementSummary`）：会话里的中断
                 // 撤的是整个会话，说法和单次运行不一样，而「属不属于会话」只有它知道
                 snapshot, undone, choice, record.settlementSummary(),

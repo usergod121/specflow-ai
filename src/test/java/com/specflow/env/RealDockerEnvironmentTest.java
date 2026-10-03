@@ -603,7 +603,9 @@ class RealDockerEnvironmentTest {
     /** 一条「跑过测试、留了产物」的运行记录，给收场用。 */
     private RunRecord recordWith(Path artifacts) {
         return new RunRecord("20260930-120000", "2026-09-30T12:00", "TESTS_FAILED", null, "做点什么",
-                List.of(), List.of(), null, List.of("Foo.java"), 1, "一条没过", List.of(),
+                List.of(), List.of(), null, List.of("Foo.java"), 1,
+                // 成本明细留空（老记录的形状）：这一条只关心收场怎么删产物
+                null, "一条没过", List.of(),
                 List.of(), List.of(), List.of(), null, List.of(),
                 new TestOutcome(root.relativize(artifacts).toString().replace('\\', '/'),
                         List.of(), 1, 1,

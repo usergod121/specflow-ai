@@ -979,6 +979,8 @@ const caseApi = load('index.html', [
   'verdictLabel', 'verdictsOf', 'settlementText', 'judgementPayload',
   // 会话（多轮）：顶部状态条、历史轮次、某一轮的终态说法、刷新页面时借哪一轮补界面
   'sessionBarHtml', 'sessionHistoryHtml', 'roundStatusMeta', 'sessionRoundFallback',
+  // 成本那句「这一轮花了 N 次调用」的来历：这个数是怎么加出来的（§19.13）
+  'costBreakdown',
 ], '// ---------- 用例与测试结果 ----------', 'async function refreshPending');
 
 const {
@@ -991,7 +993,7 @@ const {
   coverageProblemsHtml, caseTrace, caseAcceptance,
   testsActionsHtml, testsPanelHtml, rateOfAll,
   VERDICT, verdictLabel, verdictsOf, settlementText, caseListForTests,
-  sessionBarHtml, sessionHistoryHtml, roundStatusMeta, sessionRoundFallback,
+  sessionBarHtml, sessionHistoryHtml, roundStatusMeta, sessionRoundFallback, costBreakdown,
   disabledOf, liveCases, isDisabledCase, disabledRateHtml, disabledLogHtml, stageNoteHtml,
   DISABLE_HINT, RECOVER_HINT,
   chipCases,
@@ -1342,6 +1344,7 @@ const sessionPayload = {
   sessionPassed: 8,
   sessionTotal: 15,
   roundCalls: 12,
+  roundCost: { development: 3, schedule: 2, caseHow: 1, testGen: 6 },
   roundMillis: 421338,
   roundDuration: '7 分 1 秒',
   current: round3,
@@ -1370,6 +1373,25 @@ check(bar.includes('会话累计只算没被撤回的轮次'),
 check(bar.includes('这一轮花了 12 次调用 · 7 分 1 秒'),
     '本轮调用次数与耗时照服务端那句人话写（不自己拿毫秒拼一个）：'
         + JSON.stringify((bar.match(/这一轮花了[^<]*/) || [''])[0]));
+// 成本那句的来历（§19.13）：这个数以前只数开发轮次，实测第 2 轮显示 1、实际 3。
+// 只把 1 改成 3，用户看到一个自己解释不了的数字；四处摊开，他才看得懂口径
+check(bar.includes('这一轮的调用花在哪：开发 3 · 现生成施工单 2 · 补「怎么测」 1 · 生成测试 6'),
+    '成本那句要把「花在哪几处」摊开（悬停可见）：'
+        + JSON.stringify((bar.match(/title="这一轮的调用花在哪[^"]*/) || [''])[0]));
+check(bar.includes('检查阶段那一次、以及跑完之后点「重新生成」那几次不算在这一轮里'),
+    '口径要连「不算的是什么」一起说：只说算了哪几处，用户会以为检查阶段那一次也在里面');
+// 老记录里没有 cost 那一栏（引擎那时候没记）：数字照旧，但不画那句来历——
+// 「算不出来」和「一分钱都没花」是两件事，编一句出来比不画糟得多
+const oldCostBar = sessionBarHtml({ ...sessionPayload, roundCost: null }, {});
+check(oldCostBar.includes('这一轮花了 12 次调用')
+        && !oldCostBar.includes('title="这一轮的调用花在哪'),
+    '老记录（引擎给不出明细）时不画那句来历，数字照旧');
+check(costBreakdown(null) === ''
+        && costBreakdown({ development: 0, schedule: 0, caseHow: 0, testGen: 0 }) === '',
+    '算不出明细、或四项都是 0 时那句来历是空的（列一串 0 只会把真花过钱的那两处埋掉）');
+check(costBreakdown({ development: 1, schedule: 0, caseHow: 1, testGen: 1 })
+        === '开发 1 · 补「怎么测」 1 · 生成测试 1',
+    '零的那几处不列（一轮里没走到施工单生成是常事）');
 check(bar.includes(sessionPayload.softHint),
     '软提示有值时原样摆出来（温和、不阻塞）：'
         + JSON.stringify((bar.match(/<div class="session-hint">[^<]*/) || [''])[0]));
@@ -1419,6 +1441,26 @@ check(historyHtml.includes('<div class="add">+b</div>')
 check(sessionHistoryHtml({ ...sessionPayload, history: [{ ...round3, verdicts: [{ index: 7, owner: 'KNOWN' }] }] })
     .includes('用例 7：不重要 / 误报（已知失败）'),
     '老记录里的判决没有 label 时退回 owner 的说法（不写一句「undefined」）');
+
+// 一轮多步时改动要画全（§19.13）：留档那一栏以前只剩最后一步，实测里第 1 轮新建的
+// TextStats.java 在界面上根本看不见——会话视图是给「这件事到现在做了什么」用的，
+// 少画一个文件，用户就会以为那一轮只动了一个
+console.log('会话历史：一轮多步，改动要画全：');
+const twoChangeHtml = sessionHistoryHtml({
+  ...sessionPayload,
+  history: [{
+    ...round3, round: 4, recordId: '20261003-104000-000',
+    changes: [
+      { path: 'src/TextStats.java', created: true, bytes: 613, diff: '+class TextStats {}' },
+      { path: 'src/Label.java', created: true, bytes: 687, diff: '+class Label {}' },
+    ],
+  }],
+});
+check(twoChangeHtml.includes('新建 src/TextStats.java') && twoChangeHtml.includes('新建 src/Label.java'),
+    '一轮里所有步的改动都要列出来（少画一条，用户会以为这一轮没动那个文件）');
+check(twoChangeHtml.includes('<div class="add">+class TextStats {}</div>')
+    && twoChangeHtml.includes('<div class="add">+class Label {}</div>'),
+    '两份 diff 也都要画：轮次间 diff 看的就是它');
 
 console.log('会话历史：撤回过 / 没留下改动的那两种形态：');
 const round3Block = historyHtml.slice(historyHtml.indexOf('data-round="3"'), historyHtml.indexOf('data-round="2"'));

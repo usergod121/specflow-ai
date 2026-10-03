@@ -51,6 +51,7 @@ final class SessionPayload {
             payload.put("sessionPassed", 0);
             payload.put("sessionTotal", 0);
             payload.put("roundCalls", 0);
+            payload.put("roundCost", null);
             payload.put("roundMillis", 0L);
             payload.put("roundDuration", "");
             payload.put("current", null);
@@ -73,6 +74,9 @@ final class SessionPayload {
         payload.put("sessionPassed", session.passed());
         payload.put("sessionTotal", session.total());
         payload.put("roundCalls", current == null ? 0 : current.calls());
+        // 那个数是怎么来的：界面把它摊在成本那句话上（悬停可见）。老记录没有这一栏时给 null，
+        // 界面于是不画那句来历——「算不出来」和「四项都是 0」是两件事
+        payload.put("roundCost", current == null ? null : current.cost());
         payload.put("roundMillis", current == null ? 0L : current.millis());
         payload.put("roundDuration", current == null ? "" : duration(current.millis()));
         payload.put("current", current == null ? null : round(current));
