@@ -190,6 +190,12 @@ public final class CaseHowStage {
                 + "\n" + TestProtocol.firstStageList(frozen);
 
         List<String> complaints = List.of();
+        // 每一版「哪里不按规矩」都留下来（带版号），而不是只留最后一次。
+        // 为什么：只留最后一次时，第 1 版「想改期望被拦下」这条信号会被第 2 版的别的毛病
+        // （比如漏写一条）整段挤掉——而它正是这一段最该报出来的那件事（见 Result.note 的注释）。
+        // complaints 仍然只装**最近一版**：它是喂回给模型的「上一版哪里不对」，
+        // 把前几版的旧账一起塞进去，模型会去修一个当前这一版根本不存在的问题
+        List<String> history = new ArrayList<>();
         List<Row> lastRows = List.of();
         int calls = 0;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -205,12 +211,12 @@ public final class CaseHowStage {
             List<String> problems = problems(frozen, rows);
             if (problems.isEmpty()) {
                 log.info("第二段补上了 {} 条用例的「怎么测」（花了 {} 次调用）", frozen.size(), calls);
-                return new Result(apply(frozen, rows), calls,
-                        "第二段补上了 " + frozen.size() + " 条用例的「怎么测」（从哪个入口/文件进、"
-                                + "造什么数据、看哪个结果），期望与分级照旧、一个字都没改（机器逐字核过）。"
-                                + "为它花了 " + calls + " 次模型调用。");
+                return new Result(apply(frozen, rows), calls, successNote(frozen, history, calls));
             }
             log.warn("第二段写回来的东西不按规矩（第 {} 版）：{}", attempt, String.join("；", problems));
+            for (String problem : problems) {
+                history.add("第 " + attempt + " 版：" + problem);
+            }
             complaints = problems;
         }
         // 到这里说明两版都不按规矩：**期望一个字都不许改**，所以只把「编号对得上、期望逐字相同」
@@ -218,8 +224,29 @@ public final class CaseHowStage {
         // 那正是「需求被代码稀释」的现场
         List<PlanReview.TestCase> kept = apply(frozen, lastRows);
         log.warn("第二段两次都没按规矩，只补了对得上的那几条，差异交给人看：{}",
-                String.join("；", complaints));
-        return new Result(kept, calls, refusalNote(frozen, kept, complaints, calls));
+                String.join("；", history));
+        return new Result(kept, calls, refusalNote(frozen, kept, history, calls));
+    }
+
+    /**
+     * 补成功时那句话。
+     *
+     * <p>为什么成功也要把前几版的毛病说出来：第 1 版很可能正是<b>想改期望被机器拦下</b>、
+     * 第 2 版才守规矩的。「最后成功了」不等于「没发生过」——「它在照着代码改需求」的第一个信号
+     * 就是那一次，把它咽掉，人就只能在事后从「怎么这一版这么慢」里猜。
+     *
+     * @param history 每一版不按规矩的地方（带版号），一次都没出问题时是空表
+     */
+    private static String successNote(List<PlanReview.TestCase> frozen, List<String> history, int calls) {
+        StringBuilder out = new StringBuilder("第二段补上了 " + frozen.size()
+                + " 条用例的「怎么测」（从哪个入口/文件进、造什么数据、看哪个结果），"
+                + "期望与分级照旧、一个字都没改（机器逐字核过）。为它花了 " + calls
+                + " 次模型调用。");
+        if (!history.isEmpty()) {
+            out.append("它前几版不按规矩的地方（引擎逐条核出来、当场拦下，一个字都没进结果）：")
+                    .append(String.join("；", history)).append("。");
+        }
+        return out.toString();
     }
 
     /**
@@ -342,13 +369,19 @@ public final class CaseHowStage {
         return out.toString();
     }
 
-    /** 两次都对不上时那段话：留下什么、缺什么、它想改什么，逐条说清。 */
+    /**
+     * 两次都对不上时那段话：留下什么、缺什么、它想改什么，逐条说清。
+     *
+     * @param history 每一版不按规矩的地方（带版号）。<b>不是「最后一版」</b>：
+     *                第 1 版想改期望、第 2 版改成漏写一条时，两条都要在——只报后一条
+     *                就把「它在照着代码改需求」这个最该看见的信号丢了（见 {@code fill} 的注释）
+     */
     private static String refusalNote(List<PlanReview.TestCase> frozen,
                                       List<PlanReview.TestCase> kept,
-                                      List<String> problems, int calls) {
+                                      List<String> history, int calls) {
         long filled = kept.stream().filter(one -> !one.how().isEmpty()).count();
         StringBuilder out = new StringBuilder("第二段两次都没按规矩来（花了 " + calls + " 次模型调用）：")
-                .append(String.join("；", problems))
+                .append(String.join("；", history))
                 .append("。对得上的 ").append(filled).append('/').append(frozen.size())
                 .append(" 条已经补上「怎么测」，其余几条那一栏仍然空着——")
                 .append("**期望一个字都没改**：它想改的那些被机器拦下了（期望与分级一律取自第一段）。")
@@ -357,16 +390,21 @@ public final class CaseHowStage {
     }
 
     /**
-     * 第二段的依据：这次改动的 diff。
+     * 第二段要看的改动：这次改了哪些文件、改了什么。
      *
      * <p>为什么非给它 diff、而不只是「目标文件现在长什么样」：第二段要回答的是
      * 「<b>这次</b>改了什么，所以从哪儿验」——整份文件是现状，diff 才是这次的改动。
+     *
+     * <p><b>但它不是第二段看到的全部。</b>这一段只是拼在用户消息里的一节，前面还有
+     * 需求、验收标准、约束、上下文依赖、目标文件全文与第一段那份清单（见 {@code fill}）。
+     * 这一节的措辞不能说成「这是唯一依据」：说成那样，模型会以为可以不管需求和验收标准，
+     * 只照着 diff 写「怎么测」——而那正是「需求被代码稀释」的入口。
      *
      * <p>太长时按文件掐，并<b>明说掐了</b>（还差多少字符、完整内容在磁盘上哪个文件）：
      * 静默截断会让它以为改动就这么多，于是把「怎么测」写在半截事实上。
      */
     private static String diffSection(List<PatchApplier.FileChange> changes) {
-        StringBuilder out = new StringBuilder("## 这次改动的 diff（第二段的唯一依据）\n");
+        StringBuilder out = new StringBuilder("## 这次改动的 diff（这一轮改了什么，以它为准）\n");
         if (changes == null || changes.isEmpty()) {
             out.append("这一次没有改任何文件。那就照第一段那份清单写「怎么测」："
                     + "从哪个入口/文件进、造什么数据、看哪个结果。\n");

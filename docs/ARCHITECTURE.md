@@ -139,14 +139,23 @@ spec.yaml ──SpecLoader──► Spec ──SpecValidator──► 合法 Spe
 | 想加什么 | 实现哪里 | 需要改动 |
 | --- | --- | --- |
 | 新的落盘方式（AST 合并、结构化插入） | 实现 `PatchStrategy`，登记进 `PatchStrategies` | 不动 Agent / CLI / 校验层 |
-| 测试校验（按需求派生用例并执行） | 实现 `Verifier`，加入 `RunCommand.verifiers()` | Agent 已经按列表顺序执行并在首个失败处停止 |
 | 新的模型服务 | `LlmConfig.baseUrl` 换地址即可（协议兼容 OpenAI） | 不动编排 |
 | 新的需求写法 | 往 `.specflow/templates/` 放一个 yaml | 不需要重新编译 |
 | 新的进度展示（终端进度条、桌面通知） | 实现 `AgentListener` 传给 `DevelopmentAgent` | Web 界面就是这么加的 |
 
-测试 Agent 的位置已经在架构里留出来了：它与编译校验在流程上的位置完全一样，
-都是「写入之后、收尾之前的一段可失败检查」。`BuildConfig` 里的 `lint` / `test`
-两个字段就是为它预留的。
+**测试 Agent 不是这里的实现，它已经建好了**：落在 `DevelopmentAgent.testPhase`——链路里的第 ⑧ 步
+（见 [FLOW.md](FLOW.md)）。立 `Verifier` 时的打算是让它实现这个接口（两者在流程上的位置确实一样，
+都是「写入之后、收尾之前的一段可失败检查」），**后来没有这么做**，因为它在那个接口里装不下：
+冻结的用例清单、这次勾没勾集成、测试环境那组变量、脚本在容器里还是宿主上跑、本轮改了哪些文件
+（第二段补「怎么测」只认它），以及它产出之后要进的全轮成本账、失败清单、回喂与处置，
+都不是一个 `VerificationResult` 说得完的。`Verifier` 留给「和编译同形」的检查：
+**挂进引擎那份校验器列表的只有 `CompileVerifier`**；测试脚本执行器 `TestScriptVerifier`
+也实现了这个接口，但它没挂上去——它是被 `TestAgent` 直接调用的。
+
+`BuildConfig` 里也**只有 `compile` 一条**。曾经在这里预留过 `lint` / `test` 两个字段，注释写着
+「为测试 Agent 预留」，而它建好之后一个都没用上——两个字段能从 YAML 解析进来，全仓库没有一处读，
+2026-10-03 删掉了。（`project.yaml` 对未知字段是**报错**而不是忽略，所以删掉之后写过它们的人
+会得到一句指名道姓的「存在未知字段 'lint'」，而不是一个默默不起作用的摆设。）
 
 ## 当前项目是一个可替换的对象
 

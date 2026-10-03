@@ -141,6 +141,42 @@ class CaseHowStageTest {
                 .contains("2 次模型调用");
     }
 
+    /**
+     * 第 1 版想改期望、第 2 版换了别的毛病时，<b>第 1 版那条不许被挤掉</b>。
+     *
+     * <p>这条钉的是一个真实的漏：note 只留最后一版的差异时，第 2 版只要换一种错法
+     * （这里是最常见的「漏写一条」），「它在照着代码改需求」这件事就从报告里彻底消失，
+     * 而人看到的只是一句「它没写用例 2」——上一次真模型实测里，第 1 版正是这么干的。
+     */
+    @Test
+    @DisplayName("第 1 版想改期望、第 2 版漏写一条：第 1 版那条也要留在 note 里")
+    void keepsWhatEarlierVersionsDidWrong() {
+        List<PlanReview.TestCase> frozen = List.of(
+                testCase(1, "金额能查出来", PlanReview.TestCase.Level.MUST, "100.00", "A1：金额能查出来"),
+                testCase(2, "查不到的编号返回空", PlanReview.TestCase.Level.SHOULD, "empty", "A2：空结果"));
+        FakeLlm llm = new FakeLlm(
+                // 第一版：把用例 1 的期望改成了「代码现在的行为」
+                "1 | 拿 OrderService.query(1) 调一次 | 100.0\n"
+                        + "2 | 拿 OrderService.query(99) 调一次 | empty",
+                // 第二版：期望照抄了，但整条漏掉用例 2 —— 换了个毛病
+                "1 | 拿 OrderService.query(1) 调一次，看返回 DTO 的 amount | 100.00");
+
+        CaseHowStage.Result result = stage(llm).fill(spec(), frozen, changes());
+
+        assertThat(result.calls()).isEqualTo(2);
+        assertThat(result.cases()).hasSize(2);
+        assertThat(result.cases().get(1).how()).as("漏写的那条没补上，留空").isEmpty();
+        assertThat(result.note())
+                .as("第 1 版想改期望这条信号，不许被第 2 版的另一种毛病挤掉")
+                .contains("第 1 版")
+                .contains("期望被改了")
+                .contains("第一段写的是「100.00」，它写的是「100.0」");
+        assertThat(result.note())
+                .as("第 2 版自己那条毛病也要在：两条都要，不是二选一")
+                .contains("第 2 版")
+                .contains("用例 2 它没写");
+    }
+
     /** 只差一条时，对得上的那几条照样补上：不能因为一条不规矩就把整批丢回去。 */
     @Test
     @DisplayName("只差一条：对得上的 1、2 补上，第 3 条怎么测留空")

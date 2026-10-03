@@ -131,4 +131,21 @@ class ProjectConfigLoaderTest {
         assertThatThrownBy(this::load).isInstanceOf(SpecValidationException.class)
                 .hasMessageContaining("compileCommand");
     }
+
+    /**
+     * 删掉的 {@code build.lint} / {@code build.test} 现在必须被当成未知字段<b>点出来</b>。
+     *
+     * <p>它们在这里预留过（注释写着「预留给后续的测试 Agent」），而测试 Agent 建好之后
+     * <b>一个都没用上</b>——能从 YAML 解析进来，全仓库没有一处读。2026-10-03 删掉。
+     * 这条断言钉的是「删干净了」：哪天有人把它们加回去，它会红；
+     * 那时该先答的是「谁读它」，而不是让配置文件悄悄多两个不起作用的摆设。
+     */
+    @Test
+    @DisplayName("删掉的 lint / test：写进配置要被点出来，不许默默不起作用")
+    void removedBuildFieldsAreRejected() throws IOException {
+        writeConfig("build:\n  compile: \"mvn compile\"\n  lint: \"mvn checkstyle:check\"\n");
+
+        assertThatThrownBy(this::load).isInstanceOf(SpecValidationException.class)
+                .hasMessageContaining("lint");
+    }
 }

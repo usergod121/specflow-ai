@@ -409,7 +409,7 @@ class DevelopmentAgentTest {
                 patch("int a = 1;", "int a = 2;"),
                 patch("int a = 1;", "int a = 3;"));
         ProjectConfig project = new ProjectConfig(
-                new BuildConfig("echo [ERROR] 程序包 com.google.gson 不存在 & exit 1", null, null),
+                new BuildConfig("echo [ERROR] 程序包 com.google.gson 不存在 & exit 1"),
                 LlmConfig.DEFAULT, SnapshotConfig.DEFAULT);
 
         AgentResult result = new DevelopmentAgent(root, project, TemplateRegistry.empty(),

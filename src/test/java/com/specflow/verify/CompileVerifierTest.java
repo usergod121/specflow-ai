@@ -120,7 +120,7 @@ class CompileVerifierTest {
     }
 
     private ProjectConfig projectWithCompileCommand(String command) {
-        return new ProjectConfig(new BuildConfig(command, null, null),
+        return new ProjectConfig(new BuildConfig(command),
                 LlmConfig.DEFAULT, SnapshotConfig.DEFAULT);
     }
 
