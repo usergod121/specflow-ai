@@ -94,6 +94,16 @@ import java.util.TreeSet;
  *                 （通过率、溯源、回喂、覆盖核对都不再算它），事后翻记录的人必须答得出
  *                 「当时是谁、为什么这几条不见了」——只留一个状态字段，恢复过的那几条就查无实据。
  *                 老记录里没有这一项，读出来是 {@code null}（= 一条都没停用过）
+ * @param session   这次运行<b>属于哪个会话的第几轮</b>（见 {@link SessionRef}）。
+ *                 它为什么必须落档：会话是 N 轮串起来的一件事，「按会话翻记录」要答得出
+ *                 「这个会话一共几轮、每轮什么结论」——只靠时间先后去猜，翻的人分不清
+ *                 「同一件事的第三轮」和「另一件恰好接着做的事」。
+ *                 老记录、以及命令行那条路（没有会话这个概念的调用方）读出来是 {@code null}
+ * @param finishedAt 这次运行<b>跑完的时刻</b>，ISO 格式。它和 {@code startedAt} 一起回答
+ *                 「这一轮花了多久」——会话视图上要显示的成本（调用次数 + 耗时）里的那一半。
+ *                 为什么不拿记录文件的修改时间去算：那份文件跑完之后还会被人改写
+ *                 （判决、停用、收场都重写它），改完那个时间戳就成了「人最后一次点按钮的时刻」。
+ *                 老记录里没有这一项，读出来是 {@code null}（耗时那一栏于是不显示，不编一个数）
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record RunRecord(
@@ -123,8 +133,58 @@ public record RunRecord(
         AcceptanceCoverage.Report coverage,
         Refeed refeed,
         Boolean unchanged,
-        List<CaseSwitch> caseSwitches
+        List<CaseSwitch> caseSwitches,
+        SessionRef session,
+        String finishedAt
 ) {
+
+    /**
+     * 这次运行属于<b>哪个会话的第几轮</b>（会话 = N 轮，见 {@code Session}）。
+     *
+     * <p>为什么是「会话 id + 轮次序号」两个字段，而不是一条链（上一轮是哪条记录）：
+     * 轮次序号就是链——第 N 轮的上一轮必然是第 N-1 轮，而序号还顺带答得出
+     * 「这是第几轮」这个界面上要显示、事后也最常被问到的数。存一条指针链的话，
+     * 翻记录的人得自己往回爬 N 步才知道现在是第几轮。
+     *
+     * <p>{@code id} 就是<b>第 1 轮那条记录的 id</b>（会话是那一轮开的），
+     * 所以两者同形、同排序规则；落档那一刻才知道第一条记录的 id，见 {@link #withId(String)}。
+     *
+     * @param id    会话 id；空串 = 「这一轮开一个新会话」，落档时补上这一轮的记录 id
+     * @param round 第几轮，从 1 开始
+     */
+    public record SessionRef(String id, int round) {
+
+        public SessionRef {
+            id = id == null ? "" : id.strip();
+            // 轮次序号不接受 0 或负数：这个类型的存在本身就意味着「属于某个会话的某一轮」，
+            // 不属于会话的运行里这一栏整个是 null（见 RunRecord.session）
+            if (round < 1) {
+                throw new IllegalArgumentException("会话的轮次序号从 1 开始，收到的是 " + round);
+            }
+        }
+
+        /** 开一个新会话的第一轮：会话 id 还不知道，落档时补。 */
+        public static SessionRef opening() {
+            return new SessionRef("", 1);
+        }
+
+        /** 接着一个已有会话往下走。 */
+        public static SessionRef next(String sessionId, int round) {
+            return new SessionRef(sessionId, round);
+        }
+
+        /**
+         * 落档那一刻补上会话 id（= 这一轮的记录 id）。
+         *
+         * <p>为什么不在开工前就把 id 定下来：id 就是记录 id，而记录 id 是录制器
+         * 构造时按时刻生成的（见 {@code RunRecorder}）。在这里补，是为了让
+         * 「会话 id == 第 1 轮的记录 id」这条对应关系只有一个来源——两处各生成一个 id，
+         * 迟早出现「会话文件指向一条不存在的记录」。
+         */
+        public SessionRef withId(String recordId) {
+            return id.isEmpty() ? new SessionRef(recordId, round) : this;
+        }
+    }
 
     /**
      * 一次「停用 / 恢复」的动作。
@@ -311,6 +371,43 @@ public record RunRecord(
         public static final String ACCEPT = "ACCEPT";
         /** 中断（恢复到初始）：文件按快照回到运行前，快照与测试产物删掉。 */
         public static final String INTERRUPT = "INTERRUPT";
+        /**
+         * 撤回本轮：这一轮的改动被撤掉，磁盘回到<b>上一轮结束时</b>的样子。
+         *
+         * <p>它和 {@link #INTERRUPT} 的分工：中断是<b>会话的出口</b>（撤完就不再往下跑了），
+         * 撤回本轮只是一步撤销——会话还开着，用户随时可以点「下一轮」再来一遍。
+         */
+        public static final String UNDO_ROUND = "UNDO_ROUND";
+        /**
+         * 撤回整个会话：磁盘回到<b>会话最开始</b>的样子，会话仍然开着。
+         */
+        public static final String UNDO_SESSION = "UNDO_SESSION";
+
+        /**
+         * 这个收场是不是<b>会话的出口</b>（接受了 / 中断了）。
+         *
+         * <p>它决定「这个会话还开着吗」：会话开着 = 最后那一轮的收场不是这两档。
+         * 撤回也是收场（它一样要落档），但撤回完会话还开着——把撤回也算成出口的话，
+         * 用户撤一次就再也点不了「下一轮」了。
+         */
+        public static boolean closes(String choice) {
+            return ACCEPT.equals(normalizeChoice(choice)) || INTERRUPT.equals(normalizeChoice(choice));
+        }
+
+        /**
+         * 这个收场是不是「人把某几轮撤掉了」。
+         *
+         * <p>会话里「哪几轮还算数」就靠它折出来：被撤掉的轮次不进累计通过率，
+         * 也不再有可撤的快照。
+         */
+        public static boolean undoes(String choice) {
+            return UNDO_ROUND.equals(normalizeChoice(choice))
+                    || UNDO_SESSION.equals(normalizeChoice(choice));
+        }
+
+        private static String normalizeChoice(String choice) {
+            return choice == null ? "" : choice.strip().toUpperCase(Locale.ROOT);
+        }
 
         public Settlement {
             choice = choice == null ? "" : choice.strip().toUpperCase(Locale.ROOT);
@@ -330,6 +427,8 @@ public record RunRecord(
             String what = switch (choice) {
                 case ACCEPT -> "已接受（改动留在磁盘上）";
                 case INTERRUPT -> "已中断（文件恢复到这个运行开始前）";
+                case UNDO_ROUND -> "已撤回本轮（文件回到上一轮结束时的样子）";
+                case UNDO_SESSION -> "已撤回整个会话（文件回到会话最开始的样子）";
                 default -> "已收场：" + choice;
             };
             if (failing.isEmpty()) {
@@ -404,7 +503,8 @@ public record RunRecord(
         return new RunRecord(id, startedAt, status, template, prompt, acceptance, context,
                 requirementId, targets, attempts, detail, missing, changes, steps, planSteps,
                 stepsSource, testCases, tests, environment, newVerdicts, newSettlement,
-                newRegenerated, timeline, coverage, refeed, unchanged, caseSwitches);
+                newRegenerated, timeline, coverage, refeed, unchanged, caseSwitches,
+                session, finishedAt);
     }
 
     /** 换「谁什么时候停用了哪几条」那一栏（追加式流水，见 {@link CaseSwitch}）。 */
@@ -412,7 +512,8 @@ public record RunRecord(
         return new RunRecord(id, startedAt, status, template, prompt, acceptance, context,
                 requirementId, targets, attempts, detail, missing, changes, steps, planSteps,
                 stepsSource, testCases, tests, environment, verdicts, settlement,
-                regenerated, timeline, coverage, refeed, unchanged, newCaseSwitches);
+                regenerated, timeline, coverage, refeed, unchanged, newCaseSwitches,
+                session, finishedAt);
     }
 
     /** 换「每一条失败用例怎么判的」那一栏。 */

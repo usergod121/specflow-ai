@@ -148,6 +148,18 @@ public final class DevelopmentAgent {
     private final PatchApplier applier;
 
     /**
+     * <b>本次运行所在的会话自己的快照</b>（§19）：它们不算「上一次的改动还没处置」。
+     *
+     * <p>为什么这道闸要认得出自己人：会话的日常状态就是磁盘上挂着前几轮的改动
+     * （等用户点接受或中断），而「下一轮」正是在它们之上接着走。老口径
+     * 「只要有未处置的快照就拒绝开工」会把每一轮的下一次运行都挡掉，用户于是只能
+     * <b>一轮一接受</b>——那正是这一批要消灭的那件事（整个 run 只处置一次）。
+     *
+     * <p>命令行与测试这条路给空表：他们没有会话这个概念，老行为一个字节都不变。
+     */
+    private final List<String> sessionSnapshots;
+
+    /**
      * 这一次「环境预热」的结果。
      *
      * <p>开发阶段一开跑就异步去起环境，测试阶段来取。它只在这一个运行的线程上被赋值与读取
@@ -177,6 +189,23 @@ public final class DevelopmentAgent {
     public DevelopmentAgent(Path projectRoot, ProjectConfig project, TemplateRegistry templates,
                             LlmClient llm, List<Verifier> verifiers, AgentListener listener,
                             TestSettings settings, TestEnvironment environment) {
+        this(projectRoot, project, templates, llm, verifiers, listener, settings, environment,
+                List.of());
+    }
+
+    /**
+     * 带「这次是某个会话的第几轮」的那一版：界面提交的运行都走它（§19）。
+     *
+     * <p>再开一个重载而不是改掉上面那个签名：会话是 Web 那一侧的概念，命令行与测试
+     * 都没有它——让他们各多传一个空表，只是给两处添一个永远为空的参数。
+     *
+     * @param sessionSnapshots 这个会话已经留在磁盘上的那几份快照（目录名）。它们<b>不算</b>
+     *                         「上一次的改动还没处置」，理由见字段注释
+     */
+    public DevelopmentAgent(Path projectRoot, ProjectConfig project, TemplateRegistry templates,
+                            LlmClient llm, List<Verifier> verifiers, AgentListener listener,
+                            TestSettings settings, TestEnvironment environment,
+                            List<String> sessionSnapshots) {
         this.projectRoot = projectRoot.toAbsolutePath().normalize();
         this.pathResolver = new SafePathResolver(this.projectRoot);
         this.project = project;
@@ -186,6 +215,7 @@ public final class DevelopmentAgent {
         this.listener = listener;
         this.settings = settings == null ? TestSettings.UNIT_ONLY : settings;
         this.environment = environment;
+        this.sessionSnapshots = sessionSnapshots == null ? List.of() : List.copyOf(sessionSnapshots);
         this.assembler = new ContextAssembler(this.pathResolver);
         this.applier = new PatchApplier(this.pathResolver);
     }
@@ -270,7 +300,14 @@ public final class DevelopmentAgent {
     private AgentResult execute(Spec spec, PlanReview approved, Resume resume, Refeed refeed) {
         // 上一次的改动还在等人表态：磁盘上那份是好的，但没经过人确认。
         // 在它之上再叠一轮，等于让人在一个自己没看过的状态上继续施工。
-        List<WorkspaceSnapshot> undisposed = WorkspaceSnapshot.undisposed(pathResolver, snapshotRoot());
+        // <b>会话自己的那几份不算</b>（见 sessionSnapshots）：同一个会话里接着跑下一轮，
+        // 本来就是在前面几轮的改动之上继续——那不是「没被人确认过的状态」，
+        // 而是用户刚刚看过、点了「下一轮」的那个状态
+        List<WorkspaceSnapshot> undisposed = WorkspaceSnapshot.undisposed(pathResolver, snapshotRoot())
+                .stream()
+                .filter(snapshot -> !sessionSnapshots.contains(
+                        snapshot.directory().getFileName().toString()))
+                .toList();
         if (!undisposed.isEmpty()) {
             String waits = String.join("、", undisposed.stream()
                     .map(snapshot -> snapshot.directory().getFileName().toString())

@@ -977,6 +977,8 @@ const caseApi = load('index.html', [
   'stageNoteHtml', 'DISABLE_HINT', 'RECOVER_HINT',
   'testsActionsHtml', 'testsPanelHtml', 'rateOfAll', 'caseListForTests', 'chipCases',
   'verdictLabel', 'verdictsOf', 'settlementText', 'judgementPayload',
+  // 会话（多轮）：顶部状态条、历史轮次、某一轮的终态说法、刷新页面时借哪一轮补界面
+  'sessionBarHtml', 'sessionHistoryHtml', 'roundStatusMeta', 'sessionRoundFallback',
 ], '// ---------- 用例与测试结果 ----------', 'async function refreshPending');
 
 const {
@@ -989,6 +991,7 @@ const {
   coverageProblemsHtml, caseTrace, caseAcceptance,
   testsActionsHtml, testsPanelHtml, rateOfAll,
   VERDICT, verdictLabel, verdictsOf, settlementText, caseListForTests,
+  sessionBarHtml, sessionHistoryHtml, roundStatusMeta, sessionRoundFallback,
   disabledOf, liveCases, isDisabledCase, disabledRateHtml, disabledLogHtml, stageNoteHtml,
   DISABLE_HINT, RECOVER_HINT,
   chipCases,
@@ -1248,6 +1251,268 @@ check(testsActionsHtml(bigReport, caseSample, new Set([2]), new Map(),
 check(testsActionsHtml(bigReport, caseSample, new Set([2]), new Map(), { pending: false })
     .includes('data-act="accept"') === false,
     '磁盘上没有待处置的改动时不画「接受 / 中断」（点了只会拿到 409）');
+
+// ---------- 会话（多轮） ----------
+// 会话是这一批里唯一跨轮的东西，而它错了的表现全是「数字看着都在、只是口径不对」：
+// 累计把已经撤回过的那几轮也算进去（于是那个百分比永远到不了）、历史里把「我撤了它」
+// 说成「它没做成」、灰着的撤销按钮不解释为什么——所以这一段全是纯逻辑断言：
+// 喂一份载荷，看那几句话对不对。
+console.log('会话状态条：');
+// 页面里那张终态表（STATUS_TEXT）在切片之外，而切片是单独 eval 的：把它挂到全局，
+// 切片里的 roundStatusMeta 才认得出终态名——这也正好证明历史用的是同一张表，
+// 而不是另抄了一份（各抄一份就会出现「这边说改动留着你判断、那边说已回滚」）
+globalThis.STATUS_TEXT = resultTable.STATUS_TEXT;
+
+const sessionCases = [
+  { index: 1, what: '按订单号查得到', how: '拿 id=1 查一次', level: 'MUST', expected: 'id=1', acceptance: 'R-1' },
+  { index: 2, what: '查不到时返回 404', how: '拿 id=999 查一次', level: 'MUST', expected: '404', acceptance: 'R-1' },
+  { index: 3, what: '参数为空时报 400', how: '传空 id', level: 'SHOULD', expected: '400', acceptance: '无' },
+  { index: 4, what: '日志里留下痕迹', how: '跑完看日志', level: 'SHOULD', expected: '有一行', acceptance: '无' },
+  { index: 5, what: '慢查询要报警', how: '等 10 秒', level: 'OPTIONAL', expected: '报警', acceptance: '无' },
+];
+// 第 3 轮：过了 3 条（1、3、4），必须过那档 1/2、建议过 2/2、可选 0/1
+const round3 = {
+  round: 3,
+  recordId: '20261003-104500-120',
+  status: 'TESTS_FAILED',
+  detail: '测试没过：…',
+  calls: 12,
+  millis: 421338,
+  duration: '7 分 1 秒',
+  undone: false,
+  settlement: null,
+  settlementSummary: '',
+  testCases: sessionCases,
+  tests: {
+    directory: 'tools/20261003-105000',
+    exit: 1,
+    files: [],
+    calls: 2,
+    cases: [{ index: 1, passed: true }, { index: 2, passed: false }, { index: 3, passed: true },
+      { index: 4, passed: true }, { index: 5, passed: false }],
+    failures: [],
+    links: [],
+  },
+  changes: [{ path: 'src/Foo.java', created: false, bytes: 12, diff: '-a\n+b' }],
+  verdicts: [{ index: 2, owner: 'CODE', at: '2026-10-03T11:00:00', label: '开发 AI 错了（已回喂）' }],
+  disabled: [],
+  refeed: [2],
+  removed: false,
+};
+// 被撤回的第 2 轮（人撤的）与没留下改动的第 1 轮（它自己回滚的）：两种形态要各说各的
+const undoneRound = {
+  ...round3,
+  round: 2,
+  recordId: '20261003-103000-100',
+  status: 'SUCCESS',
+  detail: '改动已写入，编译校验通过',
+  undone: true,
+  settlement: 'UNDO_ROUND',
+  settlementSummary: '已撤回本轮：文件回到第 1 轮结束时的样子',
+  changes: [{ path: 'src/Bar.java', created: true, bytes: 30, diff: '+x' }],
+  verdicts: [],
+};
+const removedRound = {
+  ...round3,
+  round: 1,
+  recordId: '20261003-100000-010',
+  status: 'FAILED',
+  detail: '失败：已回滚到运行前',
+  removed: true,
+  changes: [],
+  verdicts: [],
+  testCases: null,
+  tests: null,
+};
+const sessionPayload = {
+  present: true,
+  id: '20261003-101112-345',
+  round: 3,
+  rounds: 4,
+  liveRounds: 2,
+  consecutiveFailing: 3,
+  softHint: '连续 3 轮都还有失败：看一眼是不是需求本身要改，或者用例写错了。这只是提醒，不影响你继续。',
+  canUndoRound: true,
+  canUndoSession: true,
+  undoRoundWhy: '',
+  undoSessionWhy: '',
+  roundPassed: 3,
+  roundTotal: 5,
+  sessionPassed: 8,
+  sessionTotal: 15,
+  roundCalls: 12,
+  roundMillis: 421338,
+  roundDuration: '7 分 1 秒',
+  current: round3,
+  history: [round3, undoneRound, removedRound],
+};
+
+const bar = sessionBarHtml(sessionPayload, {});
+check(sessionBarHtml(null) === '' && sessionBarHtml({ present: false }) === '',
+    '没有会话时状态条一个字都不画：一条「第 0 轮」比没有状态条糟得多');
+check(bar.includes('第 3 轮'), '顶上写着这是第几轮：'
+    + JSON.stringify((bar.match(/第 \d+ 轮/) || [''])[0]));
+check(sessionBarHtml({ ...sessionPayload, round: 4, history: [round3] }).includes('第 4 轮'),
+    '「第 N 轮」用的是 session.round，不是历史里有几条（被撤回的轮次照样算轮次）');
+check(bar.includes('本轮通过率') && bar.includes('3/5'),
+    '本轮通过率 x/y 写出来了：'
+        + JSON.stringify((bar.match(/本轮通过率[^<]*<b>[^<]*/) || [''])[0]));
+check(bar.includes('会话累计通过率') && bar.includes('8/15'),
+    '会话累计通过率也写出来（两个都要：少了累计，用户得自己拿上一轮的累计去加）');
+check(bar.includes(casePassRate(round3.testCases, round3.tests)),
+    '本轮通过率后面顺带分档口径——x/y 是结论，分档是它的来历：'
+        + casePassRate(round3.testCases, round3.tests));
+check(bar.includes('会话累计只算没被撤回的轮次'),
+    '累计那个数写清口径：不写，用户会按「会话里所有轮次」去理解它；'
+        + '而引擎那边的累计就是按「没被撤回的轮次」算的（Session.passed/total），'
+        + '两处口径必须是同一句话');
+check(bar.includes('这一轮花了 12 次调用 · 7 分 1 秒'),
+    '本轮调用次数与耗时照服务端那句人话写（不自己拿毫秒拼一个）：'
+        + JSON.stringify((bar.match(/这一轮花了[^<]*/) || [''])[0]));
+check(bar.includes(sessionPayload.softHint),
+    '软提示有值时原样摆出来（温和、不阻塞）：'
+        + JSON.stringify((bar.match(/<div class="session-hint">[^<]*/) || [''])[0]));
+check(bar.includes('<div class="session-hint">') && !bar.includes('session-alert'),
+    '那行提示用的是提示那一档样式，不是错误色（它是提醒，不是「你得先处理这个」）');
+check(!bar.includes('disabled') && !bar.includes('<button'),
+    '状态条里一个按钮都没有（别加一堆按钮：处置只有底部那一行）');
+
+const quietBar = sessionBarHtml({ ...sessionPayload, softHint: null }, {});
+check(!quietBar.includes('session-hint'), '没有软提示时那一行根本不出现（不是留一个空行）');
+check(quietBar.includes('本轮通过率') && quietBar.includes('会话累计通过率'),
+    '没有软提示时状态条照旧（提示不是它的一部分）');
+
+console.log('会话状态条：引擎那条留档没带清单与结论：');
+// 老记录里 testCases/tests 可能是 null（见契约 §1）：那就退回屏幕上正看着的那一轮。
+// 两处都没有时宁可不给分档，也不写一句「必须过 0/0」冒充通过率（那是「一条都没过」的意思）
+const thinRound = { ...round3, testCases: null, tests: null };
+check(sessionBarHtml({ ...sessionPayload, current: thinRound },
+    { round: { testCases: round3.testCases, tests: round3.tests, disabled: [] } })
+    .includes('必须过 1/2'),
+    '引擎没带清单时退回屏幕上那一份（两边说的都是最新那一轮，只是来路不同）');
+check(!sessionBarHtml({ ...sessionPayload, current: thinRound }, {}).includes('必须过'),
+    '两处都没有这一档时就不给分档口径（「0/0」会被读成一条都没过）');
+
+console.log('会话历史轮次：');
+const historyHtml = sessionHistoryHtml(sessionPayload);
+check(sessionHistoryHtml(null) === '' && sessionHistoryHtml({ present: false }) === ''
+    && sessionHistoryHtml({ present: true, history: [] }) === '',
+    '没有会话 / 一轮都没跑过：历史块一个字都不画');
+check(historyHtml.startsWith('<details class="session-history">'),
+    '历史折在 details 里（折叠时不占地方，展开才逐轮说）：'
+        + JSON.stringify(historyHtml.slice(0, 40)));
+check(historyHtml.includes('共 3 轮'), '摘要里写着这个会话跑过几轮：'
+    + JSON.stringify((historyHtml.match(/<summary>[^<]*/) || [''])[0]));
+check(historyHtml.includes(resultTable.STATUS_TEXT.TESTS_FAILED[1]),
+    '那一轮的终态用的是结果面板同一句话（各写一张表就是「这边说留着、那边说已回滚」）');
+check(historyHtml.includes('通过率 3/5'),
+    '每轮都写通过率（那一轮自己的清单与结论算的）');
+check(historyHtml.includes('修改 src/Foo.java') && historyHtml.includes('新建 src/Bar.java'),
+    '改了哪些文件写出来了，新建与修改分开说');
+check(historyHtml.includes('用例 2：开发 AI 错了（已回喂）'),
+    '你判了谁错照留档里那句 label 写：'
+        + JSON.stringify((historyHtml.match(/用例 \d+：[^<；]*/) || [''])[0]));
+check(historyHtml.includes('<div class="add">+b</div>')
+    && historyHtml.includes('<div class="del">-a</div>'),
+    '轮次间 diff 用的是现成的 diffHtml（同一份 diff 全站只画一种样子）');
+check(sessionHistoryHtml({ ...sessionPayload, history: [{ ...round3, verdicts: [{ index: 7, owner: 'KNOWN' }] }] })
+    .includes('用例 7：不重要 / 误报（已知失败）'),
+    '老记录里的判决没有 label 时退回 owner 的说法（不写一句「undefined」）');
+
+console.log('会话历史：撤回过 / 没留下改动的那两种形态：');
+const round3Block = historyHtml.slice(historyHtml.indexOf('data-round="3"'), historyHtml.indexOf('data-round="2"'));
+const undoneBlock = historyHtml.slice(historyHtml.indexOf('data-round="2"'), historyHtml.indexOf('data-round="1"'));
+const removedBlock = historyHtml.slice(historyHtml.indexOf('data-round="1"'));
+check(undoneBlock.includes('已撤回（回到第 1 轮结束时的样子）'),
+    '被人撤回的那一轮写「已撤回（回到第 k-1 轮结束时的样子）」：'
+        + JSON.stringify((undoneBlock.match(/已撤回[^<]*/) || [''])[0]));
+check(removedBlock.includes('这一轮没留下改动（它自己回滚了）'),
+    '没留下改动的那一轮是另一句话（那是它自己回滚的，不是人撤的）');
+check(!undoneBlock.includes('没留下改动') && !removedBlock.includes('已撤回'),
+    '两种形态各说各的：合成一句，事后翻记录的人会把「我撤了它」读成「它没做成」');
+check(undoneBlock.includes('data-gone="true"') && removedBlock.includes('data-gone="true"'),
+    '这两轮整块退到背景里（磁盘上已经没有它们了）');
+check(round3Block.includes('data-gone="false"'),
+    '正常那一轮不退（改动还在磁盘上，它正是要被处置的那一轮）');
+
+console.log('会话里的动作行：');
+check(actionsHtml.includes('接受这批改动') && actionsHtml.includes('中断 / 恢复到初始')
+    && !actionsHtml.includes('data-act="undo') && !actionsHtml.includes('（整个会话定稿）'),
+    '没有会话时「接受 / 中断」的文案一个字都不改，也不画撤销按钮');
+const sessionActions = testsActionsHtml(bigReport, caseSample, new Set([2]), new Map(),
+    { pending: true, session: sessionPayload });
+check(sessionActions.includes('接受（整个会话定稿）') && !sessionActions.includes('接受这批改动'),
+    '会话里「接受」改成「接受（整个会话定稿）」（此刻它的粒度就是整个会话）');
+check(sessionActions.includes('中断（回滚整个会话）') && !sessionActions.includes('中断 / 恢复到初始'),
+    '会话里「中断」改成「中断（回滚整个会话）」');
+check(sessionActions.includes('data-act="undo-round"') && sessionActions.includes('data-act="undo-session"'),
+    '同一行里补上两枚次要按钮：撤回本轮 / 撤回整个会话');
+check(sessionActions.includes('>撤回本轮</button>') && sessionActions.includes('>撤回整个会话</button>'),
+    '两枚按钮的文案就是「撤回本轮」「撤回整个会话」（粒度写在字面上）');
+check(/data-act="undo-round"[^>]*title="撤回本轮：/.test(sessionActions)
+    && /data-act="undo-session"[^>]*title="撤回整个会话：/.test(sessionActions),
+    '能撤时 title 说清撤了会回到哪儿：'
+        + JSON.stringify((sessionActions.match(/<button[^>]*data-act="undo-round"[^>]*>/) || [''])[0]));
+check(!/data-act="undo-(round|session)"[^>]* disabled/.test(sessionActions),
+    '能撤的那两枚不带 disabled（灰着还能点、或者亮着点不动，都是在骗人）');
+
+const stuckActions = testsActionsHtml(bigReport, caseSample, new Set([2]), new Map(),
+  { pending: true,
+    session: { ...sessionPayload, canUndoRound: false, canUndoSession: false,
+      undoRoundWhy: '这一轮已经撤过了，没什么可回的',
+      undoSessionWhy: '会话里已经没有还留在磁盘上的改动了' } });
+check(/data-act="undo-round" disabled title="这一轮已经撤过了，没什么可回的"/.test(stuckActions),
+    '撤不动时 disabled + title 用服务端那句 undoRoundWhy（灰按钮不解释，用户只会反复点它）：'
+        + JSON.stringify((stuckActions.match(/data-act="undo-round"[^>]*/) || [''])[0]));
+check(/data-act="undo-session" disabled title="会话里已经没有还留在磁盘上的改动了"/.test(stuckActions),
+    '撤回整个会话同理，理由各用各的那一句：'
+        + JSON.stringify((stuckActions.match(/data-act="undo-session"[^>]*/) || [''])[0]));
+
+console.log('两个撤销粒度各打哪儿：');
+check(testActionPath('undo-round') === '/api/session/undo-round',
+    '撤回本轮 → /api/session/undo-round（只回滚最后一轮留下的改动）');
+check(testActionPath('undo-session') === '/api/session/undo-session',
+    '撤回整个会话 → /api/session/undo-session（回到会话最开始）');
+check(startsRun('undo-round') === false && startsRun('undo-session') === false,
+    '两个撤销都不许顺手开一轮运行（每一轮都由用户点「下一轮」）');
+const sessionPaths = ['next-round', 'regenerate', 'accept', 'interrupt', 'undo-round', 'undo-session']
+    .map(testActionPath);
+check(new Set(sessionPaths).size === sessionPaths.length,
+    '六条路两两不同（接到同一个接口上就是「点张三打了李四」）：' + sessionPaths.join(','));
+
+console.log('某一轮的终态说法：');
+check(roundStatusMeta('TESTS_FAILED')[1] === resultTable.STATUS_TEXT.TESTS_FAILED[1]
+    && roundStatusMeta('TESTS_FAILED')[0] === resultTable.STATUS_TEXT.TESTS_FAILED[0],
+    '终态说法与结果面板同一张表（含颜色那一档）：' + JSON.stringify(roundStatusMeta('TESTS_FAILED')));
+check(roundStatusMeta('SOMETHING_NEW')[1] === 'SOMETHING_NEW',
+    '认不出来的枚举名原样摆着，不替引擎编一个中文名：' + JSON.stringify(roundStatusMeta('SOMETHING_NEW')));
+check(roundStatusMeta(null)[1] === '' && roundStatusMeta(undefined)[0] === 'bad',
+    '没有终态时不写一句「undefined」，颜色也不留空档');
+
+console.log('刷新过页面时拿哪一轮补界面：');
+// 处置那一行长在本轮失败清单里面，而刷新过页面 #result 是空的、会话开着时 #pending 也是空的：
+// 该借哪一轮、什么时候不许借，这一条错了的表现是「屏幕上那一份结果被换成了另一份」
+check(sessionRoundFallback(sessionPayload, null) === round3,
+    '界面手里还没有这一轮的结果时，借会话载荷里最新那一轮（补出失败清单与底下那一行动作）');
+check(sessionRoundFallback(sessionPayload, round3.tests) === null,
+    '界面已经有这一轮的结果时什么都不借（不拿会话那份覆盖屏幕上那份）');
+check(sessionRoundFallback({ present: true, current: { ...round3, tests: null } }, null) === null,
+    '那一轮没有测试结论时也不借（借来也画不出失败清单）');
+check(sessionRoundFallback({ present: false, current: null }, null) === null,
+    '没有会话时不借（这条路上该出现的是待处置面板）');
+
+console.log('会话开着时处置只有一处：');
+// 这两条是 DOM / 调用点上的事（web.test.js 不碰 DOM），所以从源码上钉：
+// 少了它们，「整个 run 只有一处处置」会退化成两块面板各摆一对「接受 / 中断」，
+// 而用户会以为要各点一次
+const indexLf = indexHtml.replace(/\r\n/g, '\n');
+check(/if \(state\.session && state\.session\.present\) \{[\s\S]{0,160}?box\.innerHTML = '';[\s\S]{0,160}?return;/
+    .test(indexLf),
+    'renderPending 在会话开着时清空 #pending 就返回（处置归会话视图那一处）');
+const sessionRefreshes = (indexLf.match(/refreshSession\(\)/g) || []).length;
+check(sessionRefreshes === 5,
+    '会话状态的刷新点是四处（另加定义那一处）：进项目、运行终态、「接受 / 中断」做完、'
+        + '两个撤销做完——少一处，状态条就停在上一次的数字上：' + sessionRefreshes);
 
 console.log('重新生成那一块（等人放行）：');
 const regen = {

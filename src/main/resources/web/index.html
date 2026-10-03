@@ -1082,6 +1082,51 @@
   }
   .regen .state { font-size: 12px; color: var(--accent); }
 
+  /* ---------- 会话（多轮） ---------- */
+  /* 会话是唯一一处跨轮的视角，所以它自己一条状态条摆在日志与结果之间：
+     上面是「跑到哪了」，下面是「这一次的结论与处置」。这块里一个按钮都没有——
+     按钮全在底部那一行动作里，两处各摆一份就成了「点了这个那个还亮着」。 */
+  .session-bar {
+    margin: 12px 0 4px; padding: 10px 12px;
+    border: 1px solid var(--accent-line); border-radius: 8px; background: var(--accent-weak);
+  }
+  .session-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .session-round { font-size: 13px; }
+  .session-item { font-size: 12px; color: var(--muted); }
+  .session-item b { font-weight: 600; color: var(--text); }
+  /* 分档口径紧挨着本轮通过率：x/y 是结论，分档是它的来历（必须过那几条过了没有） */
+  .session-tiers { font-size: 12px; color: var(--muted); }
+  /* 累计口径那句话必须写出来：只给一个 x/y，用户会按「会话里所有轮次」去读它 */
+  .session-note { font-size: 11px; color: var(--muted-weak); }
+  /* 花费靠右：它是背景信息，不该和上面那几个数抢同一条视线 */
+  .session-cost { margin-left: auto; font-size: 12px; color: var(--muted); }
+  /* 软提示：告警那一套里最轻的一档，不是错误色，也不挨着任何按钮——
+     它是「劝你看一眼」，不是「你得先处理这个」 */
+  .session-hint { margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--warn-text-soft); }
+
+  .session-history { margin-top: 8px; }
+  .session-history summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+  .session-history summary:hover { color: var(--accent); }
+  .session-round-block {
+    margin-top: 8px; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+  }
+  /* 被撤回 / 没留下改动的那两轮：磁盘上已经没有它们了，整块退到背景里，
+     但**看得见**——「这一轮当时干了什么」正是翻记录的人在找的东西 */
+  .session-round-block[data-gone=true] { border-style: dashed; background: none; }
+  .session-round-block .head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .session-round-block .head b { font-size: 12px; }
+  /* 终态那一句话的颜色跟着它那一档走，和结果面板一个口径 */
+  .session-round-status { font-size: 12px; }
+  .session-round-status.ok { color: var(--ok-text); }
+  .session-round-status.mid { color: var(--warn-text); }
+  .session-round-status.bad { color: var(--error-text); }
+  .session-round-line { margin-top: 4px; font-size: 12px; color: var(--muted); }
+  .session-round-line .k { color: var(--muted-weak); }
+  /* 「已撤回」那一句用告警色：它是人做的决定，要能和「它自己回滚了」分开看 */
+  .session-round-line.gone { color: var(--warn-text-soft); }
+  .session-round-block .change { margin-top: 6px; }
+
   /* ---------- 欢迎页 ---------- */
   /* 没打开项目时占满整屏。它和主界面是同一张页面的两块，靠 hidden 切换——
      换项目时整页重来一次，状态一定干净。 */
@@ -1503,6 +1548,11 @@
 
     <div id="plan"></div>
     <div id="log"></div>
+    <!-- 会话状态（第 N 轮 / 两处通过率 / 折起来的历史）。夹在日志与结果之间，
+         于是从上到下正好是三层：会话 → 这一轮的失败清单（#result 里现成那块）
+         → 底部的处置动作（testsActionsHtml 那一行）。会话没有自己的处置面板：
+         处置只有一处（见 renderPending）。 -->
+    <div id="session"></div>
     <div id="result"></div>
   </section>
 </main>
@@ -1667,6 +1717,12 @@ const state = {
   env: null,            // 测试环境的状态（/api/env 那一份）；null = 还没拉到过
   envSkipped: false,    // 用户这次打开项目时点了「先不初始化」：这一次不再问
   recordId: '',         // 屏幕上这份测试结果属于哪条运行记录（标「已知失败」要写进它）
+  // 会话视图（/api/session 那一份）：一次会话 = N 轮，只有「接受（定稿）」和
+  // 「中断（回滚整个会话）」两个出口。null = 还没拉到过；present:false = 现在没有会话。
+  // 为什么会话开着时 #pending 要清空：整个 run 只有一处处置，那一处就是会话视图
+  // （见 renderPending）——两块面板同时摆着同一对「接受 / 中断」，用户只会以为要各点一次
+  session: null,
+  sessionOpen: false,   // 历史轮次那一块被展开了没有：它每次刷新都重画，得记着
 };
 const $ = id => document.getElementById(id);
 
@@ -2338,7 +2394,9 @@ async function startWorkspace() {
   wireWorkspace();
   // 进项目时先看一眼磁盘上有没有上次留下的、还没处置的改动：有的话一进来就该按住「运行」，
   // 而不是等用户填完需求、点下去，才发现这一次根本开不出来。
-  refreshPending();
+  // 会话先拉：会话开着时待处置面板不再出现（处置只有一处，见 renderPending），
+  // 两条都到齐再画面板，否则 #pending 会先亮一下再被清掉
+  refreshSession().then(() => refreshPending());
   // 也看一眼有没有「上次它说缺料就停了」的运行：那条要接着跑，而不是从头再花钱。
   refreshSuspended();
   // 测试环境也要看一眼（十五.5：导入项目时问一次要不要初始化）。
@@ -3652,9 +3710,11 @@ async function poll() {
     return;
   }
   setRunning(false);
-  // 一次运行刚结束，正是两个面板翻牌的时刻：磁盘上有没有留下要处置的改动、
-  // 模型是不是又停下来说缺料。这里不拉一次，用户要手动刷新页面才看得到。
-  refreshPending();
+  // 一次运行刚结束，正是几个面板一起翻牌的时刻：这一轮进了会话账（第 N 轮、两处通过率、
+  // 历史里多了一条）、磁盘上有没有留下要处置的改动、模型是不是又停下来说缺料。
+  // 这里不拉一次，用户要手动刷新页面才看得到。
+  // 会话先到再画待处置面板：会话开着时它是空的（处置只有一处，见 renderPending）
+  refreshSession().then(() => refreshPending());
   refreshSuspended();
   // 再拿运行详情校正一遍步态与每步的改动。它是落盘留档，比流式事件可信；
   // 不 await：校正慢一点没关系，上面两块面板不能等它
@@ -6080,6 +6140,10 @@ function testActionPath(act) {
     case 'regenerate': return '/api/tests/regenerate';
     case 'accept': return '/api/accept';
     case 'interrupt': return '/api/rollback';
+    // 两个撤销粒度各是一个接口：撤一轮和撤整个会话的差别是「丢掉多少东西」，
+    // 接反了就是把用户攒的整个会话一次弄没——而它们点下去之前长得一模一样
+    case 'undo-round': return '/api/session/undo-round';
+    case 'undo-session': return '/api/session/undo-session';
     default: return '';
   }
 }
@@ -6822,6 +6886,258 @@ function regenTraceHtml(trace) {
           .join('');
 }
 
+// ---------- 会话（多轮） ----------
+// 一次会话 = N 轮，由用户一轮一轮驱动（引擎绝不自己跑下一轮），只有两个出口：
+// 「接受」（整个会话定稿）与「中断」（回滚整个会话）；另有两个不关会话的撤销粒度——
+// 撤回本轮、撤回整个会话。这一段只负责把这件事**说出来**（状态条、历史轮次）
+// 和把它接到接口上；按钮本身不在这儿，它们在下面那一行动作里跟着别的动作一起排。
+
+/**
+ * 顶部状态条。
+ *
+ * <p>纯函数，理由和别的面板一样：这里全是「喂一份载荷、看那几句话对不对」的判断，
+ * 而它错了的表现很安静——数字都还在，只是口径不对。累计口径尤其要紧：把已经撤回的
+ * 那几轮也算进去，用户看到的是一个永远到不了的百分比，然后去找一个不存在的失败。
+ *
+ * <p>没有会话（{@code present:false}）时一个字都不画：一条「第 0 轮」的状态条
+ * 比没有状态条糟得多。
+ *
+ * @param opts.round 界面上正看着的那一轮（{@code {testCases, tests, disabled}}）。
+ *        留档里那一条老记录可能没带用例与测试结论（契约 §1），那就退回到屏幕上这份——
+ *        两边说的都是「最新那一轮」，只是来路不同。两处都没有时宁可不给分档口径，
+ *        也不写一句「必须过 0/0」冒充通过率。
+ */
+function sessionBarHtml(session, opts = {}) {
+  if (!session || !session.present) {
+    return '';
+  }
+  const round = session.current || {};
+  const spare = opts.round || {};
+  const cases = (round.testCases && round.testCases.length ? round.testCases : spare.testCases) || [];
+  const tests = round.tests || spare.tests || null;
+  // 分母口径跟着那一轮停用了哪几条走（见 casePassRate）：引擎那一条里没有它时退回屏幕上这份
+  const disabled = new Set((round.disabled || spare.disabled || []).map(Number));
+  const tiers = cases.length ? casePassRate(cases, tests, disabled) : '';
+  // 耗时只认服务端算好的那句人话（拿不到时是空串）：自己拿毫秒拼一个「7 分 1 秒」，
+  // 迟早和引擎那边的说法不一样——而这两个数说的是同一件事
+  const duration = session.roundDuration || '';
+  return '<div class="session-bar">'
+      + '<div class="session-head">'
+      + '<b class="session-round">第 ' + Number(session.round || 0) + ' 轮</b>'
+      + '<span class="session-item">本轮通过率 <b>'
+          + Number(session.roundPassed || 0) + '/' + Number(session.roundTotal || 0) + '</b></span>'
+      + (tiers ? '<span class="session-tiers">' + escapeHtml(tiers) + '</span>' : '')
+      + '<span class="session-item">会话累计通过率 <b>'
+          + Number(session.sessionPassed || 0) + '/' + Number(session.sessionTotal || 0) + '</b></span>'
+      + '<span class="session-note">会话累计只算没被撤回的轮次</span>'
+      + '<span class="session-cost">这一轮花了 ' + Number(session.roundCalls || 0) + ' 次调用'
+          + (duration ? ' · ' + escapeHtml(duration) : '') + '</span>'
+      + '</div>'
+      + (session.softHint
+          ? '<div class="session-hint">' + escapeHtml(session.softHint) + '</div>'
+          : '')
+      + '</div>';
+}
+
+/**
+ * 历史轮次（一个折叠的块）。
+ *
+ * <p>折叠是必须的：一轮一块，跑上五轮就能把结果面板顶出屏幕，而此刻用户要看的是
+ * <b>最新一轮</b>的失败清单和底下那行处置。翻历史是「回头看」的动作，值得多点一下。
+ *
+ * <p>每一轮说清四件事：终态、通过率、改了哪些文件、你判了谁错，再补上这一轮相对上一轮
+ * 的 diff（留档里就是 {@code changes[].diff}）。另外两种形态各有各的说法——
+ * 「被人撤回了」和「它自己什么都没留下」不是一回事：前者是人做的决定，后者是它自己回滚了，
+ * 合成一句话，事后翻记录的人会把「我撤了它」读成「它没做成」。
+ */
+function sessionHistoryHtml(session) {
+  if (!session || !session.present) {
+    return '';
+  }
+  const rounds = session.history || [];
+  if (!rounds.length) {
+    return '';
+  }
+  return '<details class="session-history">'
+      + '<summary>历史轮次（共 ' + rounds.length + ' 轮，新 → 旧）</summary>'
+      + rounds.map(sessionRoundHtml).join('')
+      + '</details>';
+}
+
+/**
+ * 历史里的一轮。单独一个函数，只为了 {@link sessionHistoryHtml} 的主体读起来像一句话。
+ *
+ * <p>{@code data-round} / {@code data-gone} 和别处的 {@code data-act} 一样是钩子：
+ * 纯逻辑测试按它们把某一轮那一块切出来看（「撤回过」和「没留下改动」两句话必须各在各的块里）。
+ */
+function sessionRoundHtml(round) {
+  const index = Number(round.round || 0);
+  const cases = round.testCases || [];
+  const changes = round.changes || [];
+  const verdicts = round.verdicts || [];
+  const disabled = new Set((round.disabled || []).map(Number));
+  const [kind, text] = roundStatusMeta(round.status);
+  // 通过率要两份东西才画得出来：那一条清单（分母）与那一轮真跑出来的结论。
+  // 少了后者给出来的是一句「0/5」——那是「一条都没过」的意思，而事实是「还没验过」
+  const rate = cases.length && round.tests ? '通过率 ' + rateOfAll(cases, round.tests, disabled) : '';
+  const gone = round.undone === true || round.removed === true;
+
+  let body = '';
+  // 被人撤回 / 自己没留下改动：两种形态两句话（见上面那段注释）。
+  // 「撤回到哪」看的是收场那一档，不是轮次序号：(a) 第 1 轮被撤回，回到的是<b>会话最开始</b>
+  // （它前面没有「第 0 轮」）；(b) 撤回整个会话撤掉的那几轮，回到的同样是会话最开始。
+  // 一律写成「第 k-1 轮结束时」，在这两种情况下都是假话——而它是用户判断
+  // 「我的代码现在是什么样」的依据
+  if (round.undone === true) {
+    const whole = round.settlement === 'UNDO_SESSION' || index <= 1;
+    body += '<div class="session-round-line gone">已撤回（回到'
+        + (whole ? '会话最开始' : '第 ' + (index - 1) + ' 轮结束时') + '的样子）</div>';
+  } else if (round.removed === true) {
+    body += '<div class="session-round-line gone">这一轮没留下改动（它自己回滚了）</div>';
+  }
+  // 收场那句话用留档里那一句（带着几条失败接受了 / 回滚到了哪），不自己拼
+  if (round.settlementSummary) {
+    body += '<div class="session-round-line"><span class="k">收场</span> '
+        + escapeHtml(round.settlementSummary) + '</div>';
+  }
+  if (changes.length) {
+    body += '<div class="session-round-line"><span class="k">改了</span> '
+        + escapeHtml(changes.map(one => (one.created ? '新建 ' : '修改 ') + one.path).join('、'))
+        + '</div>';
+  }
+  if (verdicts.length) {
+    body += '<div class="session-round-line"><span class="k">你判的</span> '
+        + escapeHtml(verdicts.map(one => '用例 ' + Number(one.index) + '：'
+            + (one.label || verdictLabel(one.owner))).join('；'))
+        + '</div>';
+  }
+  // 轮次间 diff：一份改动长什么样全站只写一处（pendingChangeHtml），
+  // history 里也用它——不然同一份 diff 在两块地方会长得不一样
+  body += changes.map(one => pendingChangeHtml(one, changes.length)).join('');
+
+  return '<div class="session-round-block" data-round="' + index + '" data-gone="' + gone + '">'
+      + '<div class="head"><b>第 ' + index + ' 轮</b>'
+      + '<span class="session-round-status ' + kind + '">' + escapeHtml(text) + '</span>'
+      + (rate ? '<span class="session-item">' + escapeHtml(rate) + '</span>' : '')
+      + '</div>'
+      + body
+      + '</div>';
+}
+
+/**
+ * 某一轮的终态：和结果面板共用同一张表（{@link STATUS_TEXT}）。
+ *
+ * <p>共用是纪律，不是省事：各写一张表的退化是「结果面板说『改动留着你判断』，
+ * 历史里说成『失败：已回滚』」——而这两句话说的是两件完全相反的事。
+ * 认不出来的枚举名（引擎新加的档、更老的记录）原样摆着，不替它编一个中文名。
+ */
+function roundStatusMeta(status) {
+  return STATUS_TEXT[status]
+      || ['bad', String(status === null || status === undefined ? '' : status)];
+}
+
+/**
+ * 该不该拿会话载荷里那一轮来补界面（纯判断，用法见 {@link adoptSessionRound}）。
+ *
+ * <p>三个条件缺一不可：会话开着、那一轮带着测试结论、界面手里还没有这一轮的结果。
+ * 单独拎成纯函数是因为借错的代价不对称——拿会话那一份去覆盖已经画在屏幕上的结果，
+ * 会把事件流里那份（带着测试代码正文的）换成留档那份（没有正文的）。
+ *
+ * @param current 界面手里此刻那份测试结果（{@code state.tests}）
+ * @return 可以借的那一轮，或 null
+ */
+function sessionRoundFallback(data, current) {
+  const round = (data && data.present && data.current) || null;
+  return round && round.tests && !current ? round : null;
+}
+
+/**
+ * 刷新过页面时，借会话载荷里那一轮把中间那一层补出来。
+ *
+ * <p>为什么非补不可：处置那一行长在<b>本轮失败清单里面</b>（见 testsActionsHtml），而
+ * 这一轮的结果只在它跑完那一次的终态事件里到过界面——刷新过页面，#result 就是空的。
+ * 会话开着时 #pending 又是空的（处置只有一处，见 renderPending），于是用户会卡在一个
+ * 既接受不了、也撤不回来的界面上，只剩一条路：再跑一轮（而「运行」正被待处置按着）。
+ *
+ * <p>只借「补缺」这一种用法：已经画出来的结果一个字都不动。
+ */
+function adoptSessionRound(data) {
+  const round = sessionRoundFallback(data, state.tests);
+  if (!round) {
+    return;
+  }
+  state.tests = round.tests;
+  // 清单一起借：失败清单里那些编号只在「跑出这份结果的那一轮冻结的清单」里有意义
+  if (round.testCases && round.testCases.length) {
+    state.testsCases = round.testCases;
+  }
+  // 补的就是失败清单那一块（连同它底下的动作行），不是把整个结果面板重画一遍
+  insertTestsPanel();
+}
+
+/** 把会话视图摆进 #session：顶部状态条 + 折起来的历史轮次。 */
+function renderSession() {
+  const box = $('session');
+  if (!box) {
+    return;
+  }
+  // 界面上正看着的那一轮：只在引擎那条留档没带用例与结论时兜底（见 sessionBarHtml）
+  const spare = { testCases: state.testsCases, tests: state.tests, disabled: [...state.disabled] };
+  box.innerHTML = sessionBarHtml(state.session, { round: spare })
+      + sessionHistoryHtml(state.session);
+  const history = box.querySelector('.session-history');
+  if (history) {
+    // 展开与否由我们自己记：这一块每次拿到会话都要重画一遍，不记的话用户刚展开的历史
+    // 会被下一次刷新收回去——而他展开它，多半就是要对着它看这一轮改了什么
+    history.open = state.sessionOpen === true;
+    history.ontoggle = () => { state.sessionOpen = history.open; };
+  }
+}
+
+/**
+ * 拉一次会话视图并重画。
+ *
+ * <p>三处要拉：进项目时、每次运行结束时、四个处置动作做完之后。少一处都看得见——
+ * 状态条上的「第 N 轮」还停在上一次的数字上，而它正是用户决定「还要不要接着跑」的那一眼。
+ *
+ * <p>读不到时报错但<b>不清空</b>：会话还在那儿，把状态条抹掉只会让用户以为会话没了。
+ */
+async function refreshSession() {
+  let data;
+  try {
+    data = await getJson('/api/session');
+  } catch (e) {
+    notice('error', '读取会话状态失败：' + e.message);
+    return;
+  }
+  state.session = data;
+  // 中间那一层先补出来：处置那一行在它里面（见 adoptSessionRound）
+  adoptSessionRound(data);
+  renderSession();
+}
+
+/**
+ * 两个撤销粒度：撤回本轮（回到上一轮结束时的样子）、撤回整个会话（回到会话最开始）。
+ *
+ * <p>它们和「接受 / 中断」的区别是<b>会话还开着</b>：撤完可以接着跑下一轮。所以撤完要把
+ * 界面按新的一份会话重画一遍——撤销动的是磁盘与轮次账，状态条上那几个数、历史里那几条、
+ * 「还能不能再撤」全都跟着变。
+ *
+ * <p>提示里只用服务端那句结论（{@code teardown}）：撤了哪几轮、删了哪些产物、
+ * 磁盘上现在还剩什么，只有它算得清。自己拼一句「已撤回」，用户就永远看不到后面那几样。
+ */
+async function resolveSession(act) {
+  const result = await sendJson('POST', testActionPath(act), '{}');
+  if (!result.ok) {
+    return;
+  }
+  notice('ok', result.payload.teardown);
+  await refreshSession();
+  // 撤回把文件改回去了（新建的会消失），树还照老样子画就是在骗人
+  await refreshPending();
+  refreshFiles();
+}
+
 /**
  * 动作行：四个动作 + 一个通用出口 + 「全选」。
  *
@@ -6837,6 +7153,9 @@ function regenTraceHtml(trace) {
 function testsActionsHtml(report, cases, picked, known, opts) {
   const busy = opts.busy === 'regenerate';
   const held = !!(opts.regenerated && !opts.regenerated.released);
+  // 会话开着时这一行是「整个会话」的出口（处置只有一处，见 renderPending）：
+  // 于是「接受 / 中断」说的不再是这一批改动，还得补上两枚撤销粒度
+  const session = opts.session && opts.session.present ? opts.session : null;
   const count = picked.size;
   const failing = pickableIndexes(report);
   const allPicked = failing.length > 0 && failing.every(index => picked.has(index));
@@ -6846,6 +7165,16 @@ function testsActionsHtml(report, cases, picked, known, opts) {
   const nextTitle = held
       ? '先处理上面那批重新生成的测试代码：看过之后点「放行」'
       : '你觉得是开发 AI 错了：把勾中的失败用例一次性回喂给开发，然后跑一轮';
+  // 没有会话时这四个字一个字都不动（老断言照旧）：会话里的「接受」定稿的是<b>整个会话</b>，
+  // 「中断」回滚的也是整个会话，跟一次运行的说法不能混着用
+  const acceptText = session ? '接受（整个会话定稿）' : '接受这批改动';
+  const acceptWhy = session
+      ? '接受：整个会话定稿——这几轮的改动留在磁盘上，清掉快照与测试产物，并把环境数据重置一次'
+      : '接受：改动留在磁盘上，删掉快照与测试产物，并把环境数据重置一次';
+  const interruptText = session ? '中断（回滚整个会话）' : '中断 / 恢复到初始';
+  const interruptWhy = session
+      ? '中断：回滚整个会话——文件恢复成会话开始之前的样子，删掉快照与测试产物，并把环境数据重置一次'
+      : '中断：文件恢复到这次运行之前，删掉快照与测试产物，并把环境数据重置一次';
   return '<div class="pending-actions">'
       + (failing.length
           ? '<button type="button" class="ghost" data-act="pick-all"'
@@ -6862,13 +7191,31 @@ function testsActionsHtml(report, cases, picked, known, opts) {
       + '<button type="button" class="ghost" data-act="known"'
       + ' title="你觉得这几条根本不重要或者是误报：标成已知失败，它们不再算数">'
       + '不重要 / 误报</button>'
-      + (opts.pending
+      // 会话开着时也要给这两枚：会话的出口就是它们（`opts.pending` 说的是「磁盘上还有
+      // 待处置的改动」，而在会话里那一份可能刚好一份都不剩——比如最后一轮跑失败、
+      // 引擎自己回滚了。那时这一行要是没有接受 / 中断，用户就只剩两个撤销可点，
+      // 而这个会话永远结束不了）
+      + (opts.pending || session
           ? '<button type="button" class="ghost" data-act="accept"'
-              + ' title="接受：改动留在磁盘上，删掉快照与测试产物，并把环境数据重置一次">'
-              + '接受这批改动</button>'
+              + ' title="' + escapeHtml(acceptWhy) + '">' + escapeHtml(acceptText) + '</button>'
               + '<button type="button" class="ghost" data-act="interrupt"'
-              + ' title="中断：文件恢复到这次运行之前，删掉快照与测试产物，并把环境数据重置一次">'
-              + '中断 / 恢复到初始</button>'
+              + ' title="' + escapeHtml(interruptWhy) + '">' + escapeHtml(interruptText) + '</button>'
+          : '')
+      // 两枚撤销是次要动作（回退一步 / 回到开头），所以排在「接受 / 中断」后面、都用 ghost。
+      // 点不动时必须把理由写进 title：一个灰着的按钮不解释，用户只会反复点它
+      + (session
+          ? '<button type="button" class="ghost" data-act="undo-round"'
+              + (session.canUndoRound ? '' : ' disabled')
+              + ' title="' + escapeHtml(session.canUndoRound
+                  ? '撤回本轮：回到上一轮结束时的样子，会话接着开，可以再跑下一轮'
+                  : (session.undoRoundWhy || '现在撤不了这一轮'))
+              + '">撤回本轮</button>'
+          + '<button type="button" class="ghost" data-act="undo-session"'
+              + (session.canUndoSession ? '' : ' disabled')
+              + ' title="' + escapeHtml(session.canUndoSession
+                  ? '撤回整个会话：回到会话最开始，会话接着开，可以重新来过'
+                  : (session.undoSessionWhy || '现在撤不了整个会话'))
+              + '">撤回整个会话</button>'
           : '')
       + '<span class="hint">只有「下一轮」会把失败回喂给开发；'
       + '「测试代码错了」只换测试代码，不会自动重跑。</span>'
@@ -7039,6 +7386,9 @@ function testsPanelFor(state1) {
     busy: state1.actionBusy,
     regenerated: state1.regenerated,
     pending: !!(state1.pending && state1.pending.present),
+    // 会话里这一行是「整个会话」的出口：两个处置按钮的文案与两枚撤销粒度都跟着它走
+    // （见 testsActionsHtml）。不传的话，会话开着时这一行还是按「一批改动」说话
+    session: state1.session,
     actions: true,
     // 分母口径：停用的那几条不进分子分母，也勾不动（见 pickableIndexes）
     disabled: state1.disabled,
@@ -7318,6 +7668,11 @@ async function onTestAction(act) {
       // 这两个是既有的处置动作：改动的归宿只有「留下」和「撤回」两种，
       // 失败清单上的两个按钮和待处置面板上那两个打的是同一个接口
       return resolvePending(act);
+    case 'undo-round':
+    case 'undo-session':
+      // 两个撤销粒度：会话还开着，所以它们既不是「接受」也不是「中断」，
+      // 走的是各自那个接口（见 testActionPath）与各自那套刷新
+      return resolveSession(act);
     default:
       return undefined;
   }
@@ -7519,6 +7874,17 @@ async function refreshPending() {
 
 function renderPending() {
   const box = $('pending');
+  // 会话开着时这块面板什么都不画：整个 run（哪怕施工单有 5 步）只有**一处**处置，
+  // 那一处在会话视图里（底部那一行动作，见 testsActionsHtml）。两块面板同时摆着
+  // 同一对「接受 / 中断」，用户会以为要各点一次，而其中一次必然打在水面上
+  if (state.session && state.session.present) {
+    box.innerHTML = '';
+    // wirePanel 平时会顺手更新「运行」按钮，这里跳过它就得自己来一次
+    updateRunButton();
+    // 失败清单那一块也重画：它的处置按钮跟着会话的口径走
+    insertTestsPanel();
+    return;
+  }
   // 每步留档一起传进去：面板按步分组的唯一依据就是它（快照只有一份累计 diff）
   box.innerHTML = pendingPanelHtml(state.pending, state.pendingOpen, state.stepDetail);
   wirePanel(box, open => { state.pendingOpen = open; }, act => resolvePending(act));
@@ -7582,6 +7948,9 @@ async function resolvePending(act) {
   notice('ok', result.payload.teardown
       || (act === 'accept' ? '已保留改动：它们就这样留在磁盘上。' : '已中断：文件回到了改动之前的样子。'));
   state.pendingOpen = null;
+  // 会话先拉：接受 / 中断都是会话的出口（清数据、删产物、留档），状态条上那句
+  // 「第 N 轮」得跟着翻；而 #pending 要不要重新出现，也由「还有没有会话」决定
+  await refreshSession();
   await refreshPending();
   // 中断会把文件改回去（新建的会消失），保留也可能让新文件正式出现在树里；
   // 树还照着老样子画就是在骗人。
@@ -7599,7 +7968,13 @@ function updateRunButton() {
   const blocked = !!(state.pending && state.pending.present);
   const confirm = needsConfirm();
   $('run').disabled = state.running || blocked || confirm;
-  $('run').title = blocked ? '先处置上面的改动：保留或撤回之后才能再运行'
+  // 会话开着时「待处置」那块面板是空的（处置只有一处，见 renderPending），
+  // 所以按住「运行」的理由得指向会话那两枚按钮，不能还指着上面那块空面板
+  const inSession = !!(state.session && state.session.present);
+  $('run').title = blocked
+      ? (inSession
+          ? '这一轮的改动归整个会话处置：用底部那行的「接受 / 中断」，或者接着点「下一轮」'
+          : '先处置上面的改动：保留或撤回之后才能再运行')
       : (confirm ? '先确认这批用例（冻结），再运行' : '');
 }
 

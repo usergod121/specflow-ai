@@ -24,6 +24,7 @@ import com.specflow.review.PlanReviewer;
 import com.specflow.review.PlanStep;
 import com.specflow.review.ReviewOutcome;
 import com.specflow.review.StepAudit;
+import com.specflow.session.Session;
 import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.spec.Spec;
 import com.specflow.spec.SpecValidator;
@@ -196,11 +197,10 @@ public final class RunService implements AgentListener {
         if (hub.running()) {
             throw new IllegalStateException("已有任务正在运行，请等它结束");
         }
+        Session open = openSession();
         // 引擎自己也会拦（见 DevelopmentAgent）。这里先拦一遍是为了让界面在点下的
         // 瞬间就拿到 409，而不是等一个注定被拒的任务跑起来才知道
-        if (waitingSnapshot() != null) {
-            throw new IllegalStateException("上一次的改动还没处置：请先「保留改动」或「撤回改动」");
-        }
+        requireNoForeignChanges(open);
         // 清掉上一次留下的停止请求。放在并发判断<b>之后</b>：
         // 这次提交被拒的时候，上一次运行可能正跑到一半，它的停止请求不该被顺手抹掉
         cancelRequested = false;
@@ -222,10 +222,74 @@ public final class RunService implements AgentListener {
         // 测试阶段只验活着的用例、覆盖核对把停用的排除在分母外、留档与界面说得出分母口径
         List<RunRecord.CaseSwitch> switches = RunRecord.CaseSwitch.append(List.of(),
                 request.pickedDisabled(), true, LocalDateTime.now().toString());
+        // 这一轮属于哪个会话的第几轮（§19）：开着的会话就接着往下数，
+        // 没有就开一个新会话（会话 id = 这一轮的记录 id，见 SessionRef.withId）
+        RunRecord.SessionRef session = nextRound(open);
 
         String runId = hub.startRun(UUID.randomUUID().toString());
-        runner.submit(() -> execute(spec, llm, request.approvedPlan(), settingsOf(request), switches));
+        runner.submit(() -> execute(spec, llm, request.approvedPlan(), settingsOf(request), switches,
+                session, ownSnapshots(open)));
         return runId;
+    }
+
+    /**
+     * 这一次运行是哪一轮：开着的会话就接着往下数，没有会话就是新会话的第一轮。
+     *
+     * <p>为什么不是界面发一个 {@code sessionId} 过来：界面可以旧、可以被改坏、
+     * 也可以被别的调用方绕开（CLI 就是一个），而「现在算第几轮」是一件只有引擎读得到
+     * 全部留档才答得准的事。同理，<b>「下一轮」不需要界面声明自己是下一轮</b>——
+     * 会话开着的时候，任何一次新运行都是它的下一轮；会话只有接受和中断两个出口，
+     * 这也正是用户要的口径（引擎不加自动循环，但也不许在会话中间偷偷开一个新的）。
+     */
+    private static RunRecord.SessionRef nextRound(Session open) {
+        return open == null
+                ? RunRecord.SessionRef.opening()
+                : RunRecord.SessionRef.next(open.id(), open.round() + 1);
+    }
+
+    /**
+     * 这个会话已经留在磁盘上的那几份快照（目录名）。
+     *
+     * <p>它一路传到引擎那一道闸上（{@code DevelopmentAgent.sessionSnapshots}）：
+     * 会话开着的日常就是磁盘上挂着前几轮的改动，而「下一轮」正是在它们之上接着走。
+     * 不把这些名字告诉引擎，每一轮的下一次运行都会被自己人挡在门外——
+     * 表现得就像「每跑完一轮就得先处置一次」。
+     */
+    private static List<String> ownSnapshots(Session open) {
+        return open == null ? List.of()
+                : open.live().stream()
+                        .map(Session.Round::snapshot)
+                        .filter(name -> name != null && !name.isBlank())
+                        .toList();
+    }
+
+    /** 现在开着的那个会话；没有就返回 {@code null}。 */
+    public Session openSession() {
+        return store.session(Teardown.snapshotRoot(projectRoot, project)).orElse(null);
+    }
+
+    /**
+     * 磁盘上那些<b>不归当前会话管</b>的未处置快照：有它就拒绝开工（十五.8 的门禁）。
+     *
+     * <p>今天这一条比老口径松了一点，松的正是会话带来的那件事：会话开着的<b>正常状态</b>
+     * 就是磁盘上挂着几份快照（N 轮的改动都在，等用户点接受或中断）。老口径
+     * 「只要有待处置的快照就拒绝开工」会把「接着跑下一轮」也一起挡掉——而那本来
+     * 就是同一个会话里的下一件事。所以这里放行<b>会话自己的</b>那几份，
+     * 别人的（进程死在半路留下的、或者会话之外那次运行留下的）照旧拦。
+     */
+    private void requireNoForeignChanges(Session open) {
+        List<WorkspaceSnapshot> waiting = Teardown.waiting(projectRoot, project);
+        List<String> foreign = waiting.stream()
+                .map(snapshot -> snapshot.directory().getFileName().toString())
+                .filter(name -> open == null || !open.owns(name))
+                .toList();
+        if (foreign.isEmpty()) {
+            return;
+        }
+        throw new IllegalStateException(open == null
+                ? "上一次的改动还没处置：请先「保留改动」或「撤回改动」"
+                : "有 " + foreign.size() + " 份改动不属于这个会话，还没处置（" + String.join("、", foreign)
+                        + "）：先把它们处置掉，再接着跑下一轮");
     }
 
     /**
@@ -296,9 +360,7 @@ public final class RunService implements AgentListener {
         if (hub.running()) {
             throw new IllegalStateException("已有任务正在运行，请等它结束");
         }
-        if (waitingSnapshot() != null) {
-            throw new IllegalStateException("上一次的改动还没处置：请先「保留改动」或「撤回改动」");
-        }
+        requireNoForeignChanges(openSession());
         RunRecord suspended = store.suspended()
                 .orElseThrow(() -> new IllegalStateException("现在没有挂起的运行，直接点运行就行"));
         cancelRequested = false;
@@ -312,9 +374,14 @@ public final class RunService implements AgentListener {
                 new DevelopmentAgent.Resume(suspended.detail(), force, suspended.planSteps());
         List<RunRecord.CaseSwitch> switches = RunRecord.CaseSwitch.append(List.of(),
                 request.pickedDisabled(), true, LocalDateTime.now().toString());
+        // 续跑同样算这个会话的一轮：挂起那一次磁盘上一个字节都没留下（引擎回滚过），
+        // 所以「接着跑」的进入点就是上一轮结束时的样子——和普通的一轮没有区别，
+        // 差别只在提示词里多一段「它当时说了什么」（见 DevelopmentAgent.Resume）
+        Session open = openSession();
+        RunRecord.SessionRef session = nextRound(open);
         String runId = hub.startRun(UUID.randomUUID().toString());
         runner.submit(() -> execute(spec, llm, request.approvedPlan(), origin,
-                settingsOf(request), switches));
+                settingsOf(request), switches, session, ownSnapshots(open)));
         return runId;
     }
 
@@ -421,6 +488,42 @@ public final class RunService implements AgentListener {
     }
 
     /**
+     * 会话视图（§19）：第几轮、本轮与会话累计两个通过率、本轮成本、两个撤回能不能点、
+     * 以及历史轮次。没有会话时给一份「还没有会话」的同形载荷（见 {@link SessionPayload}）。
+     *
+     * <p>它和 {@code /api/pending} 的分工：那个说的是「磁盘上还留着什么没处置」，
+     * 这个说的是「这件事走到第几轮了」。会话开着的时候界面上<b>只画后者</b>——
+     * 用户看到的处置只有一处，而「一处」正是「整个 run 只处置一次」的落点。
+     */
+    public Map<String, Object> session() {
+        return SessionPayload.of(openSession(), hub.running());
+    }
+
+    /**
+     * 撤回本轮：文件回到<b>上一轮结束时</b>的样子，会话还开着。
+     *
+     * <p>为什么它和「中断」不能合成一个按钮：中断是会话的出口（撤完就不再往下跑了），
+     * 撤回本轮只是一步撤销——用户随时可以点「下一轮」再来一遍。两件事在磁盘上做的
+     * 动作差着一份快照，说成一句话就会逼出「想重来一轮的人只能把整个会话扔掉」。
+     *
+     * @throws IllegalStateException 有任务在跑、没有开着的会话、或者最新那一轮没有可撤的东西
+     */
+    public Teardown.Done undoRound() {
+        requireIdle("撤回本轮");
+        return Teardown.undoRound(projectRoot, project, store, environment);
+    }
+
+    /**
+     * 撤回整个会话：文件回到<b>会话最开始</b>的样子，会话仍然开着。
+     *
+     * @throws IllegalStateException 有任务在跑、没有开着的会话、或者会话里已经没有留着的改动
+     */
+    public Teardown.Done undoSession() {
+        requireIdle("撤回整个会话");
+        return Teardown.undoSession(projectRoot, project, store, environment);
+    }
+
+    /**
      * 最早的那一份未处置快照。
      *
      * <p>正常情况下最多只有一份：引擎在它被处置之前会拒绝开新的运行。
@@ -431,23 +534,26 @@ public final class RunService implements AgentListener {
     }
 
     private void execute(Spec spec, LlmClient llm, PlanReview approved, TestSettings settings,
-                         List<RunRecord.CaseSwitch> switches) {
-        execute(spec, llm, approved, null, settings, switches);
+                         List<RunRecord.CaseSwitch> switches, RunRecord.SessionRef session,
+                         List<String> ownSnapshots) {
+        execute(spec, llm, approved, null, settings, switches, session, ownSnapshots);
     }
 
     /**
      * @param resume 非空表示这是「接着上次跑」，见 {@link #resume(RunRequest, boolean)}
      */
     private void execute(Spec spec, LlmClient llm, PlanReview approved, DevelopmentAgent.Resume resume,
-                         TestSettings settings, List<RunRecord.CaseSwitch> switches) {
+                         TestSettings settings, List<RunRecord.CaseSwitch> switches,
+                         RunRecord.SessionRef session, List<String> ownSnapshots) {
         try {
             // 装饰器：先记进运行留档，再转发给界面推送。两件事互不知道对方存在，
             // CLI 那边套的是同一个录制器，只是转发目标换成了空实现。
             // 回喂那一段也交给它：它要跟着这一轮的记录一起落档（见 RunRecorder）
             AgentListener listener = RunRecorder.start(store, spec, approved, this, currentRefeed,
-                    switches);
+                    switches, session);
             DevelopmentAgent agent = new DevelopmentAgent(projectRoot, project, templates(),
-                    llm, List.of(new CompileVerifier()), listener, settings, environment);
+                    llm, List.of(new CompileVerifier()), listener, settings, environment,
+                    ownSnapshots);
             // 引擎这一侧只认「活着的用例」：停用的不进测试阶段，因此也就不会被
             // CaseTraceCheck 要求实现、不会在失败清单里被报成「没验」。
             // 留档拿到的仍是完整那份清单（录制器手里那个 approved），停用的用例要看得见、能恢复

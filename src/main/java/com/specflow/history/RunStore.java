@@ -3,6 +3,8 @@ package com.specflow.history;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.specflow.exception.SpecflowException;
 import com.specflow.review.PlanReview;
+import com.specflow.session.Session;
+import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.tests.Refeed;
 import com.specflow.util.ProjectFiles;
 
@@ -138,6 +140,52 @@ public final class RunStore {
      */
     public Optional<RunRecord> suspended() {
         return latest().filter(record -> NEEDS_CONTEXT.equals(record.status()));
+    }
+
+    /**
+     * 现在<b>开着的那个会话</b>（§19）；没有就返回空。
+     *
+     * <p>判据全部来自留档，不另存一份「会话状态」：最新那条带会话的运行属于哪个会话，
+     * 那个会话就数它；它的哪几轮还没收场，就折成 {@link Session}。
+     * 存一份状态文件的代价是它迟早和留档对不上，而对不上的表现是
+     * 「界面上说第 3 轮、引擎里其实第 2 轮」。
+     *
+     * <p><b>已经收场的会话不算开着</b>（{@link Session#closed}）：接受或中断过之后，
+     * 下一次运行会开一个<b>新会话</b>——会话是「一次做到满意」的那件事，
+     * 接受完了还往里面塞新一轮，事后谁也说不清那几轮是哪一次的事。
+     *
+     * <p>找的是<b>最新那条带会话的留档</b>，不是「最新那条留档」：命令行跑出来的记录
+     * 不属于任何会话（{@code session} 是 null），它照样会是最新那条。
+     *
+     * @param snapshotRoot 快照根目录（{@code <项目>/.specflow/snapshots}）。会话要把
+     *                     「哪一轮拍的那份快照」对上去，靠的就是这个目录下的名字
+     */
+    public Optional<Session> session(Path snapshotRoot) {
+        List<RunRecord> all = readAll();
+        for (RunRecord record : all) {
+            if (record.session() == null) {
+                continue;
+            }
+            String id = record.session().id();
+            List<RunRecord> mine = sessionRecords(id, all);
+            if (Session.closed(mine)) {
+                return Optional.empty();
+            }
+            return Optional.of(Session.of(id, mine, WorkspaceSnapshot.names(snapshotRoot)));
+        }
+        return Optional.empty();
+    }
+
+    /** 某个会话的全部留档（按轮次序号升序）；没有这个会话时是空表。 */
+    public List<RunRecord> sessionRecords(String sessionId, List<RunRecord> all) {
+        String target = sessionId == null ? "" : sessionId.strip();
+        if (target.isEmpty()) {
+            return List.of();
+        }
+        return all.stream()
+                .filter(record -> record.session() != null && target.equals(record.session().id()))
+                .sorted(Comparator.comparingInt(record -> record.session().round()))
+                .toList();
     }
 
     /**

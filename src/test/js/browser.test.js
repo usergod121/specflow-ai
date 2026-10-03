@@ -3544,11 +3544,41 @@ async function main() {
         .includes('回喂给开发'),
         '回喂不再是一条内联上下文（它现在是引擎侧的路：留档里答得出「这一轮按什么在改」）');
 
+    // 会话视图（§19）：这一次真跑出来的运行属于「一个会话的第 1 轮」，而会话只有两个出口
+    // ——接受（定稿）或中断（回滚整个会话）。这里钉的是「引擎真的开了这个会话、界面真的把它
+    // 画出来了」：模型与几个接口是桩，而这一块的状态条是引擎的 /api/session 给的。
+    // 它同时钉住「整个 run 只处置一次」：会话开着时那块待处置面板必须**不再出现**
+    // （两块面板各摆一对「接受 / 中断」，用户会以为要各点一次）
+    const session26 = await evaluate(`(() => {
+      const bar = document.querySelector('#session .session-bar');
+      return { text: bar ? bar.textContent : '',
+               accept: document.querySelector('#result [data-act="accept"]').textContent,
+               interrupt: document.querySelector('#result [data-act="interrupt"]').textContent,
+               undo: [...document.querySelectorAll('#result [data-act="undo-round"],' +
+                   ' #result [data-act="undo-session"]')].map(one => one.textContent),
+               pending: document.getElementById('pending').textContent.trim() };
+    })()`);
+    check(session26.text.includes('第 1 轮') && session26.text.includes('本轮通过率')
+            && session26.text.includes('会话累计通过率'),
+        '会话状态条上那三样都写出来了（第 N 轮 / 本轮通过率 / 会话累计通过率）：'
+            + JSON.stringify(session26.text.slice(0, 90)));
+    check(session26.text.includes('这一轮花了'),
+        '成本可见：这一轮调了几次模型写在状态条上（用户要看的那个数）：'
+            + JSON.stringify((session26.text.match(/这一轮花了[^·]*/) || [''])[0]));
+    check(session26.interrupt === '中断（回滚整个会话）',
+        '会话里「中断」回滚的是整个会话（文案跟着会话走，不再是一次运行的说法）：'
+            + JSON.stringify(session26.interrupt));
+    check(session26.undo.join('|') === '撤回本轮|撤回整个会话',
+        '两个撤销粒度各是一枚按钮：' + JSON.stringify(session26.undo));
+    check(session26.pending === '',
+        '会话开着时待处置面板不再出现（整个 run 只有一处处置，就在会话那一行）：'
+            + JSON.stringify(session26.pending.slice(0, 60)));
+
     // ④ 接受（磁盘上那份改动留着）；通用出口的按钮与位置也一起看一眼
     check(await evaluate(`document.querySelector('#result [data-act="accept"]') !== null`),
         '磁盘上有待处置的改动，所以「接受」在（和待处置面板同一个前提）');
     check(await evaluate(`document.querySelector('#result [data-act="interrupt"]').textContent`)
-        === '中断 / 恢复到初始', '通用出口只有这一个：「中断 / 恢复到初始」');
+        === '中断（回滚整个会话）', '通用出口只有这一个：「中断」（会话里它回滚的是整个会话）');
     check(await evaluate(`![...document.querySelectorAll('button')]
         .some(button => button.textContent.includes('我的设计错了'))`),
         '界面上不出现「我的设计错了」这种按钮（十五.6）');
@@ -4340,6 +4370,219 @@ async function main() {
     })()`);
     check(await evaluate(`document.querySelectorAll('#cases .case-item').length`) === 0,
         '收尾：灌进去的那份清单清掉了，页面上不留这一链的痕迹');
+
+    // ---------- 链 31：会话视图（多轮与两个撤销粒度） ----------
+    // 会话是这一批唯一的跨轮视角：顶部一条状态、折起来的历史轮次、底部一行处置动作。
+    // 这一链全程装桩（/api/session 与两个撤销接口）：真去跑两轮要烧真模型，而这里要看的是
+    // 「拿到这样一份会话之后，界面把三样东西画对了没有、两个撤销粒度打没打对接口」。
+    //
+    // 顺带钉住一件在纯逻辑测试里钉不住的事：**刷新过页面之后仍然处置得了**。
+    // 处置那一行长在本轮失败清单里面，而那一轮的结果只在它跑完那一次的终态事件里到过界面——
+    // 刷新过页面 #result 就是空的，会话开着时 #pending 又是空的（处置只有一处），
+    // 那时候屏幕上必须还有接受 / 中断，而不是一个只能再跑一轮的死界面。
+    console.log('\n链 31　会话视图：第 N 轮、两个通过率、历史轮次、两个撤销粒度：');
+
+    const session31 = {
+      present: true, busy: false, id: '20261003-100000-000',
+      round: 3, rounds: 3, liveRounds: 1, consecutiveFailing: 1, softHint: null,
+      canUndoRound: true, canUndoSession: true, undoRoundWhy: '', undoSessionWhy: '',
+      roundPassed: 1, roundTotal: 2, sessionPassed: 3, sessionTotal: 5,
+      roundCalls: 7, roundMillis: 96000, roundDuration: '1 分 36 秒',
+      current: {
+        round: 3, recordId: '20261003-103000-000', status: 'TESTS_FAILED',
+        detail: '测试没过', startedAt: '2026-10-03T10:30:00', finishedAt: '2026-10-03T10:31:36',
+        calls: 7, millis: 96000, duration: '1 分 36 秒', undone: false, removed: false,
+        settlement: null, settlementSummary: '', snapshot: '20261003-103000-000.pending',
+        testCases: [
+          { index: 1, what: 'a 能变成 2', how: '读 Foo.java 里的 a', level: 'MUST',
+            expected: 'a == 2', acceptance: 'R-1' },
+          { index: 2, what: '编得过', how: '跑一次编译', level: 'SHOULD',
+            expected: '编译通过', acceptance: '无' },
+        ],
+        tests: { exit: 1, directory: 'tools/20990101-000000',
+          cases: [{ index: 1, passed: true }, { index: 2, passed: false }],
+          failures: [{ kind: 'ASSERTION', testCase: '2', expected: '编译通过', actual: '编译失败',
+            opinion: 'the product code is wrong' }],
+          links: [{ index: 1, file: 'tools/20990101-000000/UnitTests.java', line: 4 },
+            { index: 2, file: 'tools/20990101-000000/UnitTests.java', line: 9 }],
+          output: 'PASS | 1\nFAIL | 2 | compiled | not compiled\n' },
+        changes: [{ path: 'src/main/java/com/demo/Foo.java', created: false, bytes: 29,
+          diff: '-    int a = 1;\n+    int a = 2;\n' }],
+        verdicts: [{ index: 2, owner: 'CODE', at: '2026-10-03T10:32:00',
+          label: '开发 AI 错了（已回喂）' }],
+        disabled: [], refeed: [2], coverage: null, failing: true,
+      },
+      history: [],
+    };
+    session31.history = [
+      session31.current,
+      { ...session31.current, round: 2, recordId: '20261003-102000-000', undone: true,
+        removed: false, snapshot: null, settlement: 'UNDO_ROUND',
+        settlementSummary: '已撤回本轮（文件回到上一轮结束时的样子）；当时带着 1 条失败用例（用例 2）',
+        changes: [], verdicts: [], refeed: null },
+      { ...session31.current, round: 1, recordId: '20261003-101000-000', undone: false,
+        removed: true, snapshot: null, settlement: null, settlementSummary: '',
+        changes: [], verdicts: [], refeed: null },
+    ];
+    await evaluate(`(() => {
+      window.__sessionCalls = [];
+      window.__session = ${JSON.stringify(session31)};
+      const inner = window.fetch;
+      window.__realFetch31 = inner;
+      window.fetch = (url, opts) => {
+        const u = String(url);
+        if (u.endsWith('/api/session')) {
+          return Promise.resolve(new Response(JSON.stringify(window.__session),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        // 会话开着的日常就是「磁盘上挂着前几轮的改动」：待处置那一份也桩成「有」，
+        // 不然「运行被按住时指向哪儿」那一句测不到（真项目此刻是干净的）
+        if (u.endsWith('/api/pending')) {
+          return Promise.resolve(new Response(JSON.stringify({
+            present: true, id: 'probe.pending', canAccept: true,
+            summary: '1 个文件：新增 0、修改 1',
+            files: [{ path: 'src/main/java/com/demo/Foo.java', created: false,
+              diff: '-    int a = 1;\\n+    int a = 2;\\n' }],
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (u.endsWith('/api/session/undo-round') || u.endsWith('/api/session/undo-session')) {
+          const whole = u.endsWith('undo-session');
+          window.__sessionCalls.push(u.slice(u.indexOf('/api/session/')));
+          // 撤完这一摊就没有还能撤的东西了：对应的那一枚按钮该变成灰的，
+          // 而且带着服务端那句「为什么撤不了」（另一枚不受影响——两个粒度各管各的）
+          if (whole) {
+            window.__session.canUndoSession = false;
+            window.__session.undoSessionWhy =
+                '这个会话里已经没有还留着的改动了：磁盘本来就在会话最开始的样子';
+          } else {
+            window.__session.canUndoRound = false;
+            window.__session.undoRoundWhy = '最后一轮已经撤过了：要接着跑就点「下一轮」';
+          }
+          return Promise.resolve(new Response(JSON.stringify({ done: true,
+            teardown: whole
+              ? '已撤回整个会话：恢复 2 个文件到会话最开始的样子；删掉快照与 3 份测试产物。会话还开着：接着跑就点「下一轮」'
+              : '已撤回本轮：恢复 1 个文件到上一轮结束时的样子；删掉快照与 1 份测试产物。会话还开着：接着跑就点「下一轮」' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return inner(url, opts);
+      };
+      return 'ok';
+    })()`);
+    // 先会话、再待处置面板：这正是页面自己的顺序（进项目 / 运行终态那两处，
+    // 见 refreshSession 的调用点）——反过来的话「运行」被按住时指向的还是那块已被清空的
+    // 待处置面板
+    await evaluate(`refreshSession().then(() => refreshPending())`);
+    await waitFor(`document.querySelector('#session .session-bar') !== null`, '会话状态条画出来了');
+    await waitFor(`document.querySelector('#result [data-act="accept"]') !== null`,
+        '刷新过页面也能处置：中间那一层借会话那一轮补出来了');
+
+    const bar31 = await evaluate(`document.querySelector('#session .session-bar').textContent`);
+    check(bar31.includes('第 3 轮') && bar31.includes('本轮通过率')
+            && bar31.includes('会话累计通过率') && bar31.includes('1/2') && bar31.includes('3/5'),
+        '顶部三样都写出来了（第 N 轮 / 本轮通过率 / 会话累计通过率，两个通过率都要）：'
+            + JSON.stringify(bar31.slice(0, 100)));
+    check(bar31.includes('会话累计只算没被撤回的轮次'),
+        '累计那个数带着口径（不写，用户会按「会话里所有轮次」去理解它）');
+    check(bar31.includes('这一轮花了 7 次调用') && bar31.includes('1 分 36 秒'),
+        '成本可见：这一轮的调用次数与耗时都在状态条上：' + JSON.stringify(bar31));
+    check(await evaluate(`document.getElementById('pending').textContent.trim()`) === '',
+        '会话开着时待处置面板是空的（处置只有一处）');
+    check(String(await evaluate(`document.getElementById('run').title`)).includes('会话'),
+        '被按住的原因指向会话那一行（不能指着上面那块空面板）：'
+            + JSON.stringify(await evaluate(`document.getElementById('run').title`)));
+
+    const actions31 = await evaluate(`(() => ({
+      accept: document.querySelector('#result [data-act="accept"]').textContent,
+      interrupt: document.querySelector('#result [data-act="interrupt"]').textContent,
+      undo: [...document.querySelectorAll('#result [data-act="undo-round"],' +
+          ' #result [data-act="undo-session"]')].map(one => one.textContent),
+      disabled: [...document.querySelectorAll('#result [data-act="undo-round"],' +
+          ' #result [data-act="undo-session"]')].map(one => one.disabled),
+      acceptCount: document.querySelectorAll('#result [data-act="accept"]').length,
+    }))()`);
+    check(actions31.acceptCount === 1,
+        '整个页面上「接受」只有一处（两块面板各摆一对，用户会以为要各点一次）：'
+            + JSON.stringify(actions31.acceptCount));
+    check(actions31.accept === '接受（整个会话定稿）' && actions31.interrupt === '中断（回滚整个会话）',
+        '会话里这两个出口说的是「整个会话」（文案跟着会话走）：'
+            + JSON.stringify([actions31.accept, actions31.interrupt]));
+    check(actions31.undo.join('|') === '撤回本轮|撤回整个会话' && actions31.disabled.join() === 'false,false',
+        '两枚撤销粒度各是一枚按钮，而且此刻都能点：' + JSON.stringify(actions31));
+
+    const history31 = await evaluate(`(() => {
+      const box = document.querySelector('#session .session-history');
+      const blocks = [...box.querySelectorAll('.session-round-block')].map(one => ({
+        round: Number(one.dataset.round), gone: one.dataset.gone, text: one.textContent,
+      }));
+      return { tag: box.tagName, open: box.open, blocks,
+               diff: box.querySelector('.session-round-block[data-round="3"] .diff').textContent };
+    })()`);
+    check(history31.tag === 'DETAILS' && history31.open === false,
+        '历史轮次折着放（一轮一块，跑上五轮就把结果顶出屏幕了）');
+    check(history31.blocks.length === 3 && history31.blocks[0].round === 3
+            && history31.blocks[2].round === 1,
+        '三轮都在，而且是新 → 旧：' + JSON.stringify(history31.blocks.map(one => one.round)));
+    check(history31.blocks[0].text.includes('第 3 轮') && history31.blocks[0].text.includes('通过率 1/2')
+            && history31.blocks[0].text.includes('修改 src/main/java/com/demo/Foo.java')
+            && history31.blocks[0].text.includes('用例 2：开发 AI 错了'),
+        '最新那一轮说清了四件事（终态 / 每轮通过率 / 改了哪些文件 / 你判了谁错）：'
+            + JSON.stringify(history31.blocks[0].text.slice(0, 160)));
+    check(history31.diff.includes('int a = 2'),
+        '轮次间 diff 画在那一轮底下（第 N 轮相对第 N-1 轮改了什么）：'
+            + JSON.stringify(history31.diff));
+    check(history31.blocks[1].text.includes('已撤回（回到第 1 轮结束时的样子）')
+            && history31.blocks[1].gone === 'true',
+        '被撤回的那一轮说的是「回到第 1 轮结束时的样子」（它自己那一轮不算在「上一轮」里）：'
+            + JSON.stringify(history31.blocks[1].text.slice(0, 80)));
+    check(history31.blocks[2].text.includes('这一轮没留下改动（它自己回滚了）'),
+        '「没留下改动」和「被撤回」是两句不同的话（前者是它自己回滚了，后者是人撤的）：'
+            + JSON.stringify(history31.blocks[2].text.slice(0, 80)));
+
+    // 两个撤销粒度各打各的接口：接反了就是把用户攒的整个会话一次弄没
+    await evaluate(`document.querySelector('#result [data-act="undo-round"]').click(); 'ok'`);
+    await sleep(400);
+    check((await evaluate(`window.__sessionCalls.join('|')`)) === '/api/session/undo-round',
+        '「撤回本轮」打的是 /api/session/undo-round：'
+            + JSON.stringify(await evaluate(`window.__sessionCalls.join('|')`)));
+    check(String(await evaluate(`document.getElementById('notice').textContent`))
+            .includes('已撤回本轮：恢复 1 个文件'),
+        '回音用的是服务端那句收场话（不是界面自己拼的「已撤回」）：'
+            + JSON.stringify(await evaluate(`document.getElementById('notice').textContent`)));
+    const afterUndo31 = await evaluate(`(() => {
+      const round = document.querySelector('#result [data-act="undo-round"]');
+      return { disabled: round.disabled, title: round.title,
+               bar: document.querySelector('#session .session-bar').textContent };
+    })()`);
+    check(afterUndo31.disabled === true && afterUndo31.title.includes('已经撤过'),
+        '撤过之后那枚按钮变成灰的，而且 title 里写着为什么（灰按钮不解释，用户只会反复点它）：'
+            + JSON.stringify([afterUndo31.disabled, afterUndo31.title]));
+    check(afterUndo31.bar.includes('第 3 轮'),
+        '撤完按新的一份会话重画（状态条还在，没被抹掉）');
+
+    await evaluate(`document.querySelector('#result [data-act="undo-session"]').click(); 'ok'`);
+    await sleep(400);
+    check((await evaluate(`window.__sessionCalls.join('|')`))
+            === '/api/session/undo-round|/api/session/undo-session',
+        '「撤回整个会话」打的是另一个接口（两个粒度不许接成同一个）：'
+            + JSON.stringify(await evaluate(`window.__sessionCalls.join('|')`)));
+    check(String(await evaluate(`document.getElementById('notice').textContent`))
+            .includes('已撤回整个会话：恢复 2 个文件'),
+        '它回来的那句话也原样摆出来：'
+            + JSON.stringify(await evaluate(`document.getElementById('notice').textContent`)));
+
+    // 桩与灌进去的东西收干净：后面是收尾那一段
+    await evaluate(`(() => {
+      window.fetch = window.__realFetch31;
+      state.session = null;
+      state.tests = null;
+      state.testsCases = null;
+      state.recordId = '';
+      state.plan = null;
+      renderSession();
+      return 'ok';
+    })()`);
+    check(await evaluate(`document.querySelector('#session').textContent`) === '',
+        '收尾：会话视图清掉了，页面上不留这一链的痕迹');
 
     // ---------- 收尾 ----------
     console.log('\n整轮：');

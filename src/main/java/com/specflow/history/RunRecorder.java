@@ -147,14 +147,29 @@ public final class RunRecorder implements AgentListener {
      */
     private List<PlanReview.TestCase> refinedCases;
 
+    /**
+     * 这次运行属于<b>哪个会话的第几轮</b>（会话 = N 轮，见 {@code Session}）。
+     *
+     * <p>开工那一刻就定下来了（引擎在提交时算好：接着开着的会话就是下一轮），
+     * 所以和 {@link #refeed} 一样在构造时收着、写记录时落档。它是「按会话翻记录」唯一的依据：
+     * 不落这一栏，N 轮就散成一堆互不相干的时间戳，事后分不清「同一件事的第三轮」
+     * 和「另一件恰好接着做的事」。
+     *
+     * <p>{@code null} = 这次运行不属于任何会话（命令行那条路，以及老调用方）——
+     * 留档里于是没有这一项，与老记录同形。
+     */
+    private final RunRecord.SessionRef session;
+
     private RunRecorder(RunStore store, AgentListener delegate, Spec spec, PlanReview approved,
-                        Refeed refeed, List<RunRecord.CaseSwitch> caseSwitches) {
+                        Refeed refeed, List<RunRecord.CaseSwitch> caseSwitches,
+                        RunRecord.SessionRef session) {
         this.store = store;
         this.delegate = delegate;
         this.spec = spec;
         this.approved = approved;
         this.refeed = refeed == null ? Refeed.none() : refeed;
         this.caseSwitches = caseSwitches == null ? List.of() : List.copyOf(caseSwitches);
+        this.session = session;
         LocalDateTime now = LocalDateTime.now();
         this.id = STAMP.format(now);
         this.startedAt = now.toString();
@@ -175,7 +190,8 @@ public final class RunRecorder implements AgentListener {
      */
     public static RunRecorder start(RunStore store, Spec spec, PlanReview approved,
                                     AgentListener delegate, Refeed refeed) {
-        return new RunRecorder(store, delegate, spec, approved, refeed, List.of());
+        return new RunRecorder(store, delegate, spec, approved, refeed,
+                List.<RunRecord.CaseSwitch>of(), null);
     }
 
     /**
@@ -189,7 +205,23 @@ public final class RunRecorder implements AgentListener {
     public static RunRecorder start(RunStore store, Spec spec, PlanReview approved,
                                     AgentListener delegate, Refeed refeed,
                                     List<RunRecord.CaseSwitch> caseSwitches) {
-        return new RunRecorder(store, delegate, spec, approved, refeed, caseSwitches);
+        return new RunRecorder(store, delegate, spec, approved, refeed, caseSwitches, null);
+    }
+
+    /**
+     * 带「这一次是哪一轮会话」的那一版：界面提交的运行都走它（§19）。
+     *
+     * <p>再开一个重载而不是改掉上面那个签名：会话是 Web 那一侧的概念，命令行没有它
+     * （{@code RunCommand} 一次就是一件事，老用法一个字节都不许变）。让它多传一个 {@code null}，
+     * 只是给它添一处没意义的参数。
+     *
+     * @param session 这一轮属于哪个会话的第几轮；{@code null} = 不属于会话
+     */
+    public static RunRecorder start(RunStore store, Spec spec, PlanReview approved,
+                                    AgentListener delegate, Refeed refeed,
+                                    List<RunRecord.CaseSwitch> caseSwitches,
+                                    RunRecord.SessionRef session) {
+        return new RunRecorder(store, delegate, spec, approved, refeed, caseSwitches, session);
     }
 
     // ---------- 记录并转发 ----------
@@ -395,7 +427,12 @@ public final class RunRecorder implements AgentListener {
                 // 「它没有改动」：只有这一轮真回喂了才给这个结论（见 Refeed.unchanged）
                 refeed.present() ? Refeed.unchanged(refeed, result.changes()) : null,
                 // 谁在什么时候停用了哪几条（开工那一刻的那份集合，见 caseSwitches）
-                caseSwitches.isEmpty() ? null : caseSwitches);
+                caseSwitches.isEmpty() ? null : caseSwitches,
+                // 这一轮在哪个会话里：开新会话时会话 id 就是这一轮的记录 id，所以在这里补上
+                // （见 SessionRef.withId——两处各生成一个 id，迟早出现「会话指向一条不存在的记录」）
+                session == null ? null : session.withId(id),
+                // 跑完的时刻：它和 startedAt 一起回答「这一轮花了多久」（会话视图上的成本）
+                LocalDateTime.now().toString());
         try {
             store.save(record);
             log.debug("运行记录已写入 {}", store.directory().resolve(id));

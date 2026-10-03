@@ -5,6 +5,7 @@ import com.specflow.exception.SpecflowException;
 import com.specflow.history.RunRecord;
 import com.specflow.history.RunStore;
 import com.specflow.project.ProjectConfig;
+import com.specflow.session.Session;
 import com.specflow.snapshot.WorkspaceSnapshot;
 import com.specflow.util.SafePathResolver;
 import org.slf4j.Logger;
@@ -15,7 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 收场：一次运行跑完之后，把三摊东西各自收干净，并把人的选择写进留档（十五.8）。
+ * 收场：一次运行（或者一个会话）跑完之后，把三摊东西各自收干净，并把人的选择写进留档（十五.8）。
  *
  * <p><b>为什么单独成类。</b>「接受」和「中断」不只在界面上有：CLI 也有 {@code accept} /
  * {@code rollback}。收场要做的四件事（留或是撤文件、删快照、删测试产物、清环境数据、落档）
@@ -31,24 +32,40 @@ import java.util.List;
  *   <li><b>测试产物</b>——{@code tools/<时间戳>/}，留档里记着哪几份（跑的那一份 + 重新生成过的）；</li>
  *   <li><b>环境数据</b>——跑 {@code reset}，把库/缓存恢复到一个已知状态。
  *       它刻意<b>不</b>叫回滚：回滚是「文件回到运行前」，而数据只需要「下次不是一个脏起点」。
- *       容器<b>不</b>动（十五.5：容器常驻复用）——只有环境坏了、关项目、用户手动才 {@code down -v}。</li>
+ *       容器<b>不动</b>（十五.5：容器常驻复用）——只有环境坏了、关项目、用户手动才 {@code down -v}。</li>
  * </ul>
  *
  * <p><b>后两件为什么是 best-effort。</b>它们发生在「用户刚做了决定」之后，而那个决定已经生效了。
  * 为一条清理命令把整个请求变成 500，用户会以为自己的决定没生效——而它其实生效了。
  * 收不掉的如实报出来（十五.9：清理做不到 100%），不假装收干净了。
+ *
+ * <p><b>会话的四个动作走同一份实现</b>（§19）。会话（N 轮）和单次运行的差别只有「动几份快照、
+ * 落几轮的档」，四件事的顺序、前置条件、best-effort 的口径一模一样：
+ * <ul>
+ *   <li>{@link Choice#ACCEPT} 接受：留文件、删快照、删产物、清数据、整个会话定稿；</li>
+ *   <li>{@link Choice#INTERRUPT} 中断：撤到<b>会话最开始</b>，然后收摊（会话到此为止）；</li>
+ *   <li>{@link Choice#UNDO_ROUND} 撤回本轮：撤到<b>上一轮结束时</b>，会话还开着；</li>
+ *   <li>{@link Choice#UNDO_SESSION} 撤回整个会话：撤到<b>会话最开始</b>，会话仍然开着。</li>
+ * </ul>
+ * 中断和撤回整个会话在文件上做的是同一件事（都回到会话最开始），差别在<b>会话要不要接着跑</b>：
+ * 中断是出口，撤回是「重来一遍」。把这一条写清楚，是因为界面上这两个按钮长得几乎一样，
+ * 而它们的后果一个是结束、一个是继续。
  */
 public final class Teardown {
 
     private static final Logger log = LoggerFactory.getLogger(Teardown.class);
 
-    /** 用户把这次运行怎么了结的（十五.8 的两种收场）。 */
+    /** 用户把这次运行（或者这个会话）怎么了结的（十五.8 的两种收场 + §19 的两种撤销）。 */
     public enum Choice {
 
         /** 接受：磁盘上的改动留着。 */
         ACCEPT(RunRecord.Settlement.ACCEPT),
-        /** 中断（恢复到初始）：文件按快照回到这次运行开始前。 */
-        INTERRUPT(RunRecord.Settlement.INTERRUPT);
+        /** 中断（恢复到初始）：文件按快照回到这次运行（会话）开始前。 */
+        INTERRUPT(RunRecord.Settlement.INTERRUPT),
+        /** 撤回本轮：只回滚最后一轮，文件回到上一轮结束时的样子。 */
+        UNDO_ROUND(RunRecord.Settlement.UNDO_ROUND),
+        /** 撤回整个会话：文件回到会话最开始的样子。 */
+        UNDO_SESSION(RunRecord.Settlement.UNDO_SESSION);
 
         private final String recorded;
 
@@ -73,9 +90,12 @@ public final class Teardown {
      * @param reset     环境数据重置<b>成功</b>了。没声明环境、或者没初始化过时也是 {@code false}——
      *                  那种情况下没有可重置的东西，原始原因（如果有）在 {@code problems} 里
      * @param problems  没做成的那些事（原话）。空表示这一趟都干净
+     * @param rounds    这一次处置覆盖了会话的<b>几轮</b>；单次运行（不属于任何会话）时是 0。
+     *                  它只用来把那句话说准（「整个会话 3 轮」）——不写的话，
+     *                  用户从回音里看不出自己刚接受的是三轮还是一次
      */
     public record Done(boolean settled, Choice choice, int files, List<String> artifacts,
-                       boolean reset, List<String> problems) {
+                       boolean reset, List<String> problems, int rounds) {
 
         public Done {
             artifacts = artifacts == null ? List.of() : List.copyOf(artifacts);
@@ -87,9 +107,15 @@ public final class Teardown {
             if (!settled) {
                 return "没有待处置的改动：这次收场什么都没做";
             }
-            StringBuilder out = new StringBuilder(choice == Choice.ACCEPT
-                    ? "已接受：改动留在磁盘上"
-                    : "已中断：恢复 " + files + " 个文件到这次运行开始前");
+            // 会话和单次运行是两件事，说法必须分得开：一遍「已接受」在 N 轮的会话里
+            // 到底结掉了几轮，用户只能从这句话看出来
+            String scope = rounds > 0 ? "整个会话 " + rounds + " 轮" : "这次运行";
+            StringBuilder out = new StringBuilder(switch (choice) {
+                case ACCEPT -> "已接受：" + scope + "的改动留在磁盘上";
+                case INTERRUPT -> "已中断：恢复 " + files + " 个文件到" + startOf() + "的样子";
+                case UNDO_ROUND -> "已撤回本轮：恢复 " + files + " 个文件到上一轮结束时的样子";
+                case UNDO_SESSION -> "已撤回整个会话：恢复 " + files + " 个文件到会话最开始的样子";
+            });
             out.append("；删掉快照");
             out.append(artifacts.isEmpty() ? "（这次没有测试产物）"
                     : "与 " + artifacts.size() + " 份测试产物");
@@ -100,10 +126,18 @@ public final class Teardown {
                 // 这里再说一句「没有需要重置的环境数据」就是假话（它明明有，只是没清成）
                 out.append("；没有需要重置的环境数据");
             }
+            if (choice == Choice.UNDO_ROUND || choice == Choice.UNDO_SESSION) {
+                out.append("。会话还开着：接着跑就点「下一轮」");
+            }
             if (!problems.isEmpty()) {
                 out.append("。没收掉的：").append(String.join("；", problems));
             }
             return out.toString();
+        }
+
+        /** 「回到哪」的那半句话：会话撤销回会话最开始，单次运行回这次运行开始前。 */
+        private String startOf() {
+            return rounds > 0 ? "会话最开始" : "这次运行开始前";
         }
     }
 
@@ -122,8 +156,19 @@ public final class Teardown {
         return WorkspaceSnapshot.undisposed(resolver, resolver.resolve(project.snapshot().dir()));
     }
 
+    /** 这个项目的快照根目录（会话要拿它把「哪一轮拍的那份快照」对上去）。 */
+    public static Path snapshotRoot(Path projectRoot, ProjectConfig project) {
+        SafePathResolver resolver = new SafePathResolver(projectRoot);
+        return resolver.resolve(project.snapshot().dir());
+    }
+
     /**
      * 收场：文件与快照 → 测试产物 → 环境数据 → 收场落档。
+     *
+     * <p>磁盘上挂着一个<b>开着的会话</b>时，这一次处置是冲着整个会话去的（§19）：
+     * N 轮的改动一起定稿或一起撤回，快照一份不剩。不这么做的话，用户点一次「接受」
+     * 只结掉最后一轮，前面几轮的快照还挂在那儿继续挡着下一次运行——
+     * 「一次处置」就成了「N 次处置」，而用户点第二下时根本不知道还有东西没结。
      *
      * @param environment 这个项目的测试环境；没有环境（没写 {@code env.yaml}）时一次进程都不起
      * @throws SpecflowException 文件这一步没做成（工作区还在半途）。那时<b>不</b>写收场留档：
@@ -132,9 +177,170 @@ public final class Teardown {
     public static Done settle(Path projectRoot, ProjectConfig project, RunStore store,
                               TestEnvironment environment, Choice choice) {
         Path root = projectRoot.toAbsolutePath().normalize();
+        Session session = store.session(snapshotRoot(root, project)).orElse(null);
+        if (session != null && !session.rounds().isEmpty()) {
+            return settleSession(root, project, store, environment, session, choice);
+        }
+        return settleSingle(root, project, store, environment, choice);
+    }
+
+    /**
+     * 撤回本轮：文件回到<b>上一轮结束时</b>的样子，会话还开着。
+     *
+     * @throws IllegalStateException 没有开着的会话，或者最新那一轮没有可撤的东西
+     *                               （它自己回滚了 / 已经撤过了）
+     */
+    public static Done undoRound(Path projectRoot, ProjectConfig project, RunStore store,
+                                 TestEnvironment environment) {
+        return undo(projectRoot, project, store, environment, Choice.UNDO_ROUND);
+    }
+
+    /**
+     * 撤回整个会话：文件回到<b>会话最开始</b>的样子，会话仍然开着。
+     *
+     * <p>和 {@link Choice#INTERRUPT} 的差别只有一个：会话要不要接着跑。
+     * 中断是出口，撤回是「重来一遍」。
+     *
+     * @throws IllegalStateException 没有开着的会话，或者这个会话里已经没有还留着的改动
+     */
+    public static Done undoSession(Path projectRoot, ProjectConfig project, RunStore store,
+                                   TestEnvironment environment) {
+        return undo(projectRoot, project, store, environment, Choice.UNDO_SESSION);
+    }
+
+    private static Done undo(Path projectRoot, ProjectConfig project, RunStore store,
+                             TestEnvironment environment, Choice choice) {
+        Path root = projectRoot.toAbsolutePath().normalize();
+        Session session = store.session(snapshotRoot(root, project)).orElse(null);
+        if (session == null) {
+            throw new IllegalStateException("现在没有开着的会话：没有可撤回的东西");
+        }
+        boolean allowed = choice == Choice.UNDO_ROUND ? session.canUndoRound() : session.canUndoSession();
+        if (!allowed) {
+            throw new IllegalStateException(choice == Choice.UNDO_ROUND
+                    ? session.undoRoundWhy() : session.undoSessionWhy());
+        }
+        return settleSession(root, project, store, environment, session, choice);
+    }
+
+    // ---------- 会话：一次处置覆盖 N 轮 ----------
+
+    /**
+     * 会话级的收场：动哪些快照、删哪几轮的产物、哪几轮落什么档。
+     *
+     * <p>快照那一摊取的是<b>磁盘上挂着的那几份</b>，不是「按会话算出来的那几份」：
+     * 两者正常时一模一样，而万一多出一份（进程死在半路留下的、没有任何留档的残骸），
+     * 按磁盘取能把这一摊一起收干净——只认自己那几份的话，用户点完「接受」还是开不了工，
+     * 而界面上那个待处置面板此时已经被会话视图顶掉了，他连在哪儿处置都找不到。
+     */
+    private static Done settleSession(Path root, ProjectConfig project, RunStore store,
+                                      TestEnvironment environment, Session session, Choice choice) {
+        List<WorkspaceSnapshot> waiting = waiting(root, project);
+        List<WorkspaceSnapshot> target = waiting;
+        if (choice == Choice.UNDO_ROUND) {
+            String only = session.current().map(Session.Round::snapshot).orElse(null);
+            target = waiting.stream().filter(one -> nameOf(one).equals(only)).toList();
+            if (target.isEmpty()) {
+                throw new IllegalStateException(session.undoRoundWhy().isEmpty()
+                        ? "找不到这一轮的快照：它可能已经被撤掉了" : session.undoRoundWhy());
+            }
+        }
+        // 接受什么都不用动文件；三种回滚都要先恢复
+        int files = restore(target, choice);
+        for (WorkspaceSnapshot snapshot : target) {
+            snapshot.discard();
+        }
+
+        List<String> problems = new ArrayList<>();
+        List<String> deleted = new ArrayList<>();
+        // 读一次、用两次（删产物、落档）：同一份记录读两遍不止是浪费，
+        // 还会在「两次读之间文件变了」时让两件事依据两份不同的留档
+        List<RunRecord> scoped = new ArrayList<>();
+        for (String recordId : settledRounds(session, choice)) {
+            scoped.add(loadQuietly(store, recordId));
+        }
+        for (RunRecord record : scoped) {
+            deleted.addAll(deleteArtifacts(root, record, problems));
+        }
+        boolean reset = resetData(environment, problems);
+        // 不属于这个会话的快照（进程死在半路留下的残骸）：这一次不碰它们，但要报出来——
+        // 报成「都收干净了」而它还在，用户下一次运行会被一句「上一次的改动还没处置」挡住，
+        // 而那时他不知道为什么（会话视图已经把待处置面板顶掉了）
+        List<String> leftover = waiting.stream().map(Teardown::nameOf)
+                .filter(name -> !session.owns(name))
+                .toList();
+        if (!leftover.isEmpty()) {
+            problems.add("还有 " + leftover.size() + " 份快照不属于这个会话，这次没动它们（"
+                    + String.join("、", leftover) + "）：收完这个会话再单独处置");
+        }
+        // 落档放在最后：前面三件都做完了，这一栏才是事实。它是 best-effort，理由见类注释
+        for (RunRecord record : scoped) {
+            settleRecord(store, record == null ? "" : record.id(), choice, record, problems);
+        }
+        return new Done(true, choice, files, deleted, reset, problems, session.rounds().size());
+    }
+
+    /**
+     * 这一步要落档的是哪几轮。
+     *
+     * <p>规则只有两条：<b>撤回只动它该动的那几轮</b>（本轮 / 整个会话里还留着改动的那几轮），
+     * <b>接受与中断覆盖所有还没收场的轮次</b>——但<b>不覆盖</b>已经写下的撤回：
+     * 一轮被撤回过就是撤回过，后来接受整个会话并不会把那一轮的改动变回磁盘上，
+     * 把它改写成「已接受」就是留档撒谎。
+     */
+    private static List<String> settledRounds(Session session, Choice choice) {
+        List<String> ids = new ArrayList<>();
+        if (choice == Choice.UNDO_ROUND) {
+            session.current().ifPresent(round -> ids.add(round.recordId()));
+            return ids;
+        }
+        if (choice == Choice.UNDO_SESSION) {
+            session.chain().forEach(round -> ids.add(round.recordId()));
+            return ids;
+        }
+        for (Session.Round round : session.rounds()) {
+            if (round.settlement() == null
+                    || !RunRecord.Settlement.undoes(round.settlement())) {
+                ids.add(round.recordId());
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * 按快照恢复文件（接受时一件都不动）。
+     *
+     * <p>几份快照叠在一起时<b>从最近的一份往回撤</b>：同一批文件会被写好几遍，
+     * 而最早那份最后写，于是结局是「会话最初的样子」——它同时也是最保守的那一版。
+     * 只撤最早那一份是不行的：每份快照只记得自己那次的目标文件，
+     * 后面几轮改到别的文件时，那些改动就留下来了（而用户点的是「撤到最开始」）。
+     */
+    private static int restore(List<WorkspaceSnapshot> waiting, Choice choice) {
+        if (choice == Choice.ACCEPT || waiting.isEmpty()) {
+            return 0;
+        }
+        List<WorkspaceSnapshot> newestFirst = new ArrayList<>(waiting);
+        java.util.Collections.reverse(newestFirst);
+        int restored = 0;
+        try {
+            for (WorkspaceSnapshot snapshot : newestFirst) {
+                restored += snapshot.restore().size();
+            }
+        } catch (RuntimeException e) {
+            // 恢复失败就<b>不删快照</b>：快照是唯一还答得出「原文是什么」的东西，
+            // 丢了它，用户就再也回不到这次运行之前了
+            throw new SpecflowException("恢复到运行前失败（快照留着，可以重试）：" + e.getMessage(), e);
+        }
+        return restored;
+    }
+
+    // ---------- 单次运行：老口径，一个字都不许变 ----------
+
+    private static Done settleSingle(Path root, ProjectConfig project, RunStore store,
+                                     TestEnvironment environment, Choice choice) {
         List<WorkspaceSnapshot> waiting = waiting(root, project);
         if (waiting.isEmpty()) {
-            return new Done(false, choice, 0, List.of(), false, List.of());
+            return new Done(false, choice, 0, List.of(), false, List.of(), 0);
         }
         int files = settleFiles(waiting, choice);
 
@@ -146,27 +352,22 @@ public final class Teardown {
         boolean reset = resetData(environment, problems);
         // 落档放在最后：前面三件都做完了，这一栏才是事实。它是 best-effort，理由见类注释
         settleRecord(store, recordId, choice, record, problems);
-        return new Done(true, choice, files, deleted, reset, problems);
+        return new Done(true, choice, files, deleted, reset, problems, 0);
     }
 
     /** 文件那一摊：中断就按快照写回，接受就原样留着；两种都要把快照删掉（十五.8）。 */
     private static int settleFiles(List<WorkspaceSnapshot> waiting, Choice choice) {
-        int restored = 0;
+        int restored = restore(waiting, choice);
         for (WorkspaceSnapshot snapshot : waiting) {
-            // 从最早的一份开始：多份叠在一起时，回到最初始的状态最保守
-            if (choice == Choice.INTERRUPT) {
-                try {
-                    restored += snapshot.restore().size();
-                } catch (RuntimeException e) {
-                    // 恢复失败就<b>不删快照</b>：快照是唯一还答得出「原文是什么」的东西，
-                    // 丢了它，用户就再也回不到这次运行之前了
-                    throw new SpecflowException("恢复到运行前失败（快照留着，可以重试）："
-                            + e.getMessage(), e);
-                }
-            }
             snapshot.discard();
         }
         return restored;
+    }
+
+    // ---------- 两条路共用的小事 ----------
+
+    private static String nameOf(WorkspaceSnapshot snapshot) {
+        return snapshot.directory().getFileName().toString();
     }
 
     /**
@@ -258,7 +459,7 @@ public final class Teardown {
         }
     }
 
-    /** 读最新那条记录；读不出来只记一句：产物仍在磁盘上，下次收场还能删。 */
+    /** 读一条记录；读不出来只记一句：产物仍在磁盘上，下次收场还能删。 */
     private static RunRecord loadQuietly(RunStore store, String recordId) {
         if (recordId == null || recordId.isEmpty()) {
             return null;
@@ -266,7 +467,7 @@ public final class Teardown {
         try {
             return store.load(recordId);
         } catch (RuntimeException e) {
-            log.warn("读不到最新那条运行记录（{}）：{}", recordId, e.getMessage());
+            log.warn("读不到运行记录（{}）：{}", recordId, e.getMessage());
             return null;
         }
     }

@@ -609,8 +609,9 @@ class RealDockerEnvironmentTest {
                         VerificationResult.failed("测试脚本", "run", "一条没过"),
                         List.of(), List.of(new TestOutcome.CaseResult(1, false)), List.of()),
                 // 覆盖核对、回喂、「它没有改动」：这一条只关心收场怎么删产物，三笔都留空。
-                // 最后那一栏是「谁什么时候停用过哪几条」，同样空着
-                null, null, null, null, List.of(), null, null, null, null);
+                // 最后那一栏是「谁什么时候停用过哪几条」，同样空着；
+                // 再后面两栏是会话与跑完时刻，这一条都不涉及
+                null, null, null, null, List.of(), null, null, null, null, null, null);
     }
 
     // ---------- 辅助：真 docker 查询 ----------

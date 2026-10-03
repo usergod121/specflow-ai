@@ -92,6 +92,22 @@ public final class WorkspaceSnapshot {
     }
 
     /**
+     * 快照根目录下现存的快照目录<b>名字</b>（升序），不做任何过滤。
+     *
+     * <p>和 {@link #undisposed} 的差别：那个只认「有清单」的（能用来回滚的），
+     * 这个把根目录下的目录名原样列出来。会话要把「哪一轮拍的那份快照」对上去
+     * （见 {@code Session}），而它需要的是名字（时间戳），不是能不能回滚。
+     *
+     * <p>只给名字、不给路径：调用方拿它去比对留档里那些<b>存在磁盘上的标识</b>，
+     * 拿到绝对路径反而每一处都要再取一次文件名。
+     */
+    public static List<String> names(Path snapshotRoot) {
+        return listDirectories(snapshotRoot).stream()
+                .map(directory -> directory.getFileName().toString())
+                .toList();
+    }
+
+    /**
      * 打开一个已经存在的快照目录（处置上一次留下的快照时用）。
      */
     public static WorkspaceSnapshot open(SafePathResolver pathResolver, Path directory) {

@@ -1147,8 +1147,9 @@ class WebServerTest {
                         List.of(new com.specflow.tests.TestOutcome.CaseResult(1, false)), List.of()),
                 null, null, null, null, List.of(),
                 // 覆盖核对、回喂、「它没有改动」：这一条只关心收场怎么删产物，三笔都留空。
-                // 最后那一栏是「谁什么时候停用过哪几条」，同样空着
-                null, null, null, null);
+                // 最后那一栏是「谁什么时候停用过哪几条」，同样空着；
+                // 再后面两栏是会话与跑完时刻，这一条都不涉及
+                null, null, null, null, null, null);
     }
 
     private String latestRunId() {
@@ -1166,10 +1167,110 @@ class WebServerTest {
         assertThat(post("/api/rollback", "{}").statusCode()).isEqualTo(409);
     }
 
+    /**
+     * 会话那几个接口（§19）。
+     *
+     * <p>这一条盯的是<b>路由与状态码</b>：路径接错了、或者没有会话时回了 200 加一份空壳，
+     * 界面都会显示成一个「点不动的第 0 轮」——而用户看到的是一个永远撤不了的会话视图。
+     * 没有会话时那两句「为什么撤不了」也要回得来：灰按钮不解释，用户只会反复点它。
+     */
+    @Test
+    @DisplayName("会话：没有会话时查得到「没有」并说清为什么撤不了；两个撤销各走各的接口")
+    void sessionRoutesAreVisible() throws Exception {
+        JsonNode none = body(get("/api/session"));
+        assertThat(none.path("present").asBoolean()).isFalse();
+        assertThat(none.path("canUndoRound").asBoolean()).isFalse();
+        assertThat(none.path("canUndoSession").asBoolean()).isFalse();
+        assertThat(none.path("undoRoundWhy").asText())
+                .as("没有会话时要把理由回给界面").contains("还没有会话");
+
+        assertThat(get("/api/session/undo-round").statusCode()).as("撤销只接受 POST").isEqualTo(405);
+        assertThat(get("/api/session/undo-session").statusCode()).isEqualTo(405);
+        HttpResponse<String> undoRound = post("/api/session/undo-round", "{}");
+        assertThat(undoRound.statusCode()).isEqualTo(409);
+        assertThat(undoRound.body()).contains("没有开着的会话");
+        assertThat(post("/api/session/undo-session", "{}").statusCode()).isEqualTo(409);
+    }
+
+    /**
+     * 会话整个走一遍 HTTP：两轮 → 查得到 → 撤回本轮 → 接受。
+     *
+     * <p>为什么值得在接口层再走一遍（引擎那一层 {@code SessionSettleTest} 已经走过）：
+     * 「两个撤销接到两个不同的接口上」这件事只在路由上，而它们接反的代价是把用户攒的
+     * 整个会话一次弄没——两个按钮点下去之前在界面上长得一模一样。
+     */
+    @Test
+    @DisplayName("会话：两轮之后查得到第 2 轮；撤回本轮只回退一轮；接受让会话收场")
+    void sessionGoesThroughTheApi() throws Exception {
+        Path foo = root.resolve("Foo.java");
+        Files.writeString(foo, "v0\n");
+        String sessionId = sessionRound(1, foo, "");
+        sessionRound(2, foo, sessionId);
+
+        JsonNode payload = body(get("/api/session"));
+        assertThat(payload.path("present").asBoolean()).isTrue();
+        assertThat(payload.path("round").asInt()).isEqualTo(2);
+        assertThat(payload.path("rounds").asInt()).isEqualTo(2);
+        assertThat(payload.path("liveRounds").asInt()).as("两轮的改动都还在磁盘上").isEqualTo(2);
+        assertThat(payload.path("canUndoRound").asBoolean()).isTrue();
+        assertThat(payload.path("history")).hasSize(2);
+        assertThat(payload.path("history").get(0).path("changes").get(0).path("path").asText())
+                .as("轮次间 diff：这一轮改了哪个文件").isEqualTo("Foo.java");
+        assertThat(payload.path("roundCalls").asInt())
+                .as("成本要看得见：这一轮调了几次模型").isEqualTo(1);
+
+        HttpResponse<String> undone = post("/api/session/undo-round", "{}");
+        assertThat(undone.statusCode()).as(undone.body()).isEqualTo(200);
+        assertThat(body(undone).path("teardown").asText())
+                .contains("已撤回本轮").contains("会话还开着");
+        assertThat(Files.readString(foo)).as("回到上一轮结束时的样子").isEqualTo("v1\n");
+        assertThat(body(get("/api/session")).path("present").asBoolean())
+                .as("撤回不是出口：会话还开着").isTrue();
+
+        HttpResponse<String> accepted = post("/api/accept", "{}");
+        assertThat(accepted.statusCode()).as(accepted.body()).isEqualTo(200);
+        assertThat(body(accepted).path("teardown").asText())
+                .as("接受覆盖整个会话（一次处置，不是一轮一次）").contains("整个会话");
+        assertThat(body(get("/api/session")).path("present").asBoolean())
+                .as("接受是出口：会话到此为止").isFalse();
+    }
+
+    /**
+     * 造一轮：拍快照 → 改文件 → 落一条属于这个会话的留档（和引擎真跑一轮做的事一样）。
+     *
+     * <p>两轮之间停 5 毫秒：快照按<b>时间窗口</b>认领到轮次上，而这里的每一轮只有一两毫秒，
+     * 挤在同一毫秒里就会把第 1 轮的窗口挤空（真实运行每轮几分钟，不存在这个问题）。
+     *
+     * @param sessionId 这个会话的 id；第 1 轮传空串，返回的是新定下来的那个
+     * @return 这个会话的 id（= 第 1 轮那条记录的 id）
+     */
+    private String sessionRound(int round, Path file, String sessionId) throws IOException {
+        RunStore store = new RunStore(root.resolve(RunStore.DEFAULT_DIR));
+        RunRecord.SessionRef ref = round == 1
+                ? RunRecord.SessionRef.opening()
+                : RunRecord.SessionRef.next(sessionId, round);
+        RunRecorder recorder = RunRecorder.start(store, TestSpecs.spec(List.of("Foo.java")),
+                null, AgentListener.NOOP,
+                com.specflow.tests.Refeed.none(), List.of(), ref);
+        WorkspaceSnapshot.capture(new SafePathResolver(root),
+                root.resolve(SnapshotConfig.DEFAULT_DIR), List.of(file)).markPending();
+        Files.writeString(file, "v" + round + "\n");
+        // 改动一并进留档：界面上「轮次间 diff」那一栏读的就是它（快照里只有一份累计差异）
+        recorder.finished(AgentResult.unverified(1,
+                List.of(new com.specflow.patch.PatchApplier.FileChange(
+                        file, "Foo.java", false, 4, "-v" + (round - 1) + "\n+v" + round + "\n")),
+                List.of(), "改动已落盘，没有校验"));
+        try {
+            Thread.sleep(5);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return round == 1 ? store.latestId() : sessionId;
+    }
+
     @Test
     @DisplayName("挂起的运行：查得到它说了什么；没有挂起时接口各报各的错")
-    void suspendedRunIsVisible() throws Exception {
-        assertThat(body(get("/api/suspended")).path("present").asBoolean()).isFalse();
+    void suspendedRunIsVisible() throws Exception {        assertThat(body(get("/api/suspended")).path("present").asBoolean()).isFalse();
         assertThat(get("/api/continue").statusCode()).as("接着跑只接受 POST").isEqualTo(405);
         assertThat(post("/api/continue", "{\"prompt\":\"做点什么\"}").statusCode()).isEqualTo(409);
 
