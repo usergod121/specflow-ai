@@ -164,6 +164,30 @@ public final class ExecutionLocation {
         return String.join(" ", command(entry));
     }
 
+    /**
+     * 超时（或被中断）之后，用来收掉<b>容器里那一半</b>的命令；宿主执行时是空表。
+     *
+     * <p><b>为什么必须有它。</b>宿主上杀进程树杀不到容器里：脚本是容器里的 PID 1 领起来的，
+     * 宿主上只看得见一个 {@code docker compose exec} 客户端。2026-10-04 的真容器实测抓住了这一点
+     * ——宿主侧报「已强制终止」之后，容器里的脚本又跑了 25～77 秒才收工，把产物写了个遍。
+     *
+     * <p><b>为什么是 {@code restart} 而不是 {@code kill}/{@code stop}，也不是进容器里找进程杀：</b>
+     * <ul>
+     *   <li>进容器杀得靠 {@code pkill}/{@code ps} 这类工具，而镜像是用户随便挑的
+     *       （busybox、distroless、scratch……），想找一个「什么镜像都有」的办法是缘木求鱼；</li>
+     *   <li>{@code restart} 一个容器内工具都不用，而且<b>文件系统不动</b>：预热过的依赖、
+     *       上一步的编译产物都还在，容器回来接着用；</li>
+     *   <li>用完就 {@code stop} 会把环境留在 DOWN 上，下一轮会因此<b>悄悄回退到宿主</b>去跑——
+     *       那是一次没人知道的降级（见 {@link #of}）。停掉再起来，环境还是活的。</li>
+     * </ul>
+     *
+     * <p>不带 {@code -t}：那个参数各版本支持不一，而默认就是「先礼后兵」。这条只在超时那条路上跑，
+     * 多等几秒不值得拿兼容性去换。
+     */
+    public List<String> stopCommand() {
+        return inContainer ? compose("restart", ComposeFile.APP_SERVICE) : List.of();
+    }
+
     private List<String> compose(String... args) {
         List<String> command = new ArrayList<>(docker);
         command.add("compose");

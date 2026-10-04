@@ -311,6 +311,68 @@ class RealDockerEnvironmentTest {
                 .contains(artifacts.entry());
     }
 
+    /**
+     * 超时之后，<b>容器里那一半也要真的停掉</b>。
+     *
+     * <p>宿主上杀进程树杀不到它：脚本是容器里的 PID 1 领起来的，宿主上只看得见一个
+     * {@code docker compose exec} 客户端。2026-10-04 的真容器实测抓住了这一点——
+     * 宿主侧报「已强制终止」之后，容器里的脚本又跑了 25～77 秒才收工，把产物写了个遍。
+     *
+     * <p>这条用真容器验三件事：① 超时那一档照旧；② 容器里那个还在睡的脚本被收掉了
+     * （宿主上再也看不见它）；③ <b>容器活着</b>——收尾用的是 restart 而不是 stop，
+     * 把环境留在 DOWN 上会让下一轮悄悄回退到宿主去跑。
+     */
+    @Test
+    @DisplayName("超时（真 docker）：容器里还在跑的脚本被真的收掉，而且容器还活着")
+    void stopsTheRunawayScriptInsideTheContainer() throws IOException {
+        requireDocker();
+        requireImages("busybox:latest");
+        declare("""
+                image: "busybox:latest"
+                workdir: "/work"
+                """);
+        TestEnvironment environment = TestEnvironment.of(root);
+        createdProjects.add(environment.composeProject());
+        environment.up();
+
+        com.specflow.tests.ExecutionLocation location =
+                com.specflow.tests.ExecutionLocation.of(environment);
+        com.specflow.tests.TestArtifacts artifacts =
+                com.specflow.tests.TestArtifacts.create(root, location);
+        Path script = root.resolve(artifacts.entry());
+        Files.createDirectories(script.getParent());
+        Files.writeString(script, String.join("\n",
+                "#!/bin/sh",
+                // 起手先留个证据：它确实在容器里跑起来了
+                "echo started > /work/runaway-started.txt",
+                // 然后睡很久——宿主侧超时杀不到它，只能靠重启那个服务
+                "sleep 600",
+                "echo survived > /work/runaway-survived.txt",
+                ""), StandardCharsets.UTF_8);
+
+        com.specflow.tests.TestScriptVerifier.ScriptResult run =
+                new com.specflow.tests.TestScriptVerifier(root, artifacts.entry(), 3,
+                        Map.<String, String>of(), location).run(
+                        new com.specflow.verify.VerificationContext(root, spec(),
+                                com.specflow.project.ProjectConfig.DEFAULT));
+
+        assertThat(run.verification().kind()).isEqualTo(VerificationResult.Kind.TIMEOUT);
+        assertThat(run.verification().output())
+                .as("容器里超时要多给一句「多半是冷启动、去 init 里预热」——"
+                        + "那句提示只在容器里给，用户手里唯一能行动的线索就是它")
+                .contains("第一次在干净容器里跑")
+                .contains("init");
+        assertThat(read("runaway-started.txt"))
+                .as("那个脚本真的在容器里起了头（项目目录挂在 /work）")
+                .isEqualTo("started");
+        assertThat(exec(environment, "ps"))
+                .as("容器里不该还留着那个还在睡的脚本——它是宿主上杀不到的那一半")
+                .doesNotContain("sleep 600");
+        assertThat(com.specflow.tests.ExecutionLocation.of(environment).inContainer())
+                .as("收尾用 restart 不用 stop：容器得活着让下一轮接着用")
+                .isTrue();
+    }
+
     // ---------- 3. 残留自检 + 打开项目收残局 ----------
 
     /**

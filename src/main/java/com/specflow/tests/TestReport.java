@@ -379,7 +379,7 @@ public final class TestReport {
                 .orElse(null);
         boolean passed = failures.isEmpty() && outcomes.stream().allMatch(TestOutcome::passed);
         VerificationResult combined = heaviest != null
-                ? failedWith(heaviest.kind(), output.toString())
+                ? failedWith(heaviest, output.toString())
                 : passed ? VerificationResult.passed(TestScriptVerifier.NAME, entriesOf(outcomes),
                         output.toString())
                 : VerificationResult.failed(TestScriptVerifier.NAME, entriesOf(outcomes),
@@ -398,8 +398,17 @@ public final class TestReport {
                 .toList());
     }
 
-    private static VerificationResult failedWith(VerificationResult.Kind kind, String output) {
-        return VerificationResult.failed(TestScriptVerifier.NAME, "", output, kind);
+    /**
+     * 合并之后落成一条硬判据（环境起不来 / 超时）的那条结论。
+     *
+     * <p><b>执行位置这一栏必须带过来。</b>原来这里写死了一个空串，于是「环境起不来」和「超时」
+     * 这两档在留档里看不到跑在哪儿——而那恰恰是最需要知道的一档：
+     * 容器里起不来和宿主上起不来，是两件完全不同的事，修法也不一样。
+     * 2026-10-04 的真容器实测里就是空的（两个脚本、一个 TIMEOUT）。
+     */
+    private static VerificationResult failedWith(VerificationResult heaviest, String output) {
+        return VerificationResult.failed(TestScriptVerifier.NAME, heaviest.command(), output,
+                heaviest.kind());
     }
 
     /**

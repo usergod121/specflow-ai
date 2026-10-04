@@ -75,6 +75,31 @@ class ExecutionLocationTest {
     }
 
     /**
+     * 超时之后要收掉容器里那一半——宿主上杀进程树杀不到它。
+     *
+     * <p>2026-10-04 的真容器实测：宿主侧报「已强制终止」之后，容器里的脚本又跑了 25～77 秒
+     * 才收工，把产物写了个遍。脚本是容器里的 PID 1 领起来的，宿主上只看得见一个
+     * {@code docker compose exec} 客户端，所以「重启那个 app 服务」是唯一不依赖镜像里有
+     * 什么工具、又不把环境留在 DOWN 上的收法（留在 DOWN 会让下一轮悄悄回退到宿主）。
+     */
+    @Test
+    @DisplayName("超时收尾：容器里是「重启 app 服务」，宿主上是空表（没有容器可收）")
+    void stopsTheContainerOnTimeout() throws IOException {
+        declare(DECLARATION);
+        Path compose = initialized();
+
+        List<String> stop = ExecutionLocation.of(new TestEnvironment(root, dockerReady()))
+                .stopCommand();
+
+        assertThat(stop).containsExactlyElementsOf(List.of(
+                "docker", "compose", "-p", ComposeFile.projectName(root), "-f", compose.toString(),
+                "restart", ComposeFile.APP_SERVICE));
+        assertThat(ExecutionLocation.host().stopCommand())
+                .as("宿主上没有容器可收，命令是空的——调用方据此判断「要不要多收一步」")
+                .isEmpty();
+    }
+
+    /**
      * 入口脚本的名字必须跟着执行位置走。
      *
      * <p>这一条要是错了，表现特别绕：引擎让模型写 {@code run.sh}，自己却去找 {@code run.cmd}

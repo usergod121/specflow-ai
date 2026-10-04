@@ -303,6 +303,37 @@ class TestReportTest {
         assertThat(outcome.exit()).isEqualTo(TestScriptVerifier.NO_EXIT_CODE);
     }
 
+    /**
+     * 两个脚本合并、其中一个超时时，<b>执行位置那一栏要留着</b>。
+     *
+     * <p>原来合并成硬判据那条路把这一栏写成了空串，于是留档里看不到跑在哪儿——
+     * 而「环境起不来 / 超时」恰恰是最需要知道这一档的：容器里起不来和宿主上起不来
+     * 是两件完全不同的事，修法也不一样。2026-10-04 的真容器实测里那一栏就是空的。
+     */
+    @Test
+    @DisplayName("合并成硬判据时执行位置不许丢：容器里超时，留档里要写着容器")
+    void keepsTheLocationWhenTheMergedKindIsHard() {
+        TestOutcome unit = TestReport.conclude(
+                new TestScriptVerifier.ScriptResult(VerificationResult.failed("测试脚本",
+                        "在容器里执行（app 服务）：tools/x/run.sh",
+                        "测试脚本超过 299 秒未结束，已强制终止。",
+                        VerificationResult.Kind.TIMEOUT), TestScriptVerifier.NO_EXIT_CODE),
+                "tools/x", List.of(), 1);
+        TestOutcome integration = TestReport.conclude(
+                new TestScriptVerifier.ScriptResult(VerificationResult.failed("测试脚本",
+                        "在容器里执行（app 服务）：tools/x/run-it.sh",
+                        "测试脚本超过 1 秒未结束，已强制终止。",
+                        VerificationResult.Kind.TIMEOUT), TestScriptVerifier.NO_EXIT_CODE),
+                "tools/x", List.of(), 0);
+
+        TestOutcome merged = TestReport.merge(List.of(unit, integration));
+
+        assertThat(merged.verification().kind()).isEqualTo(VerificationResult.Kind.TIMEOUT);
+        assertThat(merged.verification().command())
+                .as("合并之后那一栏仍然是执行位置，不是空串")
+                .contains("在容器里执行").contains("run.sh");
+    }
+
     @Test
     @DisplayName("脚本压根起不来（引擎看见的）才是硬判据：原话要带着")
     void keepsEngineSideEnvironmentFailure() {

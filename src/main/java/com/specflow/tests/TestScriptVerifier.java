@@ -63,6 +63,15 @@ public final class TestScriptVerifier implements Verifier {
     /** 收进程树那条命令等多久：它是系统自带的，正常在毫秒级。 */
     private static final long KILL_TIMEOUT_SECONDS = 10;
 
+    /**
+     * 收尾时重启测试容器最多等多久。
+     *
+     * <p>比 {@link #KILL_TIMEOUT_SECONDS} 宽：那一条是杀一个进程，这一条是「停一个容器再起来」，
+     * 慢一点是正常的。等不到只记一句警告——超时这条路上，剩余的事都是体面问题，
+     * 不该再抛一个异常把「这一轮超时了」这个结论盖掉。
+     */
+    private static final long CONTAINER_RESTART_TIMEOUT_SECONDS = 30;
+
     private static final boolean WINDOWS = System.getProperty("os.name", "")
             .toLowerCase(Locale.ROOT).contains("win");
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
@@ -236,16 +245,17 @@ public final class TestScriptVerifier implements Verifier {
         try {
             output = ProcessOutput.read(outputFile);
         } catch (IOException e) {
-            killTree(process);
+            stopEverything(process);
             return failed("读不出测试脚本的输出（" + e.getMessage() + "）。原始日志见："
                             + LOG_DIR + "/",
                     NO_EXIT_CODE, VerificationResult.Kind.ENVIRONMENT);
         }
 
         if (!finished) {
-            killTree(process);
+            stopEverything(process);
             return failed("测试脚本超过 " + timeoutSeconds + " 秒未结束，已强制终止"
                     + "（要么它真的慢，要么它卡住了。" + location.label() + "）。"
+                    + containerHint()
                     + "下面是它到那一刻为止的输出："
                     + System.lineSeparator() + shorten(output) + System.lineSeparator()
                     + kept(outputFile),
@@ -306,9 +316,58 @@ public final class TestScriptVerifier implements Verifier {
         try {
             return process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
-            killTree(process);
+            stopEverything(process);
             Thread.currentThread().interrupt();
             throw new SpecflowException("等待测试脚本结束时被中断", e);
+        }
+    }
+
+    /**
+     * 容器里超时时多给一句「多半是冷启动」。
+     *
+     * <p>真项目第一次在干净容器里跑构建工具，下载插件与依赖能吃掉好几分钟
+     * （2026-10-04 实测 ~370 秒，而同一个脚本在预热过的容器里只要 4 秒）——
+     * 这时用户手里只有「它超时了」，而真正能行动的那句话是「去 init 里预热一次」。
+     * <b>宿主上不给这一句</b>：那边用的就是本机已经热了的工具链，再说这句就是噪音。
+     */
+    private String containerHint() {
+        return location.inContainer()
+                ? "如果这是第一次在干净容器里跑这个项目的构建工具，它多半是在下载依赖："
+                        + "可以在 .specflow/env.yaml 的 init 里预热一次（见仓库里的 env.example.yaml），"
+                        + "预热是跟开发阶段并行做的，不占测试这段时限。"
+                : "";
+    }
+
+    /**
+     * 这一次跑起来的东西，时间到（或被打断）时<b>整个收掉</b>。
+     *
+     * <p>宿主上就是杀那棵进程树（见 {@link #killTree}）。<b>容器里那一半不在宿主的进程树里</b>：
+     * 脚本是容器里的 PID 1 领起来的，宿主上只看得见一个 {@code docker compose exec} 客户端。
+     * 2026-10-04 的真容器实测抓住了这一点：宿主侧报「已强制终止」之后，容器里的脚本又跑了
+     * 25～77 秒才收工，把产物写了个遍——报告上却写着已经终止，下一次运行还可能被它绊住。
+     *
+     * <p>收法写在 {@link ExecutionLocation#stopCommand()} 里（重启那个 app 服务、
+     * 不依赖镜像里有什么工具、文件系统不动）。这里只负责「两边都收到」这件事只有一处。
+     */
+    private void stopEverything(Process process) {
+        killTree(process);
+        List<String> stop = location.stopCommand();
+        if (stop.isEmpty()) {
+            return;
+        }
+        try {
+            Process stopper = new ProcessBuilder(stop)
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            if (!stopper.waitFor(CONTAINER_RESTART_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                log.warn("重启测试容器没在 {} 秒内结束，容器里可能还留着上一次的进程",
+                        CONTAINER_RESTART_TIMEOUT_SECONDS);
+            }
+        } catch (IOException e) {
+            log.warn("重启测试容器失败，容器里可能还留着上一次的进程：{}", e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
