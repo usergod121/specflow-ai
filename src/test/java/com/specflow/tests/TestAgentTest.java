@@ -630,6 +630,23 @@ class TestAgentTest {
     }
 
     /**
+     * 编译命令是一片空白时，也按「没配」说，<b>不许交出去一个空命令块</b>。
+     *
+     * <p>这是一条防御分支：正常路径上 `build.compile` 是空白时 `BuildConfig` 已经把它归一成 null，
+     * 所以它平时走不到（变异探针验过：把那段 {@code isBlank()} 去掉，全套件一条都不红）。
+     * 但 `buildNotice` 是公开方法，交出去一个空代码块比说一句「没配」糟得多——
+     * 模型看到「这个项目怎么构建」底下是空的，只能又去猜。
+     */
+    @Test
+    @DisplayName("编译命令全是空白：说「没有配」，而不是交出去一个空的命令块")
+    void blankBuildCommandIsReportedAsMissing() {
+        assertThat(TestProtocol.buildNotice("   "))
+                .as("空白与 null 走同一条路")
+                .contains("没有配编译命令");
+        assertThat(TestProtocol.buildNotice(null)).contains("没有配编译命令");
+    }
+
+    /**
      * 没配编译命令时，那一段要<b>如实说没配</b>，而不是整段消失。
      *
      * <p>整段消失的话，模型看到的就是「协议让它看项目、消息里却什么都没有」——

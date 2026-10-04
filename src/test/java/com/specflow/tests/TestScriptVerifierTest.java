@@ -204,6 +204,32 @@ class TestScriptVerifierTest {
         return ProcessHandle.of(pid).isEmpty();
     }
 
+    /**
+     * 看着像 {@code FAIL} 但不是协议结论行的那几行，<b>不许当成失败行</b>。
+     *
+     * <p>这条钉的是两处判据的一致性。原来「这一版算不算通过」那边只判
+     * {@code startsWith("FAIL")}，而解析器那边要 {@code ^FAIL(\s|\||:|$)}——
+     * 于是一行 {@code FAILURE: ...}（或 pytest 的 {@code FAILED tests/x.py}）加上退出码 0、
+     * 一条协议结论都没有时，两处得出相反的结论：引擎报「它的代码编不过」（第 7 档），
+     * 并据此白烧两版自动重生成，而真实的下一步是「让脚本按行规把结论打出来」。
+     *
+     * <p>{@code TestReportTest} 那边有一条同名反向的断言（解析器不认它），两条一起才说明
+     * 「同一行在两处的判读是一样的」。判据只有一份：{@code TestProtocol.FAIL_LINE}。
+     */
+    @Test
+    @DisplayName("FAILURE / FAILED 这种「看着像」的行不算协议失败行：两处判据必须一致")
+    void looksLikeFailButIsNotProtocolLine() {
+        String entry = script(0, "FAILURE: 3 tests failed", "FAILED tests/order_test.py");
+
+        VerificationResult result = verifier(entry).verify(context());
+
+        assertThat(result.passed())
+                .as("退出码 0、没有一行协议结论行 → 在「这一版算不算通过」这一层是通过；"
+                        + "「一条用例的结论都没报出来」由对账那一层去说")
+                .isTrue();
+        assertThat(result.kind()).isEqualTo(VerificationResult.Kind.NONE);
+    }
+
     @Test
     @DisplayName("同一个执行器跑两次结论一样（校验器约定：可以重复调用）")
     void isRepeatable() {

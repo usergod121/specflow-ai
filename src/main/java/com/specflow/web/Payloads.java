@@ -121,7 +121,12 @@ public final class Payloads {
         public static Judgement of(@JsonProperty("id") String id,
                                    @JsonProperty("cases") List<Integer> cases,
                                    @JsonProperty("owner") String owner) {
-            return new Judgement(id, cases == null ? List.of() : cases, owner);
+            return new Judgement(id, cases == null ? List.of()
+                    // 编号里的 null 必须在这里滤掉：下游 `new TreeSet<>(cases)` 在构造时就要比较，
+                    // null 会直接抛 NPE（那一行下面的 `index == null` 守卫永远轮不到），
+                    // 于是 `{"cases":[1,null]}` 得到的是一个 500，而不是一句「编号不合法」。
+                    // 口径与 RunRequest.pickedRefeed/pickedDisabled 一致：脏数据滤掉，不往外传
+                    : cases.stream().filter(java.util.Objects::nonNull).toList(), owner);
         }
     }
 

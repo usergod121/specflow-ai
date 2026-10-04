@@ -293,6 +293,14 @@ public final class TestArtifacts {
             log.warn("留档里的产物路径不在 {}/ 下，不删：{}", ROOT, shown);
             return false;
         }
+        if (!Files.exists(target)) {
+            // javadoc 承诺「true = 已经不在了（删掉了，或者本来就没有）」。目录本来就不在时
+            // 直接算成「已经不在了」：以前这里走 Files.walk，它在**遍历时**抛的是
+            // UncheckedIOException（不是 IOException），下面那个 catch 接不住，
+            // 于是「接受 / 中断」的回音里会冒出一条假的「测试产物 … 没删掉」
+            log.info("测试产物 {} 本来就不在，没什么可清的", shown);
+            return true;
+        }
         try (var paths = Files.walk(target)) {
             for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
                 Files.deleteIfExists(path);

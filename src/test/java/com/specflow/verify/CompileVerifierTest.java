@@ -119,6 +119,31 @@ class CompileVerifierTest {
                 new VerifySpec(true, command, 0, VerifySpec.AUTO_ROUNDS));
     }
 
+    /**
+     * {@code compileCommandOf} 对什么输入都要给得出答案。
+     *
+     * <p>它是两个人共用的那一处（编译校验自己、以及测试生成把它交给模型），
+     * 所以「输入总是干净的」这种前提不该由它假设：{@code spec} 可以是 null，
+     * 手工 {@code new} 出来的 {@code ProjectConfig} 的 {@code build()} 也可以是 null。
+     * 全套件里被这一点咬过一口（测试生成拿到测试造的配置时直接 NPE）。
+     */
+    @Test
+    @DisplayName("compileCommandOf：null 的 spec / null 的 build 都给得出答案，不抛异常")
+    void compileCommandOfToleratesNullInput() {
+        assertThat(CompileVerifier.compileCommandOf(null, null)).isNull();
+        assertThat(CompileVerifier.compileCommandOf(
+                TestSpecs.spec(List.of("Foo.java")),
+                new ProjectConfig(null, LlmConfig.DEFAULT, SnapshotConfig.DEFAULT)))
+                .as("build 是 null 时按「没配」处理，而不是 NPE")
+                .isNull();
+        assertThat(CompileVerifier.compileCommandOf(
+                TestSpecs.spec(List.of("Foo.java"),
+                        new VerifySpec(true, "  ant compile  ", 0, VerifySpec.AUTO_ROUNDS)),
+                new ProjectConfig(null, LlmConfig.DEFAULT, SnapshotConfig.DEFAULT)))
+                .as("spec 里写了就用 spec 的，并去掉首尾空白")
+                .isEqualTo("ant compile");
+    }
+
     private ProjectConfig projectWithCompileCommand(String command) {
         return new ProjectConfig(new BuildConfig(command),
                 LlmConfig.DEFAULT, SnapshotConfig.DEFAULT);

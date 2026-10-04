@@ -177,6 +177,40 @@ class CaseHowStageTest {
                 .contains("用例 2 它没写");
     }
 
+    /**
+     * 第 1 版想改期望、第 2 版守规矩时，<b>成功那句话里也要带着第 1 版那条</b>。
+     *
+     * <p>这条钉的是「最后成功了 ≠ 没发生过」：note 只报最后一版时，第 2 版一守规矩，
+     * 「它在照着代码改需求」这个信号就从报告里彻底消失——而人看到的只是一句
+     * 「补上了 1 条，花了 2 次调用」，会以为第一次只是格式不对。
+     * 变异探针验过：把 successNote 里那段 history 整段删掉，这条测试之外没有任何测试会红。
+     */
+    @Test
+    @DisplayName("第 1 版想改期望、第 2 版守规矩：补成功那句话里也要带着第 1 版那条")
+    void mentionsEarlierVersionsEvenWhenItEventuallyComplies() {
+        List<PlanReview.TestCase> frozen = List.of(testCase(1, "金额能查出来",
+                PlanReview.TestCase.Level.MUST, "100.00", "A1：金额能查出来"));
+        FakeLlm llm = new FakeLlm(
+                // 第一版：把期望改成了「代码现在的行为」
+                "1 | 拿 OrderService.query(1) 调一次 | 100.0",
+                // 第二版：照抄第一段
+                "1 | 拿 OrderService.query(1) 调一次，看返回 DTO 的 amount | 100.00");
+
+        CaseHowStage.Result result = stage(llm).fill(spec(), frozen, changes());
+
+        assertThat(result.calls()).isEqualTo(2);
+        assertThat(result.cases()).singleElement().satisfies(after -> {
+            assertThat(after.how()).contains("看返回 DTO 的 amount");
+            assertThat(after.expected()).isEqualTo("100.00");
+        });
+        assertThat(result.note())
+                .as("补成功也要说清「第一版补上了」这件事")
+                .contains("第二段补上了 1 条用例的「怎么测」")
+                .contains("第 1 版")
+                .contains("期望被改了")
+                .contains("第一段写的是「100.00」，它写的是「100.0」");
+    }
+
     /** 只差一条时，对得上的那几条照样补上：不能因为一条不规矩就把整批丢回去。 */
     @Test
     @DisplayName("只差一条：对得上的 1、2 补上，第 3 条怎么测留空")

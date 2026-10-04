@@ -5,6 +5,7 @@ import com.specflow.review.PlanReview;
 
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 测试阶段的协议说明——会被逐字拼进系统提示词。
@@ -47,6 +48,26 @@ public final class TestProtocol {
      * 它也拦不住脚本撒谎，所以引擎那边另有一道机器判得了的兜底（进程压根起不来、超时）。
      */
     public static final String BLOCKED_PREFIX = "BLOCKED";
+
+    /**
+     * 协议里那三种结论行的判据：前缀后面必须跟空白、竖线、冒号，或者直接就是行尾。
+     *
+     * <p><b>为什么必须是这一份、而且只有这一份。</b>这三行原来有两套判据：解析器这边要求
+     * {@code ^FAIL(\s|\||:|$)}，而「这一版算不算通过」（{@code TestScriptVerifier.isPlainPass}）
+     * 那边只判 {@code startsWith("FAIL")}。两套的差别在一次真事上会露出来：脚本退出码是 0、
+     * 输出里只有一行 {@code FAILURE: ...}（或 pytest 的 {@code FAILED tests/x.py}）、
+     * 一条协议结论都没有时，两套判据得出<b>相反</b>的结论——引擎会报「它的代码编不过」，
+     * 并据此白白重生成两版，而真实的下一步是「让脚本按行规把结论打出来」。
+     *
+     * <p>{@link TestReport} 与 {@code TestScriptVerifier} 都从这里取，谁也别再自己写一份。
+     */
+    public static final Pattern FAIL_LINE = Pattern.compile("^FAIL(\\s|\\||:|$)");
+
+    /** 见 {@link #FAIL_LINE}。 */
+    public static final Pattern BLOCKED_LINE = Pattern.compile("^BLOCKED(\\s|\\||:|$)");
+
+    /** 见 {@link #FAIL_LINE}。 */
+    public static final Pattern PASS_LINE = Pattern.compile("^PASS(\\s|\\||:|$)");
 
     /** 四要素的分隔符。和施工单、缺失项同一套写法：模型对这个格式的执行力最好。 */
     public static final String SEPARATOR = "|";
@@ -104,18 +125,6 @@ public final class TestProtocol {
                 同理，不要动系统配置、不要挂载目录、不要提权、不要联网下载东西。
                 其余部分（锚点 CASE / expect、PASS / FAIL / BLOCKED 的行规）照旧都要写全。
                 """.formatted(reason == null ? "" : reason);
-    }
-
-    /**
-     * 生成测试代码与入口脚本的协议。
-     *
-     * @param directory 产物目录（相对项目根，形如 {@code tools/20260930-120000}）
-     * @param entry     单元入口脚本相对项目根的路径——引擎只会执行这一个文件。
-     *                  它的后缀就是引擎按平台定下来的那一个（见 {@link TestArtifacts}），
-     *                  所以下面那句「怎么引用兄弟文件」照着它写，不再另问一次平台
-     */
-    public static String instructions(String directory, String entry) {
-        return instructions(directory, new Entries(entry, null, false), null);
     }
 
     /**

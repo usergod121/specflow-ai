@@ -502,7 +502,9 @@ public final class RunStore {
         String now = LocalDateTime.now().toString();
         TreeMap<Integer, RunRecord.Verdict> merged = new TreeMap<>(before);
         for (Integer index : new TreeSet<>(indices)) {
-            if (index == null || index <= 0) {
+            // 到这儿 index 一定非 null：`new TreeSet<>(indices)` 在构造时就要比较，
+            // 集合里带 null 当场抛 NPE；null 在边界上（Payloads.Judgement）已经滤掉了
+            if (index <= 0) {
                 continue;
             }
             RunRecord.Verdict old = merged.get(index);

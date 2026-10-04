@@ -281,6 +281,25 @@ class TestArtifactsTest {
         assertThat(root.resolve(artifacts.entry())).exists();
     }
 
+    /**
+     * 静态的 {@code TestArtifacts.delete(root, 目录)}：<b>目录本来就不在时要算成功</b>。
+     *
+     * <p>它自己的 javadoc 写的就是「true = 已经不在了（删掉了，或者本来就没有）」。
+     * 原来这里走 {@code Files.walk}，而它是在**遍历时**抛 {@code UncheckedIOException}
+     * （不是 IOException），那个 catch 接不住；于是用户手工删过 {@code tools/<时间戳>/}
+     * 之后再点「保留改动」，回音里会冒出一条假的「测试产物 … 没删掉」，他会以为清理失败了。
+     */
+    @Test
+    @DisplayName("静态 delete：目录本来就不在，也算「已经不在了」")
+    void staticDeleteTreatsMissingDirectoryAsGone() {
+        assertThat(TestArtifacts.delete(root, "tools/20260101-000000"))
+                .as("本来就没有，等于已经清干净了")
+                .isTrue();
+        assertThat(TestArtifacts.delete(root, "tools/20260101-000000/"))
+                .as("带尾斜杠的写法一样")
+                .isTrue();
+    }
+
     @Test
     @DisplayName("delete 把整个产物目录收干净（回滚时要连着它一起清）")
     void deleteRemovesEverything() throws IOException {

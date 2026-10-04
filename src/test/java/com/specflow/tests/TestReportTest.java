@@ -334,6 +334,56 @@ class TestReportTest {
                 .contains("在容器里执行").contains("run.sh");
     }
 
+    /**
+     * 一个脚本都没跑时，合并结果是「环境起不来」，<b>不是通过</b>。
+     *
+     * <p>防御分支：今天唯一的调用方（`TestAgent.runScripts`）至少会传一个。
+     * 但这条路上「悄悄当成通过」的代价是最高的一档——一次什么都没跑的运行会在留档里显示全绿。
+     * 变异探针验过：把这句话改掉，全套件一条都不红。
+     */
+    @Test
+    @DisplayName("一个脚本都没跑：算环境起不来，不许悄悄当成通过")
+    void mergingNothingIsAnEnvironmentProblem() {
+        TestOutcome none = TestReport.merge(List.of());
+
+        assertThat(none.environmental()).as("不是「跑完了」").isTrue();
+        assertThat(none.passed()).isFalse();
+        assertThat(none.detail()).contains("没有跑任何测试脚本");
+        assertThat(TestReport.merge(null).environmental()).isTrue();
+    }
+
+    /**
+     * 合并取的是<b>最重</b>的那一档（环境起不来 &gt; 超时），不是「先碰到的那个」。
+     *
+     * <p>单元脚本先跑，所以「单元超时 + 集成环境起不来」时按顺序取会拿到 TIMEOUT，
+     * 而同一份留档里失败清单的 `worst()` 按 failures 算是 ENVIRONMENT——两处自相矛盾，
+     * 事后读记录的人会以为那次只是慢，而实际是环境压根没起来。
+     */
+    @Test
+    @DisplayName("合并：单元超时 + 集成环境起不来 ⇒ 结论是环境起不来（取最重的，不是取第一个）")
+    void mergingPrefersTheEnvironmentFailureOverTimeout() {
+        TestOutcome unit = TestReport.conclude(
+                new TestScriptVerifier.ScriptResult(VerificationResult.failed("测试脚本",
+                        "在容器里执行（app 服务）：tools/x/run.sh",
+                        "测试脚本超过 299 秒未结束，已强制终止。",
+                        VerificationResult.Kind.TIMEOUT), TestScriptVerifier.NO_EXIT_CODE),
+                "tools/x", List.of(), 1);
+        TestOutcome integration = TestReport.conclude(
+                new TestScriptVerifier.ScriptResult(VerificationResult.failed("测试脚本",
+                        "在容器里执行（app 服务）：tools/x/run-it.sh",
+                        "入口脚本起不来：容器已经关了",
+                        VerificationResult.Kind.ENVIRONMENT), TestScriptVerifier.NO_EXIT_CODE),
+                "tools/x", List.of(), 0);
+
+        TestOutcome merged = TestReport.merge(List.of(unit, integration));
+
+        assertThat(merged.verification().kind())
+                .as("环境起不来比超时重：这一档是要停机换收场的那一档")
+                .isEqualTo(VerificationResult.Kind.ENVIRONMENT);
+        assertThat(merged.environmental()).isTrue();
+        assertThat(merged.verification().command()).as("执行位置照旧带着").contains("在容器里执行");
+    }
+
     @Test
     @DisplayName("脚本压根起不来（引擎看见的）才是硬判据：原话要带着")
     void keepsEngineSideEnvironmentFailure() {

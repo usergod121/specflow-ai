@@ -4,6 +4,7 @@ import com.specflow.review.PlanReview;
 import com.specflow.verify.VerificationResult;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,9 +91,10 @@ public final class TestReport {
             Pattern.compile("cannot connect to the docker daemon|error response from daemon"
                     + "|pull access denied for", Pattern.CASE_INSENSITIVE));
 
-    private static final Pattern FAIL_LINE = Pattern.compile("^FAIL(\\s|\\||:|$)");
-    private static final Pattern BLOCKED_LINE = Pattern.compile("^BLOCKED(\\s|\\||:|$)");
-    private static final Pattern PASS_LINE = Pattern.compile("^PASS(\\s|\\||:|$)");
+    /** 结论行的判据只有一份，在 {@link TestProtocol} 里（曾经两份，而两套会得出相反的结论）。 */
+    private static final Pattern FAIL_LINE = TestProtocol.FAIL_LINE;
+    private static final Pattern BLOCKED_LINE = TestProtocol.BLOCKED_LINE;
+    private static final Pattern PASS_LINE = TestProtocol.PASS_LINE;
 
     private static final String SEPARATOR = "\\|";
 
@@ -371,11 +373,13 @@ public final class TestReport {
                 exit = outcome.exit();
             }
         }
-        // 结论取最重的那一个；都是「跑完了」时按有没有失败收成通过/未通过
+        // 结论取最重的那一个（环境起不来 > 超时 > 其它），**按优先级挑，不是挑第一个**：
+        // 单元脚本先跑，「单元超时 + 集成环境起不来」时 findFirst 会拿到 TIMEOUT，
+        // 与这份留档里失败清单的 worst()（按 failures 算是 ENVIRONMENT）自相矛盾
         VerificationResult heaviest = outcomes.stream()
                 .map(TestOutcome::verification)
                 .filter(result -> result != null && (result.environmental() || result.timedOut()))
-                .findFirst()
+                .min(Comparator.comparingInt(result -> result.environmental() ? 0 : 1))
                 .orElse(null);
         boolean passed = failures.isEmpty() && outcomes.stream().allMatch(TestOutcome::passed);
         VerificationResult combined = heaviest != null

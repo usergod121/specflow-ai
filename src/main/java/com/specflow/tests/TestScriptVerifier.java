@@ -300,8 +300,8 @@ public final class TestScriptVerifier implements Verifier {
         }
         for (String line : output.split("\\R")) {
             String text = line.strip();
-            if (text.startsWith(TestProtocol.FAIL_PREFIX)
-                    || text.startsWith(TestProtocol.BLOCKED_PREFIX)) {
+            if (TestProtocol.FAIL_LINE.matcher(text).find()
+                    || TestProtocol.BLOCKED_LINE.matcher(text).find()) {
                 return false;
             }
         }
