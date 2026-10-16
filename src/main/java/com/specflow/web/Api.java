@@ -1,0 +1,870 @@
+package com.specflow.web;
+
+import com.specflow.core.Event;
+import com.specflow.core.EventLog;
+import com.specflow.core.Json;
+import com.specflow.core.Project;
+import com.specflow.env.Compiler;
+import com.specflow.env.EnvConfig;
+import com.specflow.env.EnvConfigLoader;
+import com.specflow.env.Environment;
+import com.specflow.flow.Facts;
+import com.specflow.flow.FlowService;
+import com.specflow.flow.Node;
+import com.specflow.flow.NodeView;
+import com.specflow.flow.Runs;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * <b>全部路由都在这里</b>（`docs/API.md` 那张表的实现）。
+ *
+ * <p>这一层只做三件事：<b>取参数</b>、<b>调下面那一层</b>、<b>拼响应</b>。
+ * 判据一条都不许在这里写——闸在 {@code flow.Gates}、事件在 {@code flow}/{@code env}、
+ * 编译在 {@code env.Compiler}。路由里出现 {@code if (state == ...)} 就说明判据漏上来了。
+ *
+ * <p>另外两条：
+ * <ul>
+ *   <li><b>长任务立刻返回</b>（`202` + 游标），界面按 {@code ?from=} 轮询；只有
+ *       「起环境」是同步的（它的语义就是"点一下，等它好"，而它会一边跑一边推事件）；</li>
+ *   <li>写盘的接口一律**原子写**（{@code Atomic}），不许裸 {@code Files.write}。</li>
+ * </ul>
+ */
+@RestController
+public class Api {
+
+    private final Session session;
+
+    Api(Session session) {
+        this.session = session;
+    }
+
+    // ---------- 外壳 ----------
+
+    @GetMapping("/api/state")
+    public Map<String, Object> state() {
+        return session.state();
+    }
+
+    @PostMapping("/api/open")
+    public Map<String, Object> open(@RequestBody Map<String, Object> body) {
+        String path = text(body, "path");
+        if (path.isBlank()) {
+            throw ApiException.badRequest("没给路径");
+        }
+        return session.open(Path.of(path));
+    }
+
+    @GetMapping("/api/browse")
+    public Map<String, Object> browse(@RequestParam(name = "path", defaultValue = "") String path) {
+        return session.browse(path).get(0);
+    }
+
+    @GetMapping("/api/recent")
+    public Map<String, Object> recent() {
+        return Map.of("recent", session.recent());
+    }
+
+    @DeleteMapping("/api/recent")
+    public Map<String, Object> forget(@RequestParam(name = "path", defaultValue = "") String path) {
+        return Map.of("recent", session.forget(path));
+    }
+
+    // ---------- 流程 ----------
+
+    @GetMapping("/api/flow")
+    public Map<String, Object> flow() {
+        return flowView();
+    }
+
+    @PostMapping("/api/flow/new")
+    public Map<String, Object> flowNew() {
+        session.flow().newFlow();
+        return flowView();
+    }
+
+    @PostMapping("/api/flow/goto")
+    public Map<String, Object> flowGoto(@RequestBody Map<String, Object> body) {
+        Node node = parseNode(text(body, "node"));
+        List<String> invalidated = session.flow().gotoNode(node);
+        Map<String, Object> answer = new LinkedHashMap<>(flowView());
+        answer.put("invalidated", invalidated);
+        return answer;
+    }
+
+    @PostMapping("/api/flow/freeze")
+    public Map<String, Object> flowFreeze(@RequestBody Map<String, Object> body) {
+        Node node = parseNode(text(body, "node"));
+        session.flow().freeze(node);
+        Map<String, Object> answer = new LinkedHashMap<>(flowView());
+        answer.put("node", node.key());
+        answer.put("state", session.flow().state().stateOf(node).name());
+        return answer;
+    }
+
+    /** 五格共用的一条事件流（界面按 `?from=` 增量拉）。 */
+    @GetMapping("/api/node/{key}/events")
+    public Map<String, Object> nodeEvents(@PathVariable("key") String key,
+                                          @RequestParam(name = "from", defaultValue = "0") long from) {
+        parseNode(key);
+        return eventsView(from);
+    }
+
+    @PostMapping("/api/node/cancel")
+    public Map<String, Object> cancel() {
+        Runs runs = session.runs();
+        if (!runs.running()) {
+            throw ApiException.conflict("现在没有在跑的东西：没有东西可以停");
+        }
+        runs.cancel();
+        return Map.of("cancelling", true, "cursor", eventsView(0).get("next"));
+    }
+
+    // ---------- ① 环境 ----------
+
+    /** 保存环境声明：env.yaml 与编译命令**各写各的落点**（缺一样 ① 就永远冻结不了）。 */
+    @PostMapping("/api/node/env/save")
+    public Map<String, Object> envSave(@RequestBody Map<String, Object> body) {
+        Project project = session.project();
+        String yaml = text(body, "envYaml");
+        String compile = text(body, "compileCommand");
+        if (yaml.isBlank() && compile.isBlank()) {
+            throw ApiException.badRequest("env.yaml 与编译命令都是空的：至少写一样再保存");
+        }
+        String written = "";
+        if (!yaml.isBlank()) {
+            EnvConfig parsed = EnvConfigLoader.parse(yaml);
+            if (parsed == null) {
+                throw ApiException.badRequest("这份 env.yaml 读不出来");
+            }
+            com.specflow.core.Atomic.write(project.layout().envYaml(), yaml);
+            written = project.layout().show(project.layout().envYaml());
+        }
+        String compileWritten = "";
+        if (!compile.isBlank()) {
+            compileWritten = writeCompile(project, compile);
+        }
+        session.flow().note(Node.ENV, Map.of(
+                "compileDeclared", compile.isBlank() ? "false" : "true",
+                "compileCommand", compile));
+        session.events().say(Node.ENV.key(), "info", "环境声明已保存："
+                + (written.isBlank() ? "（env.yaml 没动）" : written)
+                + (compile.isBlank() ? "；编译命令：（没写）"
+                : "；编译命令 → " + (compileWritten.isBlank() ? "（原来就是这条）" : compileWritten)));
+        return Map.of("written", written, "compileWritten", compileWritten,
+                "flow", session.flow().view());
+    }
+
+    @GetMapping("/api/node/env/view")
+    public Map<String, Object> envView() {
+        Project project = session.project();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("envYaml", com.specflow.core.Atomic.read(project.layout().envYaml(), ""));
+        body.put("compileCommand", project.compile());
+        body.put("declared", java.nio.file.Files.isRegularFile(project.layout().envYaml()));
+        body.put("needed", !session.flow().state().flag(Node.ENV, "envNotNeeded"));
+        return body;
+    }
+
+    /**
+     * 起环境：拉镜像 + init + reset。
+     *
+     * <p><b>同步</b>（与别的动作不同）：它的语义就是"点一下，等它好"，而过程会一边跑
+     * 一边进事件流——用户看得到它在拉哪个镜像，所以挂着等不是"卡住"。
+     */
+    @PostMapping("/api/node/env/up")
+    public Map<String, Object> envUp() {
+        Project project = session.project();
+        session.flow().requireReachable(Node.ENV, "起环境");
+        com.specflow.core.EventProgress progress = new com.specflow.core.EventProgress(session.events(), Node.ENV.key());
+        try (AutoCloseable ignored = com.specflow.core.Jobs.register(progress)) {
+            Environment.Registration registration = new Environment(project).up(progress);
+            session.flow().note(Node.ENV, Map.of("envReady", "true", "envState", registration.state()));
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("ok", true);
+            body.put("seconds", progress.elapsedSeconds());
+            body.put("containers", registration.containers());
+            body.put("composeFile", registration.composeFile());
+            return body;
+        } catch (RuntimeException e) {
+            // 失败**常驻**：error 事件已经由 progress 写进流里了，这里只把它交回响应
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("ok", false);
+            body.put("error", e.getMessage());
+            body.put("seconds", progress.elapsedSeconds());
+            return body;
+        } catch (Exception e) {
+            throw new IllegalStateException(e.getMessage(), e);
+        }
+    }
+
+    /** 编译（秒级；与「起环境」是两条路）。结论落进 ① 的 facts——界面那枚徽章读它。 */
+    @PostMapping("/api/node/env/compile")
+    public Map<String, Object> envCompile() {
+        Project project = session.project();
+        session.flow().requireReachable(Node.ENV, "编译");
+        com.specflow.core.EventProgress progress = new com.specflow.core.EventProgress(session.events(), Node.ENV.key());
+        Compiler.Result result;
+        try (AutoCloseable ignored = com.specflow.core.Jobs.register(progress)) {
+            result = Compiler.compile(project, progress);
+        } catch (Exception e) {
+            throw new IllegalStateException(e.getMessage(), e);
+        }
+        session.flow().note(Node.ENV, Map.of(
+                "compilePassed", String.valueOf(result.passed()),
+                "compileStatus", result.status(),
+                "compileSeconds", String.valueOf(result.seconds())));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ok", result.passed());
+        body.put("status", result.status());
+        body.put("command", result.command());
+        body.put("output", result.output());
+        body.put("seconds", result.seconds());
+        return body;
+    }
+
+    /** 显式声明「这个项目不需要环境」（① 的闸另一条出路）。 */
+    @PostMapping("/api/node/env/skip")
+    public Map<String, Object> envSkip() {
+        session.flow().requireReachable(Node.ENV, "声明不需要环境");
+        session.flow().note(Node.ENV, Map.of("envNotNeeded", "true"));
+        session.events().warn(Node.ENV.key(), "你显式声明了「这个项目不需要环境」：① 的门槛因此只剩编译命令那一条");
+        return Map.of("envNotNeeded", true, "flow", session.flow().view());
+    }
+
+    @GetMapping("/api/node/env/settings")
+    public Map<String, Object> envSettingsView() {
+        return Map.of("pullTimeoutMinutes", pullTimeout());
+    }
+
+    @PostMapping("/api/node/env/settings")
+    public Map<String, Object> envSettings(@RequestBody Map<String, Object> body) {
+        Integer minutes = number(body, "pullTimeoutMinutes");
+        if (minutes == null || minutes < 1 || minutes > 1440) {
+            throw ApiException.badRequest("超时只能是 1~1440 分钟，收到：" + minutes);
+        }
+        session.flow().note(Node.ENV, Map.of("pullTimeoutMinutes", String.valueOf(minutes)));
+        return Map.of("pullTimeoutMinutes", minutes);
+    }
+
+    // ---------- ② 探针 ----------
+
+    @PostMapping("/api/node/probe/brief")
+    public Map<String, Object> probeBrief(@RequestBody Map<String, Object> body) {
+        String requirement = text(body, "requirement");
+        String design = text(body, "design");
+        if (requirement.isBlank()) {
+            throw ApiException.badRequest("需求是必填的：探针照它去读项目、判断该动哪些文件");
+        }
+        session.flow().note(Node.PROBE, Map.of("requirement", requirement, "design", design));
+        session.events().say(Node.PROBE.key(), "info", "需求与设计已保存");
+        return Map.of("flow", session.flow().view());
+    }
+
+    @GetMapping("/api/node/probe/view")
+    public Map<String, Object> probeView() {
+        return readProbe();
+    }
+
+    @PostMapping("/api/node/probe/save")
+    public Map<String, Object> probeSave(@RequestBody Map<String, Object> body) {
+        session.flow().requireReachable(Node.PROBE, "保存探针产物");
+        Map<String, Object> probe = new LinkedHashMap<>();
+        probe.put("files", lines(body.get("files")));
+        probe.put("changes", lines(body.get("changes")));
+        probe.put("context", lines(body.get("context")));
+        probe.put("prompt", text(body, "prompt"));
+        com.specflow.core.Atomic.write(session.layout().probe(session.flow().state().id()),
+                Json.write(probe));
+        // 与「跑探针」那一处同一个口径：闸判「有没有」= "true"，数量另开一栏
+        session.flow().note(Node.PROBE, Map.of(
+                com.specflow.flow.Facts.PROBE_FILES,
+                String.valueOf(!((List<?>) probe.get("files")).isEmpty()),
+                com.specflow.flow.Facts.PROBE_PROMPT,
+                String.valueOf(!((String) probe.get("prompt")).isBlank()),
+                "probeFileCount", String.valueOf(((List<?>) probe.get("files")).size())));
+        session.events().say(Node.PROBE.key(), "info", "探针产物已保存");
+        return Map.of("probe", probe, "flow", session.flow().view());
+    }
+
+    // ---------- ③ 用例 ----------
+
+    @GetMapping("/api/node/cases")
+    public Map<String, Object> casesView() {
+        com.specflow.test.CaseList list = caseList();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("cases", list.cases());
+        body.put("tags", com.specflow.test.CaseList.TAGS);
+        body.put("pending", list.pending());
+        body.put("missingTags", list.missingTags());
+        body.put("problems", list.problems());
+        return body;
+    }
+
+    @PostMapping("/api/node/cases/save")
+    public Map<String, Object> casesSave(@RequestBody Map<String, Object> body) {
+        session.flow().requireReachable(Node.CASES, "改用例");
+        List<com.specflow.test.CaseList.Case> parsed = new ArrayList<>();
+        Object raw = body.get("cases");
+        if (raw instanceof List<?> items) {
+            int at = 0;
+            for (Object item : items) {
+                if (!(item instanceof Map<?, ?> one)) {
+                    continue;
+                }
+                at++;
+                parsed.add(new com.specflow.test.CaseList.Case(
+                        string(one.get("id")).isBlank() ? "C" + at : string(one.get("id")),
+                        string(one.get("what")),
+                        lines(one.get("tags")),
+                        string(one.get("expect")),
+                        com.specflow.test.CaseList.Status.PENDING, "", ""));
+            }
+        }
+        caseList().save(parsed);
+        session.flow().note(Node.CASES, Map.of("caseCount", String.valueOf(parsed.size())));
+        session.events().say(Node.CASES.key(), "info", "用例已保存：一共 " + parsed.size() + " 条");
+        return casesView();
+    }
+
+    // ---------- 跑起来的那几段（后台跑，界面按游标轮询）----------
+
+    /** ① 探测环境：只读地读一遍项目，产出 env.yaml 全文 + 一条编译命令。 */
+    @PostMapping("/api/node/env/agent")
+    public Map<String, Object> envAgent(@RequestBody(required = false) Map<String, Object> body) {
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.ENV, "探测环境");
+        String note = text(body == null ? Map.of() : body, "note");
+        String runId = session.runs().start(Node.ENV, "env-agent", Map.of(), progress -> {
+            com.specflow.agent.EnvAgent agent = new com.specflow.agent.EnvAgent(
+                    session.project(), com.specflow.core.Llm.from(session.project()), note, progress,
+                    new com.specflow.agent.EventWatcher(session.events(), Node.ENV.key()), 30);
+            com.specflow.agent.EnvAgent.Result result = agent.run();
+            if (!result.ok()) {
+                progress.fail("探测环境没成（" + result.status() + "）：" + result.reason(), null);
+                return;
+            }
+            Map<String, Object> draft = new LinkedHashMap<>();
+            draft.put("envYaml", result.draft().envYaml());
+            draft.put("compileCommand", result.draft().compileCommand());
+            draft.put("notes", result.draft().notes());
+            progress.done("探测完成：env.yaml " + result.draft().envYaml().split("\n").length
+                            + " 行、编译命令「" + result.draft().compileCommand() + "」",
+                    Map.of("draft", draft,
+                            "rounds", result.loop() == null ? 0 : result.loop().rounds(),
+                            "modelCalls", result.loop() == null ? 0 : result.loop().modelCalls()));
+        });
+        return accepted(runId, Node.ENV);
+    }
+
+    /** ② 跑探针：只读地读项目，交出四样产物。 */
+    @PostMapping("/api/node/probe/agent")
+    public Map<String, Object> probeAgent(@RequestBody(required = false) Map<String, Object> body) {
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.PROBE, "跑探针");
+        String requirement = flow.state().fact(Node.PROBE, "requirement");
+        String design = flow.state().fact(Node.PROBE, "design");
+        if (requirement.isBlank()) {
+            throw ApiException.badRequest("需求还是空的：探针照它去读项目、判断该动哪些文件。先在 ② 把需求写上");
+        }
+        String runId = session.runs().start(Node.PROBE, "probe-agent", Map.of(), progress -> {
+            com.specflow.agent.Probe probe = new com.specflow.agent.Probe(session.project(),
+                    com.specflow.core.Llm.from(session.project()), progress,
+                    new com.specflow.agent.EventWatcher(session.events(), Node.PROBE.key()), 30);
+            com.specflow.agent.Probe.Result result = probe.run(requirement, design);
+            if (!result.ok()) {
+                progress.fail("探针没交出产物（" + result.status() + "）：" + result.reason(), null);
+                return;
+            }
+            com.specflow.core.Atomic.write(session.layout().probe(flow.state().id()),
+                    com.specflow.core.Json.write(result.artifacts().view()));
+            // 闸判的是「有没有」= "true"，不是数量：数量另开一栏给界面用。
+            // （实测踩到：写成数量时闸读到的不是 "true"，于是"跑完了却还说没有可读文件"）
+            flow.note(Node.PROBE, Map.of(
+                    com.specflow.flow.Facts.PROBE_FILES,
+                    String.valueOf(!result.artifacts().files().isEmpty()),
+                    com.specflow.flow.Facts.PROBE_PROMPT,
+                    String.valueOf(!result.artifacts().prompt().isBlank()),
+                    "probeFileCount", String.valueOf(result.artifacts().files().size()),
+                    "probeChangeCount", String.valueOf(result.artifacts().changes().size())));
+            progress.done("探针产物已落盘：可读 " + result.artifacts().files().size()
+                            + " 个、要改 " + result.artifacts().changes().size() + " 个",
+                    Map.of("probe", result.artifacts().view(),
+                            "rounds", result.loop() == null ? 0 : result.loop().rounds(),
+                            "modelCalls", result.loop() == null ? 0 : result.loop().modelCalls()));
+        });
+        return accepted(runId, Node.PROBE);
+    }
+
+    /** ③ 让模型写一版用例（**不落盘**，交回界面给人改）。 */
+    @PostMapping("/api/node/cases/agent")
+    public Map<String, Object> casesAgent() {
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.CASES, "让 AI 写用例");
+        String requirement = flow.state().fact(Node.PROBE, "requirement");
+        if (requirement.isBlank()) {
+            throw ApiException.badRequest("需求还是空的：用例照需求写。先在 ② 把需求写上");
+        }
+        com.specflow.core.EventProgress progress =
+                new com.specflow.core.EventProgress(session.events(), Node.CASES.key());
+        try (AutoCloseable ignored = com.specflow.core.Jobs.register(progress)) {
+            com.specflow.agent.CasesAgent agent = new com.specflow.agent.CasesAgent(
+                    com.specflow.core.Llm.from(session.project()), progress);
+            java.util.Optional<Map<String, Object>> probe = readProbeFile(flow.state().id());
+            List<com.specflow.agent.CasesAgent.One> generated = agent.generate(requirement,
+                    flow.state().fact(Node.PROBE, "design"),
+                    probe.map(one -> lines(one.get("files"))).orElse(List.of()),
+                    probe.map(one -> lines(one.get("context"))).orElse(List.of()));
+            List<Map<String, Object>> cases = new ArrayList<>();
+            for (com.specflow.agent.CasesAgent.One one : generated) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", one.id());
+                item.put("what", one.what());
+                item.put("tags", one.tags());
+                item.put("expect", one.expect());
+                cases.add(item);
+            }
+            return Map.of("cases", cases, "tags", com.specflow.test.CaseList.TAGS);
+        } catch (Exception e) {
+            throw new IllegalStateException(e.getMessage(), e);
+        }
+    }
+
+    /** ④ 跑开发：先拍快照，再让开发 Agent 在白名单内改真项目。 */
+    @PostMapping("/api/node/dev/run")
+    public Map<String, Object> devRun() {
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.DEV, "跑开发");
+        Map<String, Object> probe = readProbeFile(flow.state().id()).orElseThrow(() ->
+                ApiException.badRequest("② 的产物还没有：开发 Agent 的 prompt 与写白名单都来自它"));
+        List<String> changes = lines(probe.get("changes"));
+        if (changes.isEmpty()) {
+            throw ApiException.badRequest("② 还没挑出「要改的文件」：写白名单就是它，"
+                    + "空名单等于让它对着整个项目猜该动哪儿");
+        }
+        String prompt = String.valueOf(probe.getOrDefault("prompt", ""));
+        String feedback = flow.state().fact(Node.DEV, "feedback");
+        String runId = session.runs().start(Node.DEV, "dev-run", Map.of(), progress -> {
+            com.specflow.flow.Snapshot snapshot = com.specflow.flow.Snapshot.capture(
+                    session.project(), changes.stream().map(one ->
+                            session.project().root().resolve(one)).toList());
+            if (snapshot != null) {
+                snapshot.hold();
+                progress.warn("回滚点已拍好（" + snapshot.files() + " 个文件）：" + snapshot.summarize());
+            }
+            com.specflow.agent.Dev dev = new com.specflow.agent.Dev(session.project(),
+                    com.specflow.core.Llm.from(session.project()), progress,
+                    new com.specflow.agent.EventWatcher(session.events(), Node.DEV.key()), 40);
+            com.specflow.agent.Dev.Result result = dev.run(prompt, changes, feedback);
+            flow.note(Node.DEV, Map.of(
+                    "compilePassed", String.valueOf(result.compilePassed()),
+                    "compileStatus", result.compilePassed() ? "PASSED" : "FAILED",
+                    "submits", String.valueOf(result.submits())));
+            if (!result.compilePassed()) {
+                progress.fail("这一段开发没交出编译通过的代码（" + result.status() + "）："
+                        + result.reason(), result.compileOutput());
+                return;
+            }
+            progress.done("开发这一段完成：改了 " + changes.size() + " 个文件、交差 "
+                            + result.submits() + " 次、编译通过",
+                    Map.of("compilePassed", true, "rounds", result.rounds(),
+                            "modelCalls", result.last() == null ? 0 : result.last().modelCalls()));
+        });
+        return accepted(runId, Node.DEV);
+    }
+
+    /** ④ 回滚这一次改动。 */
+    @PostMapping("/api/node/dev/rollback")
+    public Map<String, Object> devRollback() {
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.DEV, "回滚改动");
+        com.specflow.flow.Snapshot snapshot = com.specflow.flow.Snapshot.latest(session.project());
+        if (snapshot == null) {
+            throw ApiException.conflict("现在没有可回滚的快照：④ 跑过之后才有回滚点");
+        }
+        com.specflow.flow.Snapshot.Report report = snapshot.rollback();
+        session.events().warn(Node.DEV.key(), "已回滚这一次改动（" + report.files() + " 个文件）："
+                + report.summarize());
+        return Map.of("ok", report.ok(), "files", report.files(),
+                "problems", report.problems(), "summary", report.summarize());
+    }
+
+    // ---------- ⑤ 测试 ----------
+
+    /** ⑤ 跑测试：拍副本 → 起容器 → 逐条验 → 结论写回清单。 */
+    @PostMapping("/api/node/test/run")
+    public Map<String, Object> testRun() {
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.TEST, "跑测试");
+        com.specflow.test.CaseList list = caseList();
+        if (list.count() == 0) {
+            throw ApiException.badRequest("③ 的用例清单是空的：测试就是照它逐条验的");
+        }
+        String runId = session.runs().start(Node.TEST, "test-run", Map.of(), progress -> {
+            try (com.specflow.test.TestSandbox sandbox = com.specflow.test.TestSandbox.prepare(
+                    session.project(), "t" + progress.elapsedSeconds() + "-" + progress.hashCode(), progress)) {
+                com.specflow.test.TestAgent agent = new com.specflow.test.TestAgent(
+                        com.specflow.core.Llm.from(session.project()), progress,
+                        new com.specflow.agent.EventWatcher(session.events(), Node.TEST.key()),
+                        sandbox.shell(), list, session.approvals(), sandbox.root(),
+                        flow.state().fact(Node.PROBE, "requirement"), 60);
+                com.specflow.test.TestAgent.Result result = agent.run();
+                flow.note(Node.TEST, Map.of("testRun", "true",
+                        "pending", String.valueOf(list.pending())));
+                if (!result.ok()) {
+                    progress.fail("这一段测试没验完（" + result.status() + "）：" + result.reason(), null);
+                    return;
+                }
+                progress.done("测试验完了：清单 " + list.count() + " 条全部到终态",
+                        Map.of("verdicts", list.count(), "cases", list.cases(),
+                                "rounds", result.rounds(), "sandbox", sandbox.root().toString()));
+            }
+        });
+        return accepted(runId, Node.TEST);
+    }
+
+    /** ⑤ 待回答的高危命令。 */
+    @GetMapping("/api/node/test/approvals")
+    public Map<String, Object> testApprovals() {
+        List<Map<String, Object>> items = session.approvals().pending();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("approvals", items);
+        body.put("waitSeconds", com.specflow.test.Approvals.WAIT_SECONDS);
+        body.put("note", items.isEmpty() ? "现在没有等你回答的命令"
+                : "有 " + items.size() + " 条高危命令停下来等你点 y / n");
+        return body;
+    }
+
+    /** ⑤ 回答一条待审批。 */
+    @PostMapping("/api/node/test/approve")
+    public Map<String, Object> testApprove(@RequestBody Map<String, Object> body) {
+        String id = text(body, "id");
+        if (id.isBlank()) {
+            throw ApiException.badRequest("要回答哪一条？请求体里带上 id");
+        }
+        boolean allow = Boolean.TRUE.equals(body.get("allow"))
+                || "true".equalsIgnoreCase(String.valueOf(body.get("allow")));
+        if (!session.approvals().answer(id, allow)) {
+            throw ApiException.conflict("这一条待审批已经不在了（可能超时被撤掉了）：" + id);
+        }
+        session.events().warn(Node.TEST.key(), "你对一条高危命令回答了「" + (allow ? "允许" : "不允许") + "」");
+        return Map.of("id", id, "allow", allow, "answered", true);
+    }
+
+    /** ⑤ 提交：清单到终态 + 一段总结（总结回喂给 ④）。 */
+    @PostMapping("/api/node/test/submit")
+    public Map<String, Object> testSubmit(@RequestBody Map<String, Object> body) {
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.TEST, "提交测试结果");
+        String summary = text(body, "summary");
+        if (summary.isBlank()) {
+            throw ApiException.badRequest("提交要附一段总结：它会回喂给开发，写清「现在还有什么缺陷」");
+        }
+        for (String word : List.of("用例", "测试用例")) {
+            if (summary.contains(word)) {
+                throw ApiException.badRequest("这段总结里出现了「" + word + "」：它会原样回喂给开发，"
+                        + "而开发看到这个词就会去猜断言、照着那一次测量改——"
+                        + "「改到那条断言恰好过为止」看起来和真的修好了完全一样。"
+                        + "换个说法：只说「现在还有什么缺陷、什么行为不对」");
+            }
+        }
+        List<String> problems = caseList().problems();
+        if (!problems.isEmpty()) {
+            throw ApiException.conflict("清单还过不了验收（" + problems.size() + " 项），不能提交："
+                    + String.join("；", problems));
+        }
+        com.specflow.core.Atomic.write(session.layout().summary(flow.state().id()), summary + "\n");
+        flow.note(Node.TEST, Map.of("submitted", "true", "summary", summary));
+        flow.note(Node.DEV, Map.of("feedback", summary));
+        session.events().say(Node.TEST.key(), "info", "已提交：清单每条都有结论，总结 "
+                + summary.length() + " 字（它会回喂给开发）");
+        return Map.of("summary", summary, "flow", flow.view());
+    }
+
+    /** ⑤ 接受并完成（闭环）。 */
+    @PostMapping("/api/node/test/accept")
+    public Map<String, Object> testAccept() {
+        FlowService flow = session.flow();
+        flow.freeze(Node.TEST);
+        session.events().say(Node.TEST.key(), "info", "你接受了这一版：工作流闭环完成");
+        return Map.of("done", true, "flow", flow.view());
+    }
+
+    /** ⑤ 再优化一轮：把上一轮的总结当目标回喂 ④，③ 不再生成。 */
+    @PostMapping("/api/node/test/optimize")
+    public Map<String, Object> testOptimize() {
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.TEST, "再优化一轮");
+        String feedback = flow.state().fact(Node.DEV, "feedback");
+        if (feedback.isBlank()) {
+            feedback = com.specflow.core.Atomic.read(session.layout().summary(flow.state().id()), "").strip();
+        }
+        if (feedback.isBlank()) {
+            throw ApiException.conflict("还没有「这一轮要改什么」：先把测试跑完并提交一段总结");
+        }
+        Map<String, Object> probe = readProbeFile(flow.state().id()).orElseThrow(() ->
+                ApiException.badRequest("② 的产物没有了：这一轮回到 ④ 重跑，白名单来自 ②"));
+        List<String> changes = lines(probe.get("changes"));
+        String prompt = String.valueOf(probe.getOrDefault("prompt", ""));
+        String goal = feedback;   // lambda 里要用它，而 feedback 上面被重新赋过值（不是 effectively final）
+        String runId = session.runs().start(Node.TEST, "optimize", Map.of(), progress -> {
+            com.specflow.flow.Snapshot snapshot = com.specflow.flow.Snapshot.capture(
+                    session.project(), changes.stream().map(one ->
+                            session.project().root().resolve(one)).toList());
+            if (snapshot != null) {
+                snapshot.hold();
+            }
+            com.specflow.agent.Dev dev = new com.specflow.agent.Dev(session.project(),
+                    com.specflow.core.Llm.from(session.project()), progress,
+                    new com.specflow.agent.EventWatcher(session.events(), Node.TEST.key()), 40);
+            com.specflow.agent.Dev.Result devResult = dev.run(prompt, changes, goal);
+            if (!devResult.compilePassed()) {
+                progress.fail("优化这一轮开发没过编译：" + devResult.reason(), devResult.compileOutput());
+                return;
+            }
+            progress.warn("开发这一段过了编译，接着按同一份清单再验一遍");
+            try (com.specflow.test.TestSandbox sandbox = com.specflow.test.TestSandbox.prepare(
+                    session.project(), "o" + progress.elapsedSeconds() + "-" + progress.hashCode(), progress)) {
+                com.specflow.test.CaseList list = caseList();
+                com.specflow.test.TestAgent agent = new com.specflow.test.TestAgent(
+                        com.specflow.core.Llm.from(session.project()), progress,
+                        new com.specflow.agent.EventWatcher(session.events(), Node.TEST.key()),
+                        sandbox.shell(), list, session.approvals(), sandbox.root(),
+                        flow.state().fact(Node.PROBE, "requirement"), 60);
+                com.specflow.test.TestAgent.Result result = agent.run();
+                if (!result.ok()) {
+                    progress.fail("优化这一轮的测试没验完（" + result.status() + "）：" + result.reason(), null);
+                    return;
+                }
+                progress.done("优化这一轮完成：清单 " + list.count() + " 条全部到终态",
+                        Map.of("verdicts", list.count(), "cases", list.cases()));
+            }
+        });
+        return accepted(runId, Node.TEST);
+    }
+
+    /** ④ 开工要用的那几样：写白名单、可读文件、prompt、上一轮的反馈、编译命令。 */
+    @GetMapping("/api/node/dev/view")
+    public Map<String, Object> devView() {
+        FlowService flow = session.flow();
+        Map<String, Object> body = new LinkedHashMap<>();
+        Map<String, Object> probe = readProbeFile(flow.state().id()).orElse(Map.of());
+        body.put("whitelist", lines(probe.get("changes")));
+        body.put("readable", lines(probe.get("files")));
+        body.put("prompt", String.valueOf(probe.getOrDefault("prompt", "")));
+        body.put("context", lines(probe.get("context")));
+        body.put("feedback", flow.state().fact(Node.DEV, "feedback"));
+        body.put("compileCommand", session.project().compile());
+        body.put("compilePassed", flow.state().flag(Node.DEV,
+                com.specflow.flow.Facts.COMPILE_PASSED));
+        body.put("probeFile", session.layout().show(session.layout().probe(flow.state().id())));
+        return body;
+    }
+    // ---------- 内部 ----------
+
+    /** 一个动作受理之后的回执（界面拿 `cursor` 继续轮询）。 */
+    private Map<String, Object> accepted(String runId, Node node) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("accepted", true);
+        body.put("node", node.key());
+        body.put("runId", runId);
+        body.put("cursor", Math.max(0, session.events().next() - 1));
+        body.put("running", session.runs().running());
+        return body;
+    }
+
+    /** 读 ② 的产物（没有就是空）。 */
+    private java.util.Optional<Map<String, Object>> readProbeFile(String flowId) {
+        String raw = com.specflow.core.Atomic.read(session.layout().probe(flowId), "");
+        if (raw.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        try {
+            return java.util.Optional.of(com.specflow.core.Json.map(raw));
+        } catch (RuntimeException e) {
+            throw ApiException.conflict("② 的产物读不出来（" + e.getMessage() + "）："
+                    + session.layout().show(session.layout().probe(flowId)) + " 可能被手改坏了");
+        }
+    }
+
+    private Map<String, Object> flowView() {
+        FlowService flow = session.flow();
+        List<Map<String, Object>> nodes = new ArrayList<>();
+        for (NodeView one : flow.view()) {
+            Map<String, Object> node = new LinkedHashMap<>();
+            node.put("key", one.node().key());
+            node.put("title", one.node().title());
+            node.put("state", one.state().name());
+            node.put("blockedReason", one.blockedReason());
+            node.put("facts", one.facts());
+            nodes.add(node);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("flowId", flow.state().id());
+        body.put("running", session.runs().running());
+        body.put("stage", session.runs().stage());
+        body.put("cursor", flow.events().next());
+        body.put("nodes", nodes);
+        return body;
+    }
+
+    private Map<String, Object> eventsView(long from) {
+        EventLog log = session.events();
+        List<Event> events = log.read(from, 0);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("running", session.runs().running());
+        body.put("stage", session.runs().stage());
+        body.put("events", events);
+        body.put("next", events.isEmpty() ? from : events.get(events.size() - 1).id() + 1);
+        return body;
+    }
+
+    private Map<String, Object> readProbe() {
+        Path file = session.layout().probe(session.flow().state().id());
+        String raw = com.specflow.core.Atomic.read(file, "");
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (raw.isBlank()) {
+            body.put("files", List.of());
+            body.put("changes", List.of());
+            body.put("context", List.of());
+            body.put("prompt", "");
+        } else {
+            body.putAll(Json.map(raw));
+        }
+        body.put("requirement", session.flow().state().fact(Node.PROBE, "requirement"));
+        body.put("design", session.flow().state().fact(Node.PROBE, "design"));
+        return body;
+    }
+
+    private com.specflow.test.CaseList caseList() {
+        return new com.specflow.test.CaseList(session.layout().cases(session.flow().state().id()));
+    }
+
+    private int pullTimeout() {
+        String raw = session.flow().state().fact(Node.ENV, "pullTimeoutMinutes");
+        try {
+            return raw.isBlank() ? 30 : Integer.parseInt(raw.strip());
+        } catch (NumberFormatException e) {
+            return 30;
+        }
+    }
+
+    /** 把编译命令写进 `project.yaml` 的 `build.compile`（只换那一行，注释与别的段不动）。 */
+    private String writeCompile(Project project, String command) {
+        Path file = project.layout().projectYaml();
+        String existing = com.specflow.core.Atomic.read(file, "");
+        String updated = CompileYaml.withCompileCommand(existing, command);
+        if (updated.equals(existing)) {
+            return "";
+        }
+        com.specflow.core.Atomic.write(file, updated);
+        return project.layout().show(file);
+    }
+
+    private static Node parseNode(String key) {
+        try {
+            return Node.of(key);
+        } catch (IllegalArgumentException e) {
+            throw ApiException.badRequest(e.getMessage());
+        }
+    }
+
+    private static String text(Map<String, Object> body, String field) {
+        return body == null ? "" : string(body.get(field));
+    }
+
+    private static String string(Object raw) {
+        return raw == null ? "" : String.valueOf(raw).strip();
+    }
+
+    private static Integer number(Map<String, Object> body, String field) {
+        Object raw = body == null ? null : body.get(field);
+        if (raw instanceof Number n) {
+            return n.intValue();
+        }
+        try {
+            return raw == null ? null : Integer.valueOf(String.valueOf(raw).strip());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static List<String> lines(Object raw) {
+        if (!(raw instanceof List<?> items)) {
+            return List.of();
+        }
+        List<String> found = new ArrayList<>();
+        for (Object one : items) {
+            String text = string(one);
+            if (!text.isBlank()) {
+                found.add(text);
+            }
+        }
+        return List.copyOf(found);
+    }
+
+    /** 这一层用得到的那点编译命令写入逻辑（只换 `build.compile` 那一行）。 */
+    static final class CompileYaml {
+
+        private CompileYaml() {
+        }
+
+        static String withCompileCommand(String source, String command) {
+            String text = source == null ? "" : source;
+            String eol = text.contains("\r\n") ? "\r\n" : "\n";
+            List<String> rows = new ArrayList<>(List.of(text.split("\r?\n", -1)));
+            String quoted = '"' + command.replace("\\", "\\\\").replace("\"", "\\\"") + '"';
+            int buildAt = -1;
+            for (int at = 0; at < rows.size(); at++) {
+                String row = rows.get(at);
+                if (!row.isEmpty() && !Character.isWhitespace(row.charAt(0)) && row.startsWith("build:")) {
+                    buildAt = at;
+                    break;
+                }
+            }
+            if (buildAt < 0) {
+                if (!rows.isEmpty() && !rows.get(rows.size() - 1).isBlank()) {
+                    rows.add("");
+                }
+                rows.add("build:");
+                rows.add("  compile: " + quoted);
+                return join(rows, eol);
+            }
+            int end = rows.size();
+            for (int at = buildAt + 1; at < rows.size(); at++) {
+                String row = rows.get(at);
+                if (row.isBlank() || row.stripLeading().startsWith("#")) {
+                    continue;
+                }
+                if (!Character.isWhitespace(row.charAt(0))) {
+                    end = at;
+                    break;
+                }
+            }
+            for (int at = buildAt + 1; at < end; at++) {
+                if (rows.get(at).strip().startsWith("compile:")) {
+                    rows.set(at, "  compile: " + quoted);
+                    return join(rows, eol);
+                }
+            }
+            rows.add(end, "  compile: " + quoted);
+            return join(rows, eol);
+        }
+
+        private static String join(List<String> rows, String eol) {
+            String joined = String.join(eol, rows);
+            return joined.endsWith(eol) ? joined : joined + eol;
+        }
+    }
+}

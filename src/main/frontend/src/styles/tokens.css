@@ -1,0 +1,73 @@
+/* 颜色/字级/间距/动效的唯一一处定义（DESIGN.md §1–§4）。
+   深色是默认（PRODUCT.md：暗房间 + 旁边永远开着终端）。浅色不做。 */
+
+:root {
+  color-scheme: dark;
+
+  /* 表面：微暖（chroma 0.008 朝品牌色相 85），不是纯灰 */
+  --bg: oklch(0.16 0.008 85);
+  --surface: oklch(0.20 0.009 85);
+  --surface-2: oklch(0.245 0.010 85);
+  --line: oklch(0.30 0.010 85);
+  --line-strong: oklch(0.38 0.012 85);
+
+  /* 字：三级都 ≥4.5:1 */
+  --ink: oklch(0.95 0.006 85);
+  --ink-2: oklch(0.78 0.008 85);
+  /* 0.62 是 DESIGN.md 给的数；压在悬停面（--surface-2）上只有 4.46:1，
+     所以抬到 0.63（两处一起改，别处不动）。 */
+  --ink-3: oklch(0.63 0.008 85);
+
+  /* 强调色：全场只有「主操作」与「当前选中」两处用它 */
+  --accent: oklch(0.80 0.155 88);
+  --accent-ink: oklch(0.20 0.03 88);
+  --accent-dim: oklch(0.46 0.09 88);
+
+  /* 语义四色：亮色直接当字用（对 --bg 都 ≥4.5:1）；微底给需要整块底的场合 */
+  --ok: oklch(0.76 0.13 158);
+  --warn: oklch(0.80 0.12 62);
+  --danger: oklch(0.70 0.165 27);
+  --run: oklch(0.78 0.09 240);
+  --idle: oklch(0.62 0.008 85);
+  --ok-dim: oklch(0.76 0.13 158 / 0.13);
+  --warn-dim: oklch(0.80 0.12 62 / 0.13);
+  --danger-dim: oklch(0.70 0.165 27 / 0.13);
+  --run-dim: oklch(0.78 0.09 240 / 0.13);
+
+  /* 字：一套无衬线 + 一套等宽，不引网络字体 */
+  --font: ui-sans-serif, "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --fs-sm: 0.875rem;
+  --fs: 1rem;
+  --fs-lg: 1.25rem;
+  --fs-xl: 1.75rem;
+  --lh-tight: 1.2;
+  --lh: 1.55;
+
+  /* 间距：只用 4 的倍数 */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+
+  --r: 4px;
+  --topbar: 56px;
+  --sidebar: 232px;
+  --page: 1100px;
+  --hit: 44px;
+
+  /* 层级走语义阶，别处不许写 999 */
+  --z-drop: 10;
+  --z-sticky: 20;
+  --z-backdrop: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+
+  --ease: cubic-bezier(0.25, 1, 0.5, 1);
+  --t1: 160ms;
+  --t2: 200ms;
+  --t3: 250ms;
+}

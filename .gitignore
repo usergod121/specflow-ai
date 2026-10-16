@@ -1,0 +1,15 @@
+# 构建产物
+target/
+src/main/frontend/dist/
+src/main/frontend/node_modules/
+
+# 运行时落点（正常落在用户目录，这里是防呆）
+.specflow/
+*.log
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db

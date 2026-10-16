@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.specflow</groupId>
+  <artifactId>specflow-v2</artifactId>
+  <version>2.0.0</version>
+  <name>specflow v2</name>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <java.version>17</java.version>
+    <spring-boot.version>3.5.9</spring-boot.version>
+    <jackson.version>2.18.3</jackson.version>
+    <langchain4j.version>1.22.0</langchain4j.version>
+    <junit.version>5.10.2</junit.version>
+    <assertj.version>3.26.0</assertj.version>
+    <!-- 前端产物：`-Dfrontend.skip=true` 只编 Java（产物已在 target 里时用） -->
+    <frontend.skip>false</frontend.skip>
+    <frontend.npm>npm</frontend.npm>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- HTTP 与 JSON 那一层。刻意不引 JPA / Security / Validation：这一版不需要它们 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-logging</artifactId>
+    </dependency>
+
+    <!-- 监控：健康、指标、以及**运行时改日志级别**（出 bug 时最值的一件）。
+         只暴露 health/info/metrics/loggers 四个端点——绝不暴露 env / configprops / beans，
+         那三个会把配置与密钥的结构漏出去 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- 模型：只用 OpenAI 兼容协议那一个客户端。HTTP / 重试 / 鉴权都交给它 -->
+    <dependency>
+      <groupId>dev.langchain4j</groupId>
+      <artifactId>langchain4j-open-ai</artifactId>
+      <version>${langchain4j.version}</version>
+    </dependency>
+
+    <!-- 配置与事件都是 YAML / JSON：显式钉版本，免得 Boot 的 BOM 与我们要的形状打架 -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-yaml</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.datatype</groupId>
+      <artifactId>jackson-datatype-jsr310</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>${assertj.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>specflow</finalName>
+    <plugins>
+      <!-- 1) 前端：在本机跑 npm run build（不引 frontend-maven-plugin：它会自己下一份 Node） -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.6.3</version>
+        <executions>
+          <execution>
+            <id>frontend-build</id>
+            <phase>generate-resources</phase>
+            <goals><goal>exec</goal></goals>
+            <configuration>
+              <skip>${frontend.skip}</skip>
+              <workingDirectory>${project.basedir}/src/main/frontend</workingDirectory>
+              <executable>${frontend.npm}</executable>
+              <arguments><argument>run</argument><argument>build</argument></arguments>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- 2) 前端产物进 jar 的 static/：Spring 默认就服务 classpath:/static/ -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.3.1</version>
+        <executions>
+          <execution>
+            <id>copy-frontend</id>
+            <phase>process-resources</phase>
+            <goals><goal>copy-resources</goal></goals>
+            <configuration>
+              <skip>${frontend.skip}</skip>
+              <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>
+              <resources>
+                <resource>
+                  <directory>${project.basedir}/src/main/frontend/dist</directory>
+                  <filtering>false</filtering>
+                </resource>
+              </resources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>${java.version}</release>
+          <compilerArgs><arg>-parameters</arg></compilerArgs>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+      </plugin>
+
+      <!-- 一个能直接 java -jar 的胖 jar -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <version>${spring-boot.version}</version>
+        <configuration>
+          <!-- 入口必须是 Main（命令行参数、端口、项目路径都在它那儿）。
+               不写这一行时插件会自己找带 @SpringBootApplication 的类当入口，
+               于是 App.main 被选中、端口参数被绕过——实测表现是"指定的端口没用，它去抢 8770" -->
+          <mainClass>com.specflow.Main</mainClass>
+        </configuration>
+        <executions>
+          <execution>
+            <goals><goal>repackage</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

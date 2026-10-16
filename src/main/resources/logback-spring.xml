@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  日志配置（这一版排错的地基）。
+
+  两条口径：
+  1. **一直有一份可查的日志文件**：落在 <用户目录>/.specflow/logs/engine.log，滚动保留 5 份 × 10MB。
+     为什么不落在项目里：换项目、项目被删、项目只读——这些情况下你更需要日志，而不是更需要它消失。
+     项目内部那一份"发生过什么"由 flow/<id>/events.jsonl 负责（它是给用户看的，格式稳定）。
+  2. **每行都带链路 id**（%X{req} 与 %X{run}）：一次请求、一段运行各自一个短 id，
+     `grep run=r-3f9a engine.log` 就能把一件事情的几十行日志整段拉出来。
+     id 由 core.Logs 放进 MDC（HTTP 那条在 web.TraceFilter 里放）。
+-->
+<configuration>
+
+  <property name="LOG_DIR" value="${user.home}/.specflow/logs"/>
+  <property name="PATTERN"
+            value="%d{MM-dd HH:mm:ss.SSS} %-5level [%X{req:-} %X{run:-}] %logger{24} - %msg%n"/>
+
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>${PATTERN}</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>${LOG_DIR}/engine.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
+      <fileNamePattern>${LOG_DIR}/engine.%i.log</fileNamePattern>
+      <minIndex>1</minIndex>
+      <maxIndex>5</maxIndex>
+    </rollingPolicy>
+    <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+      <maxFileSize>10MB</maxFileSize>
+    </triggeringPolicy>
+    <encoder>
+      <pattern>${PATTERN}</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
+  <!-- 我们自己的代码给 debug：本地工具，日志多一点比"出 bug 时没线索"便宜 -->
+  <logger name="com.specflow" level="debug"/>
+  <!-- 框架那一层只要 warning：Tomcat / Spring 的 info 会把真正有用的那几行淹掉 -->
+  <logger name="org.springframework" level="warn"/>
+  <logger name="org.apache" level="warn"/>
+  <logger name="dev.langchain4j" level="warn"/>
+
+  <root level="warn">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="FILE"/>
+  </root>
+</configuration>
