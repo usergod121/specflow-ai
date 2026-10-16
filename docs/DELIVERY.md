@@ -89,10 +89,16 @@ java -jar target\specflow.jar env status -p <项目>  # 现在什么状态
 3. **`test/TestSandbox` 的收尾**：容器与副本会在 `close()` 里收掉；但如果进程被硬杀，
    容器会留着（下一次 `up` 用的是同名 project，`down` 会收掉它）。**这一条没做实时验证。**
 4. **审批（y/n）在真链路上没被触发过**：这一次端到端里测试 Agent 没跑高危命令（`替你点了 0 条`）。
-   逻辑有单测（`ApprovalsTest`）与设计（阻塞 + 超时按拒），但"真跑起来停住等人"这条**没实测**。
+   逻辑本身有五条单测（`test/ApprovalsTest`：真的卡住线程 / 点 y 放行 / 点 n 按拒 /
+   收尾时按拒唤醒不挂死 / 前后脚两条各等各的），但**"真跑起来停在界面上等人点"这一条没实测**——
+   要实测得让 Agent 恰好去跑一条高危命令，那是模型说了算的，我没法可靠地摆出来。
+   写这个测试时顺手发现并修掉一个真问题：待审批表原来用 `ConcurrentHashMap`，
+   可面板的合同是"按问的先后"，而它的迭代顺序不保证（`seq` 自增也没锁）——已换成
+   "一把锁 + 有序表"，测试里那条顺序断言就是钉它的。
 5. **界面只做过浏览器冒烟**（七个路由零 JS 报错），**没有逐页视觉走查**——
    我看不到图（模型不接图像输入），观感得你自己看。
-6. **`mvn -o test` 与前端单测的数字见下**；其中若有红，红在哪一条会如实写出来。
+6. **后端与前端单测的数字见第五节**：这一版是 **120 + 95 全绿**（写交付说明时又补了 5 条审批测试，
+   所以数字从早先的 115 涨到 120）。
 
 ## 五、实测记录
 
@@ -102,13 +108,25 @@ java -jar target\specflow.jar env status -p <项目>  # 现在什么状态
 
 ```
 cd E:\specflow-v2
-mvn -o test -Dfrontend.skip=true
-→ [INFO] Tests run: 115, Failures: 0, Errors: 0, Skipped: 0
+mvn -o clean package
+→ [INFO] Tests run: 120, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 
-按类节选：`CaseListTest` 18 条、`SandboxTest` 7 条……逐类清单在
-`E:\sf-e2e\reports-v2\backend-tests.log`。
+逐类（全绿，共 13 个测试类）：
+
+```
+agent.LoopTest              13    env.ComposeTest          5
+agent.ProtocolTest           8    env.EnvConfigLoaderTest  8
+agent.ToolRegistryTest       9    env.EnvironmentTest      9
+agent.tools.ApplyPatchTest   8    flow.GatesTest          11
+agent.tools.ReadFileTest     7    test.ApprovalsTest       5
+agent.tools.ToolsTest       12    test.CaseListTest       18
+                                  test.SandboxTest         7
+```
+
+（`mvn -o test -Dfrontend.skip=true` 单独跑也是同一批；原始输出在
+`E:\sf-e2e\reports-v2\final-package.log`。）
 
 ### 2. 前端测试与构建
 
