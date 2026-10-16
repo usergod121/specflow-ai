@@ -197,7 +197,12 @@ public final class Environment {
     /** 收环境：{@code down -v}（连卷一起）。返回一句给人看的话。 */
     public String down() {
         Path file = activeCompose();
-        Run run = new Run(Progress.quiet(), file != null ? file.getParent() : runDir(stamp()));
+        if (file == null) {
+            // 从没起过就别去跑 docker：那是拼一条指向不存在文件的命令，
+            // 然后拿 docker 的「找不到文件」当成「收环境失败」报给用户——一句假话
+            return "环境没起过：找不到引擎渲染出来的 " + COMPOSE_FILE + "，没什么可收的";
+        }
+        Run run = new Run(Progress.quiet(), file.getParent());
         try {
             Cmd.Result result = run.exec(run.argv("down", "-v"), null, DOWN_TIMEOUT_SECONDS);
             if (result.ok()) {

@@ -6,23 +6,42 @@
 
 ## 一、怎么跑
 
+**双击就行**（不用记任何命令）：
+
+| 双击 | 它干什么 |
+| --- | --- |
+| **`start.bat`** | 起引擎（前端已经打进 jar，一个进程就是全部）→ 等它健康 → 开浏览器 |
+| **`stop.bat`** | 停引擎 + 把这个项目的容器 / 卷 / 网络收干净；`stop.bat -Purge` 连流程数据一起删 |
+| `dev.bat` | 只有改前端想要「保存即刷新」时才用（引擎 + Vite 热更新） |
+
+第一次双击会自己办这些：找 Java 17+ → 缺 jar 就用 Maven 编一份 → 看 Docker 在不在 →
+挑一个空端口（默认 8780）→ 密钥从项目 `local.env` / 环境变量 / 这台机器上别的 specflow 里
+找一份写进项目 → 起引擎 → 打开 `http://127.0.0.1:8780`。
+
+参数都可选：`-Project <目录>`、`-Port <端口>`、`-ApiKey sk-xxx`、`-Rebuild`（改了 Java 后重建）、
+`-Foreground`（日志留在窗口里）。定位与状态记在 `.run\engine.json`，`stop.bat` 只按这份记录
+去停——**它不会去动 8770 上你原来那份实例**。
+
+手工起也行：
+
 ```powershell
 cd E:\specflow-v2
 mvn -o clean package                 # 编 Java + 编前端（Vite），产物 target\specflow.jar
-java -jar target\specflow.jar web --port 8770 --no-open -p <你的项目目录>
-# 浏览器打开 http://127.0.0.1:8770
+java -jar target\specflow.jar web --port 8780 --no-open -p <你的项目目录>
+# 浏览器打开 http://127.0.0.1:8780
 ```
 
-不开界面的两条：
+不开界面的四条：
 
 ```powershell
-java -jar target\specflow.jar env init  -p <项目>   # 起环境（拉镜像 + init + reset）
-java -jar target\specflow.jar env down  -p <项目>   # 收环境（连卷一起）
-java -jar target\specflow.jar env status -p <项目>  # 现在什么状态
+java -jar target\specflow.jar env prepare -p <项目>  # 只铺配置（不动 docker）
+java -jar target\specflow.jar env init    -p <项目>  # 起环境（拉镜像 + init，失败就 down -v 收干净）
+java -jar target\specflow.jar env status  -p <项目>  # 现在什么状态
+java -jar target\specflow.jar env down    -p <项目>  # 收干净（主环境 + 测试沙箱，连卷）；--purge 再删流程数据
 ```
 
 **前置**：JDK 17、Docker Desktop 在跑、项目里 `.specflow/local.env` 有 `SPECFLOW_API_KEY=sk-…`
-（没有的话界面能开，只是点「跑」会告诉你缺密钥）。
+（`start.bat` 会替你把最后这条办了；没有的话界面能开，只是点「跑」会告诉你缺密钥）。
 
 ## 二、验过什么（都是真跑出来的）
 
@@ -97,8 +116,14 @@ java -jar target\specflow.jar env status -p <项目>  # 现在什么状态
    "一把锁 + 有序表"，测试里那条顺序断言就是钉它的。
 5. **界面只做过浏览器冒烟**（七个路由零 JS 报错），**没有逐页视觉走查**——
    我看不到图（模型不接图像输入），观感得你自己看。
-6. **后端与前端单测的数字见第五节**：这一版是 **120 + 95 全绿**（写交付说明时又补了 5 条审批测试，
-   所以数字从早先的 115 涨到 120）。
+6. **审批收场有个毫秒级窗口**：`Approvals.clear()`（换项目 / 关服务时调）只答掉"此刻正在等着的"，
+   抢在这次收场之后才登记进来的那一条，会一直等到它自己的时限（10 分钟）。
+   换项目时那条链路已经在收尾，窗口是毫秒级；要彻底消掉得让 `ask` 带一个"这一轮已作废"的记号，
+   那是 `Runs` 那一层的事，**这一版没做**（写在 `Approvals.clear` 的注释里）。
+7. **启动脚本只在 Windows PowerShell 5.1 上验过**：这台机器没装 PowerShell 7，
+   所以 `start.bat` 里那句"有 pwsh 就用 pwsh"的分支**没实测**（走的是 `powershell` 那条）。
+8. **后端与前端单测的数字见第五节**：这一版是 **134 + 95 全绿**（交付前又补了 14 条：
+   审批 5 条、env 子命令 9 条、JSON/YAML 入口 5 条里的一部分，所以数字从 115 一路上来）。
 
 ## 五、实测记录
 
@@ -108,25 +133,26 @@ java -jar target\specflow.jar env status -p <项目>  # 现在什么状态
 
 ```
 cd E:\specflow-v2
-mvn -o clean package
-→ [INFO] Tests run: 120, Failures: 0, Errors: 0, Skipped: 0
+mvn -o test -Dfrontend.skip=true
+→ [INFO] Tests run: 134, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 
-逐类（全绿，共 13 个测试类）：
+逐类（全绿，共 15 个测试类）：
 
 ```
-agent.LoopTest              13    env.ComposeTest          5
-agent.ProtocolTest           8    env.EnvConfigLoaderTest  8
-agent.ToolRegistryTest       9    env.EnvironmentTest      9
-agent.tools.ApplyPatchTest   8    flow.GatesTest          11
-agent.tools.ReadFileTest     7    test.ApprovalsTest       5
-agent.tools.ToolsTest       12    test.CaseListTest       18
-                                  test.SandboxTest         7
+agent.LoopTest              13    env.ComposeTest           5
+agent.ProtocolTest           8    env.EnvCliTest            9
+agent.ToolRegistryTest       9    env.EnvConfigLoaderTest   8
+agent.tools.ApplyPatchTest   8    env.EnvironmentTest       9
+agent.tools.ReadFileTest     7    flow.GatesTest           11
+agent.tools.ToolsTest       12    test.ApprovalsTest        5
+core.JsonTest                5    test.CaseListTest        18
+                                  test.SandboxTest          7
 ```
 
-（`mvn -o test -Dfrontend.skip=true` 单独跑也是同一批；原始输出在
-`E:\sf-e2e\reports-v2\final-package.log`。）
+（原始输出在 `E:\sf-e2e\reports-v2\final2-backend.log`。
+其中 `ApprovalsTest` 与 `EnvCliTest` 是交付前补的——见第四节第 4、6 条。）
 
 ### 2. 前端测试与构建
 
@@ -190,3 +216,47 @@ node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 3957
 
 （「④ 自己核一遍」这一行不采信 Agent 的自述：脚本自己 `javac` + `java` 跑一遍，
 要求打出 `reserve(5)=false`、`onHand(A)=3`。这两次都打出来了。）
+
+### 6. 双击那一套（`start.bat` / `stop.bat`）：真的开、真的收
+
+**开**（`start.bat -NoBrowser`，原始输出）：
+
+```
+  specflow  五节点规格驱动引擎
+-> 找一个 Java 17+
+   OK  C:\Users\Lenovo\.jdks\ms-21.0.10\bin\java.exe
+   ..  用现成的 target\specflow.jar（改了 Java 就加 -Rebuild）
+-> 看一眼 Docker
+   OK  Docker 在跑（29.2.1）
+-> 挑一个项目
+   OK  E:\specflow-v2\fixture
+-> 看密钥
+   OK  用项目 .specflow\local.env 里的
+   ..  端口 8780
+-> 起引擎
+   OK  起来了（8780）
+  地址   http://127.0.0.1:8780
+```
+
+起完的核对：`GET /api/actuator/health` → `UP`；`GET /workbench` → **200**。
+
+**收**（先起一次真环境，再收）：
+
+```
+docker ps  →  sf-fixture-660e62-app-1  Up
+stop.bat   →  • 环境已关闭（down -v）：Container sf-fixture-660e62-app-1 Stopping
+收完核对   →  容器没了、网络也没了
+```
+
+**销毁**（`stop.bat -Purge -Yes`）：
+
+```
+• 流程数据已删：.specflow/flow（4 个文件）；project.yaml / env.yaml / local.env 都留着
+```
+
+**它没碰你原来那份实例**：全程 `8770` 一直是 `pid 6872` 在听，
+`stop.bat` 只按 `.run\engine.json` 记的 pid 和「本仓库 jar 的全路径」找进程
+（故意不按文件名匹配：这台机器上还跑着 `E:\specflow-ai` 那一份）。
+
+顺手清掉了自己早先测试留下的 19 个容器 + 19 个网络（`sf-sfv2-*` / `sf-sf-e2e-*` / `sf-junit-*`），
+**你那两个 `sf-library-management-backend-*` 一个没动**。

@@ -16,7 +16,8 @@
 | T6 | 测试 Agent：用例清单、容器沙箱、逐条验收、审批、冻结 | `test/` | `CaseListTest` 18、`SandboxTest` 7、`ApprovalsTest` 5 + 端到端 ⑤ 109s / 11 条全到终态 |
 | T7 | 路由：`/api/*` 全表 + 错误翻译（409 讲人话）+ Spring 装配 + 链路过滤器 | `web/`、`Main.java` | 端到端每一步都走 HTTP，且对状态码与事件流有断言；错误口径由 `web/Errors` 一处翻 |
 | T8 | 接线与真跑：真模型 + 真容器，五节点走通 | — | `E:\sf-e2e\run2.mjs`，**连着两次全绿**（157s / 150s） |
-| T9 | 验收：单测 + 浏览器冒烟 + 交付文档 | `src/test/`、`docs/` | 后端 `mvn -o clean package` **120 条全绿**；前端 95 条；交付说明在 `docs/DELIVERY.md` |
+| T9 | 验收：单测 + 浏览器冒烟 + 交付文档 | `src/test/`、`docs/` | 后端 `mvn -o test` **134 条全绿**；前端 95 条；交付说明在 `docs/DELIVERY.md` |
+| T10 | **双击那一套**：`start.bat` / `stop.bat` / `dev.bat`（含 `env` 子命令、真销毁） | `tools/`、根目录三个 bat、`env/EnvCli` | `EnvCliTest` 9 条 + 真跑：开 → 健康 UP → 收（容器/网络真没了）→ `-Purge`（数据删、配置留）；全程没碰 `8770` |
 
 ## 二、每条「做完」的判据（Definition of Done）
 
@@ -33,6 +34,9 @@
 - **T8**：`① 起容器 → ② 产物 → ③ 用例 → ④ 编译过 + 独立核对行为 → ⑤ 全终态 → 闭环`，
   其中 ④ 的核对**不采信 Agent 自述**：脚本自己 `javac` + `java` 跑一遍看行为。
 - **T9**：`mvn -o clean package` 全绿 + 冒烟七页干净 + `docs/DELIVERY.md` 写清「怎么跑 / 验过什么 / 没做什么」。
+- **T10**：双击 `start.bat` 能起（健康 `UP`、页面 200、地址自己开）；双击 `stop.bat` 能停，
+  而且容器/卷/网络**真的没了**；`-Purge` 只删流程数据、留着项目配置；
+  **任何情况下都不动 8770** 上那份正在跑的旧实例。
 
 ## 三、砍掉的（说好了不做，别再找）
 

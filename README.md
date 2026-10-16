@@ -12,28 +12,43 @@
 
 这是 **v2，从 0 重写**（旧版在 `E:\specflow-ai`，两份互不影响）。
 
-## 跑起来
+## 跑起来（双击就行）
+
+| 双击 | 它干什么 |
+| --- | --- |
+| **`start.bat`** | 起引擎（前端已经打进 jar，一个进程就是全部）→ 等它健康 → 开浏览器 |
+| **`stop.bat`** | 停引擎 + 把这个项目的容器 / 卷 / 网络收干净；`stop.bat -Purge` 连流程数据一起删 |
+| `dev.bat` | 只有改前端想要「保存即刷新」时才用（引擎 + Vite 热更新） |
+
+第一次双击会自己把这些办了：找 Java 17+ → 缺 jar 就用 Maven 编一份 → 看 Docker 在不在
+→ 挑一个空端口（默认 8780）→ 密钥从项目 `local.env` / 环境变量 / 这台机器上别的 specflow
+里找一份写进项目 → 起引擎 → 打开 `http://127.0.0.1:8780`。
+
+参数都可选：
 
 ```powershell
-cd E:\specflow-v2
-mvn -o clean package        # 编 Java + 编前端（Vite），产物 target\specflow.jar
-
-java -jar target\specflow.jar web --port 8780 --no-open -p <你的项目目录>
-# 浏览器开 http://127.0.0.1:8780
+start.bat -Project D:\my\project    # 打开哪个项目（默认：上次那个，其次 fixture）
+start.bat -Port 8790                # 换端口（默认 8780；被占就往后找）
+start.bat -ApiKey sk-xxxx           # 密钥
+start.bat -Rebuild                  # 改了 Java 代码之后重建
+start.bat -Foreground               # 日志打在这个窗口里（调试用）
+stop.bat -Purge                     # 连流程数据（.specflow\flow）一起删，会先问一遍
 ```
 
-> 端口随你换。**别用 8770**——那是你原来那份实例正在占的端口。
+> 端口随你换。**别用 8770**——那是你原来那份实例正在占的端口，脚本也会拒绝动它。
+> 想手工起也行：`java -jar target\specflow.jar web --port 8780 --no-open -p <项目>`
 
-不开界面的三条：
+不开界面的四条：
 
 ```powershell
-java -jar target\specflow.jar env init   -p <项目>   # 起环境：拉镜像 + init + reset
-java -jar target\specflow.jar env status -p <项目>   # 现在什么状态
-java -jar target\specflow.jar env down   -p <项目>   # 收环境（连卷一起）
+java -jar target\specflow.jar env prepare -p <项目>   # 只铺配置（不动 docker）
+java -jar target\specflow.jar env init    -p <项目>   # 起环境：拉镜像 + init（失败就 down -v 收干净）
+java -jar target\specflow.jar env status  -p <项目>   # 现在什么状态（不动任何东西）
+java -jar target\specflow.jar env down    -p <项目>   # 收干净：主环境 + 测试沙箱，连卷；--purge 再删流程数据
 ```
 
-**前置**：JDK 17、Docker Desktop 在跑、项目里 `.specflow/local.env` 有 `SPECFLOW_API_KEY=sk-…`。
-缺 Key 界面照样能开，只是点「跑」会告诉你缺什么。
+**前置**：JDK 17、Docker Desktop 在跑、项目里 `.specflow/local.env` 有 `SPECFLOW_API_KEY=sk-…`
+（`start.bat` 会替你把最后这条办了）。缺 Key 界面照样能开，只是点「跑」会告诉你缺什么。
 
 想先拿现成的练手：`fixture\` 里有一个零依赖的 Java 小项目，故意埋了一个 bug，README 写了
 「要求是什么、跑出来应该是什么」。

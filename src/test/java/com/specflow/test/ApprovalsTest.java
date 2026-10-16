@@ -86,7 +86,9 @@ class ApprovalsTest {
         Approvals approvals = new Approvals();
         FutureTask<Boolean> first = askOnOtherThread(approvals, "docker compose down -v");
         FutureTask<Boolean> second = askOnOtherThread(approvals, "DROP DATABASE sf");
-        waitPanel(approvals);
+        // 必须等两条都登记好了再收场：clear() 只管「此刻正在等着的」，
+        // 抢在登记之前调它，晚到的那条就得等它自己的时限（这条边界写在 Approvals.clear 的注释里）
+        waitPanelSize(approvals, 2);
 
         approvals.clear();
 

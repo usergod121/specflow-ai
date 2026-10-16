@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
+import com.specflow.core.Json;
 import com.specflow.core.Layout;
 import com.specflow.core.SpecException;
 
@@ -71,7 +72,7 @@ public final class EnvConfigLoader {
         } catch (IOException e) {
             throw new SpecException("读不了 " + layout.show(file) + "：" + e.getMessage());
         }
-        return hasNoContent(source) ? Optional.empty() : Optional.of(parse(source));
+        return Json.hasNoContent(source) ? Optional.empty() : Optional.of(parse(source));
     }
 
     /** 校验一段 env.yaml 原文（不落盘、不读磁盘）：界面里 AI 草稿用这个口子。 */
@@ -376,17 +377,6 @@ public final class EnvConfigLoader {
     private static String at(Lines lines, String path) {
         int line = lines.lineOf(path);
         return line > 0 ? "第 " + line + " 行：" : "";
-    }
-
-    /** 剥掉注释与空行之后什么都不剩 = 「建了文件但还没想好」。 */
-    private static boolean hasNoContent(String source) {
-        for (String raw : source.split("\\R")) {
-            String line = raw.strip();
-            if (!line.isEmpty() && !line.startsWith("#")) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**

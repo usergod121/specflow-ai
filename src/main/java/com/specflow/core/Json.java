@@ -76,15 +76,52 @@ public final class Json {
         return read(Atomic.read(file, "null"), type);
     }
 
-    /** 读一份 YAML（env.yaml / project.yaml）。文件不在时返回 {@code null}。 */
+    /**
+     * 读一份 YAML（env.yaml / project.yaml / 各种声明）。
+     *
+     * <p>「<b>没有内容</b>」与「文件不在」是同一件事，都返回 {@code null}，由调用方去决定
+     * 默认值：只有注释的 {@code project.yaml}（用户刚铺开、还没填）在 Jackson 那边会抛
+     * {@code No content to map due to end-of-input}——那不是「配置写错了」，
+     * 而用户看到的就是界面上冒一句没人看得懂的英文。
+     */
     public static <T> T readYaml(Path file, Class<T> type) {
         if (!Files.isRegularFile(file)) {
             return null;
         }
+        String text;
         try {
-            return YAML.readValue(Files.readString(file), type);
+            text = Files.readString(file);
         } catch (IOException e) {
             throw new IllegalArgumentException("读不出 " + file.getFileName() + "：" + e.getMessage(), e);
         }
+        if (hasNoContent(text)) {
+            return null;
+        }
+        try {
+            return YAML.readValue(text, type);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("读不出 " + file.getFileName() + "：" + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 除了空行与整行注释之外还有没有东西。
+     *
+     * <p>这是<b>「还没写」与「写错了」的分界线</b>，所以只有这一处定义：
+     * {@code env.yaml}（{@link com.specflow.env.EnvConfigLoader}）与 {@code project.yaml}
+     * （{@link Project}）都要按同一句话判——刚铺开的文件里全是注释，那是正常的起点，
+     * 不该报错；而写成别的花样才是错。
+     */
+    public static boolean hasNoContent(String yaml) {
+        if (yaml == null) {
+            return true;
+        }
+        for (String raw : yaml.split("\\R")) {
+            String line = raw.strip();
+            if (!line.isEmpty() && !line.startsWith("#")) {
+                return false;
+            }
+        }
+        return true;
     }
 }

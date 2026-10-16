@@ -100,7 +100,15 @@ public final class Approvals implements Approval {
         return one != null && one.answer().complete(allow);
     }
 
-    /** 换项目 / 关服务时收掉：等在里面的线程要醒过来（按拒收场）。 */
+    /**
+     * 换项目 / 关服务时收掉：等在里面的线程要醒过来（按拒收场）。
+     *
+     * <p><b>边界</b>：它只管「此刻正在等着的」那一批。抢在这次收场<b>之后</b>才登记进来的
+     * 那一条不在内——它会一直等到自己的时限（{@link #WAIT_SECONDS}）。
+     * 换项目时那条链路（{@code Runs}）已经在收尾，这个窗口是毫秒级；真要彻底消掉，
+     * 得让 {@code ask} 带一个「这一轮已经作废」的记号，那是 {@code Runs} 那一层的事，
+     * 这一版没做（写在 {@code docs/DELIVERY.md} 第四节）。
+     */
     public void clear() {
         List<Waiting> all;
         synchronized (lock) {

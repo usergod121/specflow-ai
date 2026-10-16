@@ -162,7 +162,7 @@
         <configuration>
           <!-- 入口必须是 Main（命令行参数、端口、项目路径都在它那儿）。
                不写这一行时插件会自己找带 @SpringBootApplication 的类当入口，
-               于是 App.main 被选中、端口参数被绕过——实测表现是"指定的端口没用，它去抢 8770" -->
+               于是 App.main 被选中、端口参数被绕过——实测表现是"指定的端口没用，它去抢默认端口" -->
           <mainClass>com.specflow.Main</mainClass>
         </configuration>
         <executions>

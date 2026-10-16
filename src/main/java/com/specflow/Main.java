@@ -1,6 +1,7 @@
 package com.specflow;
 
 import com.specflow.core.Project;
+import com.specflow.env.EnvCli;
 import com.specflow.web.App;
 
 import java.nio.file.Path;
@@ -12,8 +13,8 @@ import java.util.Locale;
  * 入口。三个子命令，够用就行（不引命令行框架：这一层不值得多一个依赖）。
  *
  * <pre>
- *   specflow web  [--port 8770] [--no-open] [-p &lt;项目&gt;]   起界面
- *   specflow env  init|down|status [-p &lt;项目&gt;]           不开界面，直接伺候环境
+ *   specflow web  [--port 8780] [--no-open] [-p &lt;项目&gt;]   起界面
+ *   specflow env  init|reset|status|down [-p &lt;项目&gt;]      不开界面，直接伺候环境
  *   specflow version
  * </pre>
  */
@@ -24,14 +25,13 @@ public final class Main {
         String command = rest.isEmpty() ? "web" : rest.remove(0).toLowerCase(Locale.ROOT);
         switch (command) {
             case "web" -> App.run(port(rest), project(rest), !rest.contains("--no-open"));
-            // env 子命令在 T1（env 包）落地后由 T7 接回来：现在引一个还不存在的类，
-            // 会让所有人的 `mvn test-compile` 都是红的
+            case "env" -> System.exit(EnvCli.run(rest));
             case "version", "-v", "--version" -> System.out.println("specflow 2.0.0");
             case "-h", "--help", "help" -> System.out.println("""
                     specflow 2.0.0
 
-                      specflow web  [--port 8770] [--no-open] [-p <项目>]   起界面
-                      specflow env  init|down|status [-p <项目>]           伺候环境
+                      specflow web  [--port 8780] [--no-open] [-p <项目>]   起界面
+                      specflow env  init|reset|status|down [-p <项目>]     伺候环境
                       specflow version
                     """);
             default -> {
@@ -47,7 +47,7 @@ public final class Main {
                 return Integer.parseInt(args.get(at + 1));
             }
         }
-        return 8770;
+        return 8780;
     }
 
     private static Path project(List<String> args) {
