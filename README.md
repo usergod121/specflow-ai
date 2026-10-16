@@ -18,9 +18,11 @@
 cd E:\specflow-v2
 mvn -o clean package        # 编 Java + 编前端（Vite），产物 target\specflow.jar
 
-java -jar target\specflow.jar web --port 8770 --no-open -p <你的项目目录>
-# 浏览器开 http://127.0.0.1:8770
+java -jar target\specflow.jar web --port 8780 --no-open -p <你的项目目录>
+# 浏览器开 http://127.0.0.1:8780
 ```
+
+> 端口随你换。**别用 8770**——那是你原来那份实例正在占的端口。
 
 不开界面的三条：
 

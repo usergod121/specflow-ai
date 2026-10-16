@@ -26,7 +26,7 @@ java -jar target\specflow.jar env status -p <项目>  # 现在什么状态
 
 ## 二、验过什么（都是真跑出来的）
 
-### 1. 五节点全链路端到端：**通过，157 秒**
+### 1. 五节点全链路端到端：**连着两次都通过**（157 秒 / 150 秒）
 
 `node E:\sf-e2e\run2.mjs --jar E:/specflow-v2/target/specflow.jar`（真模型 deepseek-chat + 真 docker + 真容器沙箱）：
 
@@ -142,13 +142,33 @@ node src\main\frontend\tests\smoke.mjs E:/specflow-v2/target/specflow.jar 3955
 
 ### 4. 五节点端到端（真模型 + 真 Docker）
 
-见第二节第 1 条那次 157 秒的记录。**改完上面的 favicon/404 之后又完整跑了一遍**，
-原始输出在 `E:\sf-e2e\reports-v2\final-e2e.log`，结论见文末补记。
+**连着跑通两次**：第一次 157 秒、第二次 150 秒（就是下面第 5 条）。
+两次都是真调 `deepseek-chat`、真起容器、真编译，不是桩。
 
-### 5. 补记：最后一次端到端
+### 5. 第二次端到端（改完 favicon/404 之后，原始输出）
 
 ```
 cd E:\sf-e2e
 node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 3957
-→ 见 E:\sf-e2e\reports-v2\final-e2e.log
+
+  ✓ ① 跑环境 Agent（12.4s） env.yaml 12 行、编译命令「javac -d out/main src/main/java/com/demo/*.java」
+  ✓ ① 保存声明（0.1s） env.yaml → .specflow/env.yaml；编译命令 → （没变）
+  ✓ ① 起环境（真 docker）（2.8s） 容器 ["sf-sfv2-3957-1-3d94fd-app-1"]
+  ✓ ① 编译（0.7s） 状态 PASSED、事件 40 条
+  ✓ ① 冻结（0.1s） 状态 DONE
+  ✓ ② 需求 + 跑探针（10.4s） 要改 1 个、可读 2 个
+  ✓ ② 保存 + 冻结（0.1s） 状态 DONE
+  ✓ ③ 生成 + 保存 + 冻结（3.4s） 11 条、状态 DONE
+  ✓ ④ 跑开发（6.3s） 编译通过
+  ✓ ④ 自己核一遍（javac + java 看行为）（0.7s） 打印 reserve(5)=false、onHand(A)=3
+  ✓ ④ 冻结（0.1s） 状态 DONE
+  ✓ ⑤ 跑测试（容器沙箱）（109.0s） 11 条全到终态（PASS 10）
+  ✓ ⑤ 提交 + 接受（0.2s） 已闭环（done=true）
+  → 通过（150s）
 ```
+
+报告原文：`E:\sf-e2e\reports-v2\e2e-2026-10-16T13-17-10.json`，
+控制台日志：`E:\sf-e2e\reports-v2\final-e2e.log`。
+
+（「④ 自己核一遍」这一行不采信 Agent 的自述：脚本自己 `javac` + `java` 跑一遍，
+要求打出 `reserve(5)=false`、`onHand(A)=3`。这两次都打出来了。）
