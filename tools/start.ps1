@@ -58,7 +58,7 @@ if ($Rebuild -or -not (Test-Path -LiteralPath $jar)) {
         $build.output -split "`r?`n" | Select-Object -Last 25 | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkGray }
         exit 1
     }
-    Write-Ok "产物好了：target\specflow.jar"
+    Write-Ok '产物好了：target\specflow.jar'
 } else {
     $stamp = (Get-Item -LiteralPath $jar).LastWriteTime.ToString('MM-dd HH:mm')
     Write-Note "用现成的 target\specflow.jar（$stamp；改了 Java 就加 -Rebuild）"
@@ -118,64 +118,34 @@ if ($state -and (Test-ProcessAlive -ProcessId $state.pid) -and (Wait-Health -Por
     exit 0
 }
 
-# ---------- 7. 端口 ----------
-$wanted = if ($Port -gt 0) { $Port } else { 8780 }
-if ($wanted -eq 8770 -and -not (Test-PortFree -Port 8770)) {
-    Write-Bad '8770 是你原来那份 specflow 实例的端口，别用这个。去掉 -Port，或者换一个（比如 8780）。'
-    exit 1
-}
-$pick = Get-FreePort -Wanted $wanted
-if ($pick.port -eq 0) {
-    Write-Bad "从 $wanted 往后找了 40 个端口都被占了，没法起。"
-    exit 1
-}
-$port = $pick.port
-if ($pick.shifted) {
-    Write-Warn2 "$wanted 被占了，改用 $port（地址里也要用这个端口）"
-} else {
-    Write-Note "端口 $port"
-}
-
-# ---------- 8. 起引擎 ----------
-$outLog = Get-OutLog
-$errLog = Get-ErrLog
-Remove-Item -LiteralPath $outLog, $errLog -Force -ErrorAction SilentlyContinue
-
-Write-Step '起引擎'
-$engineArgs = (Get-EngineEncoding) + @('-jar', $jar, 'web', '--port', "$port", '--no-open', '-p', $project)
-
+# ---------- 7. 前台模式（调试用） ----------
 if ($Foreground) {
-    Write-Note '前台运行：日志就在这个窗口，Ctrl+C 停'
-    & $java @engineArgs
+    $front = if ($Port -gt 0) { $Port } else { 8780 }
+    Write-Step "前台起引擎（端口 $front；日志就在这个窗口，Ctrl+C 停）"
+    $frontArgs = (Get-EngineEncoding) + @('-jar', $jar, 'web', '--port', "$front", '--no-open', '-p', $project)
+    & $java @frontArgs
     exit 0
 }
 
-# Start-Process 是把参数拼成一条命令行交给系统，所以带空格的路径要自己加引号
-# （直接调用 `& $java @engineArgs` 时不能加，加了引号会原样传进去——两条路各用各的数组）
-$quoted = ($engineArgs | ForEach-Object { if ("$_" -match '\s') { '"' + $_ + '"' } else { "$_" } }) -join ' '
-$process = Start-Process -FilePath $java -ArgumentList $quoted -PassThru -WindowStyle Hidden `
-    -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-Write-Note "pid $($process.Id)，等它健康……"
-
-if (Wait-Health -Port $port -Seconds 90) {
-    Save-EngineState -ProcessId $process.Id -Port $port -Project $project -Java $java
-    Write-Ok "起来了（$port）"
-    if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$port" }
-    Write-Host ''
-    Write-Host '  ---------------------------------------------' -ForegroundColor DarkGray
-    Write-Host "  地址   http://127.0.0.1:$port" -ForegroundColor White
-    Write-Host "  项目   $project"
-    Write-Host "  日志   $outLog"
-    Write-Host "         （引擎自己的日志：$env:USERPROFILE\.specflow\logs\engine.log）" -ForegroundColor DarkGray
-    Write-Host '  停掉   双击 stop.bat（会连容器和卷一起收干净）' -ForegroundColor White
-    Write-Host '  ---------------------------------------------' -ForegroundColor DarkGray
-    Write-Host ''
-    exit 0
+# ---------- 8. 后台起 + 等健康 ----------
+Write-Step '起引擎'
+$engine = Start-Engine -Java $java -Jar $jar -Project $project -Port $Port
+if (-not $engine.ok) {
+    Write-Bad $engine.message
+    exit 1
 }
+if ($engine.shifted) {
+    Write-Warn2 "$($engine.wanted) 被占了，改用 $($engine.port)（地址里也要用这个端口）"
+}
+Write-Ok "起来了（$($engine.port)，pid $($engine.pid)）"
 
-Write-Bad '引擎 90 秒没起来（或起完立刻退了）。原始输出：'
-if (Test-Path -LiteralPath $outLog) { Get-Content -LiteralPath $outLog -Tail 30 -Encoding UTF8 | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkGray } }
-if (Test-Path -LiteralPath $errLog) { Get-Content -LiteralPath $errLog -Tail 30 -Encoding UTF8 | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkRed } }
-Stop-EngineTree -ProcessId $process.Id | Out-Null
-Remove-EngineState
-exit 1
+if (-not $NoBrowser) { Start-Process $engine.url }
+Write-Host ''
+Write-Host '  ---------------------------------------------' -ForegroundColor DarkGray
+Write-Host "  地址   $($engine.url)" -ForegroundColor White
+Write-Host "  项目   $project"
+Write-Host "  日志   $($engine.outLog)"
+Write-Host "         （引擎自己的日志：$env:USERPROFILE\.specflow\logs\engine.log）" -ForegroundColor DarkGray
+Write-Host '  停掉   双击 stop.bat（会连容器和卷一起收干净）' -ForegroundColor White
+Write-Host '  ---------------------------------------------' -ForegroundColor DarkGray
+Write-Host ''

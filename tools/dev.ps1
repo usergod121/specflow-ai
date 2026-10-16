@@ -14,6 +14,7 @@ param(
 . "$PSScriptRoot\_common.ps1"
 
 $root = Get-RepoRoot
+$jar = Join-Path $root 'target\specflow.jar'
 $frontend = Join-Path $root 'src\main\frontend'
 
 Write-Host ''
@@ -28,6 +29,17 @@ if (-not $npm) {
     exit 1
 }
 
+if (-not (Test-Path -LiteralPath $jar)) {
+    Write-Bad '还没有 target\specflow.jar：先双击一次 start.bat（它会替你编一份），再回来。'
+    exit 1
+}
+
+$java = Find-Java
+if (-not $java) {
+    Write-Bad '没找到 Java 17 或更高版本：装一个 JDK 17（或设好 JAVA_HOME）。'
+    exit 1
+}
+
 if (-not (Test-Path -LiteralPath (Join-Path $frontend 'node_modules'))) {
     Write-Step '装前端依赖（第一次要一会儿）'
     $install = Invoke-Native -File $npm.Source -Arguments @('install') -WorkDir $frontend
@@ -39,26 +51,27 @@ if (-not (Test-Path -LiteralPath (Join-Path $frontend 'node_modules'))) {
     Write-Ok '依赖装好了'
 }
 
-# 先把引擎起起来（复用 start 那套：挑端口、等健康、记状态）。Vite 要代理到它。
+# 引擎先起来（同一套：挑端口 → 后台拉起 → 等健康 → 记状态）。Vite 要把 /api 代理到它。
+# 这里调的是函数、而不是 `& start.ps1`：被调脚本里的 `exit` 会结束整个会话，
+# 那样 Vite 一行都跑不到——这个 bug 是实测 dev.bat 时撞出来的。
 Write-Step '起引擎'
-$startArgs = @{ NoBrowser = $true }
-if ($Project) { $startArgs.Project = $Project }
-if ($Port -gt 0) { $startArgs.Port = $Port }
-& "$PSScriptRoot\start.ps1" @startArgs
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$project = Resolve-Project -Given $Project
+Save-Project -Project $project
+$engine = Start-Engine -Java $java -Jar $jar -Project $project -Port $Port
+if (-not $engine.ok) {
+    Write-Bad $engine.message
+    exit 1
+}
+Write-Ok "引擎在 $($engine.url)（pid $($engine.pid)），项目 $project"
 
-$state = Read-EngineState
-if (-not $state) { Write-Bad '引擎状态读不出来，先单独跑一次 start.bat 看看'; exit 1 }
-
-Write-Ok "引擎在 $($state.port)，Vite 会把 /api 代理过去"
 Write-Step '起 Vite（改前端保存即生效）'
 Write-Host ''
-$env:SPECFLOW_PORT = "$($state.port)"
+$env:SPECFLOW_PORT = "$($engine.port)"
 Push-Location $frontend
 try {
     & $npm.Source run dev
 } finally {
     Pop-Location
     Write-Host ''
-    Write-Note "Vite 停了；引擎还在后台跑（端口 $($state.port)），要收它双击 stop.bat"
+    Write-Note "Vite 停了；引擎还在后台跑（$($engine.url)），要收它双击 stop.bat"
 }

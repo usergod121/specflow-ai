@@ -159,6 +159,56 @@ function Wait-Health {
     return $false
 }
 
+# 起引擎：挑端口 → 后台拉起 → 等它健康 → 记状态。
+#
+# 为什么抽成函数、而不是让 dev.ps1 去 `& start.ps1`：PowerShell 里脚本用 `&` 互相调用时，
+# 被调脚本里的 `exit` 结束的是**整个会话**——实测 dev.bat 走到那一步就没了，
+# Vite 一行都没跑。抽成函数之后两边各叫各的，谁也不用去动别人的退出码。
+#
+# @return @{ ok; message; port; pid; url; wanted; shifted; outLog; errLog }
+function Start-Engine {
+    param(
+        [string]$Java,
+        [string]$Jar,
+        [string]$Project,
+        [int]$Port = 0
+    )
+    $wanted = if ($Port -gt 0) { $Port } else { 8780 }
+    if ($wanted -eq 8770 -and -not (Test-PortFree -Port 8770)) {
+        return @{ ok = $false; message = '8770 是你原来那份 specflow 实例的端口，别用这个。去掉 -Port，或者换一个（比如 8780）。' }
+    }
+    $pick = Get-FreePort -Wanted $wanted
+    if ($pick.port -eq 0) {
+        return @{ ok = $false; message = "从 $wanted 往后找了 40 个端口都被占了，没法起。" }
+    }
+    $port = $pick.port
+    $outLog = Get-OutLog
+    $errLog = Get-ErrLog
+    Remove-Item -LiteralPath $outLog, $errLog -Force -ErrorAction SilentlyContinue
+
+    # Start-Process 是把参数拼成一条命令行交给系统，带空格的路径要自己加引号
+    $engineArgs = (Get-EngineEncoding) + @('-jar', $Jar, 'web', '--port', "$port", '--no-open', '-p', $Project)
+    $quoted = ($engineArgs | ForEach-Object { if ("$_" -match '\s') { '"' + $_ + '"' } else { "$_" } }) -join ' '
+
+    $process = Start-Process -FilePath $Java -ArgumentList $quoted -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+
+    if (Wait-Health -Port $port -Seconds 90) {
+        Save-EngineState -ProcessId $process.Id -Port $port -Project $Project -Java $Java
+        return @{
+            ok = $true; port = $port; pid = $process.Id; url = "http://127.0.0.1:$port"
+            wanted = $wanted; shifted = $pick.shifted; outLog = $outLog; errLog = $errLog
+        }
+    }
+
+    Stop-EngineTree -ProcessId $process.Id | Out-Null
+    Remove-EngineState
+    $tail = ''
+    if (Test-Path -LiteralPath $outLog) { $tail += (Get-Content -LiteralPath $outLog -Tail 20 -Encoding UTF8 | Out-String) }
+    if (Test-Path -LiteralPath $errLog) { $tail += (Get-Content -LiteralPath $errLog -Tail 20 -Encoding UTF8 | Out-String) }
+    return @{ ok = $false; message = "引擎 90 秒没起来（或起完立刻退了）。原始输出：`n$tail" }
+}
+
 # 先好好说（taskkill 不带 /F），不成再动手。JVM 起来之后要留一点时间收尾。
 function Stop-EngineTree {
     param([int]$ProcessId)
