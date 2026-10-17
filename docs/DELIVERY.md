@@ -52,21 +52,27 @@ java -jar target\specflow.jar env down    -p <项目>  # 收干净（主环境 +
 
 | 套件 | 数量 | 命令 |
 |---|---|---|
-| 后端 | **201 条全绿**（28 个测试类） | `mvn -o test -Dfrontend.skip=true` |
+| 后端 | **211 条全绿**（30 个测试类） | `mvn -o test -Dfrontend.skip=true` |
 | 前端 | **102 条全绿**（7 个文件） | `cd src/main/frontend; npx vitest run` |
-| 前端构建 | 过（143 kB js / 14.4 kB css） | `npx vite build` |
+| 前端构建 | 过（143.9 kB js / 14.4 kB css） | `npx vite build`（`mvn package` 里自动跑） |
 
-这一轮**新加**的钉子（都是"某一处没接上、跑起来不报错"那一类）：`DevMessageTest` 4 条（② 的
-`prompt`/`files`/`context` 三样真的进了 ④ 的提示词、顺序固定、空的不炸、空 prompt 当场拒）、
-`ApiTest` 里 1 条（`context` 以**字符串**提交时不会被悄悄清空）、`ProjectTest` 3 条（改盘之后再读
-必须是新值 / 文件没了保留上一次 / 从没读到过给默认值）、`LinuxSafeTest` 4 条（编译命令里的反斜杠
-换成正斜杠的判据，以及"带正则的命令一律不动"）。
+这一轮**新加**的钉子（都是"某一处没接上、跑起来不报错"那一类）：
+
+| 测试 | 条数 | 钉的是什么 |
+|---|---|---|
+| `DevMessageTest` | 4 | ② 的 `prompt`/`files`/`context` 三样真的进了 ④ 的提示词、顺序固定、空的不炸、空 prompt 当场拒 |
+| `ApiTest`（新增 1 条） | 1 | `context` 以**字符串**提交时不会被悄悄清空 |
+| `ProjectTest` | 3 | 改盘之后再读必须是新值 / 文件没了保留上一次 / 从没读到过给默认值 |
+| `LinuxSafeTest` | 4 | 编译命令里的反斜杠换成正斜杠的判据，以及"带正则的命令一律不动" |
+| `LoopAnchorsTest` | 5 | 压缩之后模型**真的**看得见「读过/改过的路径」「最近的失败」；调用方补的排在其后；补锚点抛异常不掀链子 |
+| `SnapshotTest` | 6 | 原文逐字节回来 / 新建的文件被删掉 / 清单不在就不按半份清单回滚 / 同一份不许处置两次 / 项目外的文件拍不进去但要说出来 / `latest()` 找最近一份 |
+| `CompactTest`（加强 1 条） | — | 压**第二次**时任务书不丢、锚点不叠成两份 |
+| `StuckCheckTest`（新增 1 条） | 1 | ⑤ 判死说「这条用例」，①~④ 说「这一轮」 |
 
 更早那批：`EventLogTest` 6 条（id≡行号 / 重启接着数 / 外部改动可见 / 坏行变 warn / 回退先留副本 /
-文件不在不抛）、`CaseBudgetTest` 6 条（准备宽限 / 超预算跳过 / 写结论换账 / 无待验不拦 / SKIPPED 是
-终态不是结论 / reopen 可重跑）、`CommandGuardTest` 6 条、`BudgetsTest` 4 条、`StuckCheckTest` 3 条、
-`CompactTest` 4 条、`CheckpointTest` 4 条、`FlowIndexTest` 4 条、`ActionsTest` 6 条、`ApiTest` 7 条、
-`ApprovalsTest` 7 条，外加 `GatesTest` 里 3 条（容器能力校验）与前端 `wiring.spec.js` 7 条
+文件不在不抛）、`CaseBudgetTest` 6 条、`CommandGuardTest` 6 条、`BudgetsTest` 4 条、`StuckCheckTest` 3 条、
+`CheckpointTest` 4 条、`FlowIndexTest` 4 条、`ActionsTest` 6 条、`ApiTest` 6 条、`ApprovalsTest` 7 条、
+`CompactTest` 4 条，外加 `GatesTest` 里 3 条（容器能力校验）与前端 `wiring.spec.js` 7 条
 （跨端对齐：`Actions.java` 里声明的每个 id，对应视图里都必须有处理函数）。
 
 ### 2. 浏览器冒烟（七个路由，真浏览器）
@@ -94,7 +100,11 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 
 ### 5. 五节点端到端（真模型 deepseek-chat + 真 Docker）
 
-见第五节。
+见第五节第 5 小节。
+
+### 6. 计数器（`/api/actuator/metrics` 里我们自己的那五个）
+
+见第五节第 6 小节。
 
 ## 三、这一版改了什么（对着事故写）
 
@@ -115,6 +125,12 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 | **`Api.lines` 两种形状都认**（字符串按行拆） | 前端把 `context` 当一段多行文本提交，后端只认数组 → 保存像成功、刷新后是空的 | `ApiTest` 用 String 存一次再读回来断言 |
 | **`Project.raw()` 按 (size, mtime) 每次问盘** | 填了编译命令 → 点冻结 → 闸说"编译命令还是空的"（界面上没有"重开项目"按钮） | `ProjectTest` 3 条 |
 | **编译命令要"两处都能跑"**：提示词要求正斜杠 + `Capabilities` 兜一次自动改写 | ① 的 Agent 交出 `javac -d out\main …`，宿主机过、容器里退出码 2，① 冻结被闸拦下 | `LinuxSafeTest` 4 条 + 端到端 |
+| **压缩的锚点表搬进 `Loop` 自己攒** | ②③④ 一压缩就只剩"system + 任务书 + 尾巴"，它开始重读同一个文件——原来只有 ⑤ 拼了锚点表 | `LoopAnchorsTest` 5 条 |
+| **`Compact` 压第二次不再丢任务书**（幂等） | 长运行跑到中段"跑偏"：需求没了，只剩"刚才在干什么"；锚点表还叠成两份 | `CompactTest` 里那条"压两次" |
+| **`Snapshot` 补 6 条测试 + ④ 冻结时 `accept()`** | 回滚是唯一会**反向写用户真项目**的动作，此前零测试；且每跑一次开发就在盘上留一份没人处置的原文副本 | `SnapshotTest` 6 条 |
+| **`Metrics` 接上 registry（5 处调用）** | `Metrics` 写完一个调用点都没有，而文档一直写着"actuator 能看到我们自己的计数器" | 真引擎上 `specflow.runs` 等 5 个指标出现（见 §五.6） |
+| **`StuckCheck` 五格都包** | 只有 ⑤ 装了打转检测；④ 反复 `read_file` 同一个文件照样能烧光轮次 | `StuckCheckTest` 加 1 条（话术按"用例/这一轮"分） |
+| **删掉 `Loop.onToolResult`（只有一个测试在用的钩子）** | 生产代码零调用点——按"只有测试在用的口子 = 生产没接"这条判据，它该走；`INJECT` 一起删 | `LoopTest` 13 → 11（删掉那两条） |
 
 ## 四、没做的 / 已知的（**不许当成做了**）
 
@@ -149,16 +165,16 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 ```
 cd E:\specflow-v2
 mvn -o test -Dfrontend.skip=true
-→ [INFO] Tests run: 201, Failures: 0, Errors: 0, Skipped: 0
+→ [INFO] Tests run: 211, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 
-分布（全绿共 28 个测试类）：`agent` 68（`LoopTest` 13 · `ToolsTest` 12 · `ToolRegistryTest` 9 ·
-`ProtocolTest` 8 · `ApplyPatchTest` 8 · `ReadFileTest` 7 · `CompactTest` 4 · `DevMessageTest` 4 ·
-`StuckCheckTest` 3）、`env` 46（`EnvironmentTest` 9 · `EnvCliTest` 9 · `EnvConfigLoaderTest` 8 ·
-`CommandGuardTest` 6 · `ComposeTest` 6 · `BudgetsTest` 4 · `LinuxSafeTest` 4）、
+分布（全绿共 30 个测试类）：`agent` 72（`LoopTest` 11 · `ToolsTest` 12 · `ToolRegistryTest` 9 ·
+`ProtocolTest` 8 · `ApplyPatchTest` 8 · `ReadFileTest` 7 · `LoopAnchorsTest` 5 · `CompactTest` 4 ·
+`DevMessageTest` 4 · `StuckCheckTest` 4）、`env` 46（`EnvironmentTest` 9 · `EnvCliTest` 9 ·
+`EnvConfigLoaderTest` 8 · `CommandGuardTest` 6 · `ComposeTest` 6 · `BudgetsTest` 4 · `LinuxSafeTest` 4）、
 `test` 38（`CaseListTest` 18 · `SandboxTest` 7 · `ApprovalsTest` 7 · `CaseBudgetTest` 6）、
-`flow` 28（`GatesTest` 14 · `ActionsTest` 6 · `CheckpointTest` 4 · `FlowIndexTest` 4）、
+`flow` 34（`GatesTest` 14 · `ActionsTest` 6 · `SnapshotTest` 6 · `CheckpointTest` 4 · `FlowIndexTest` 4）、
 `core` 14（`EventLogTest` 6 · `JsonTest` 5 · `ProjectTest` 3）、`web` 7（`ApiTest`）。
 
 ### 2. 前端
@@ -193,22 +209,22 @@ node E:\sf-e2e\probe-context.mjs 4122 E:/specflow-v2/fixture
 
 ```
 cd E:\sf-e2e
-node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 4002
+node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 4004
 
-  ✓ ① 跑环境 Agent（11.3s）编译命令「javac -d out/main src/main/java/com/demo/InventoryStore.java …」
-  ✓ ① 保存声明（0.1s）  ✓ ① 起环境（真 docker）（4.1s）容器 sf-sfv2-4002-1-1aa15f-app-1
+  ✓ ① 跑环境 Agent（10.3s）编译命令「javac -d out/main src/main/java/com/demo/*.java」
+  ✓ ① 保存声明（0.1s）  ✓ ① 起环境（真 docker）（3.7s）容器 sf-sfv2-4004-1-de494f-app-1
   ✓ ① 编译（0.6s）状态 PASSED  ✓ ① 冻结（状态 DONE）
   ✓ ② 需求 + 跑探针（9.2s）要改 1 个、可读 2 个   ✓ ② 保存 + 冻结
-  ✓ ③ 生成 + 保存 + 冻结（2.3s）11 条            ✓ ④ 跑开发（6.1s）编译通过
+  ✓ ③ 生成 + 保存 + 冻结（2.6s）11 条            ✓ ④ 跑开发（8.2s）编译通过
   ✓ ④ 自己核一遍（javac + java 看行为）打印 reserve(5)=false、onHand(A)=3   ✓ ④ 冻结
-  ✓ ⑤ 跑测试（容器沙箱）（77.4s）11 条全到终态（PASS 9）；替你点了 0 条审批
+  ✓ ⑤ 跑测试（容器沙箱）（161.1s）11 条全到终态（PASS 10）；替你点了 0 条审批
   ✓ ⑤ 提交 + 接受（0.1s）已闭环（done=true）
-  → 通过（116s）
+  → 通过（200s）
 ```
 
-原始输出在 `E:\sf-e2e\reports-v2\`（`e2e-2026-10-17T09-57-51.json`）。
-同一个 jar 上**连续两次通过**：这一次 116 秒 / 11 条 / PASS 9，上一次 196 秒 / 10 条 / PASS 9
-（差在 ⑤ 的沙箱那一轮：77 秒 vs 159 秒，模型每轮走的路不一样）。
+原始输出在 `E:\sf-e2e\reports-v2\`（`e2e-2026-10-17T12-13-45.json`）。
+**同一个 jar 上跑过三次全通过**：200s / 11 条 / PASS 10、153s / 10 条 / PASS 10、196s / 10 条 / PASS 9。
+差别全在 ⑤ 那一轮的容器沙箱（77s ~ 161s，模型每轮走的路不一样）。
 
 **这一轮最值钱的两行**：
 
@@ -218,10 +234,19 @@ node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 4002
    宿主机过、容器里退出码 2，① 冻结被闸拦下（那次端到端就是在这里断的）。提示词改成
    "路径一律正斜杠"之后，两处都能跑通——**这条修复是被一次真失败逼出来的，不是想出来的**。
 
-（`196s` 里 158 秒是 ⑤ 的容器沙箱——10 条用例逐条真跑；① 到 ④ 加一起只有 30 秒。
-比 v2 的 150/157 秒快，主要来自「依赖缓存卷」和「Preflight 早失败」。）
+### 6. 计数器实测（`Metrics` 从"零调用点"变成真的能用）
 
-### 6. 这一轮的三次事故（记下来，别犯第二次）
+```
+GET /api/actuator/metrics        → specflow.gate.blocked        ← 点一个会被闸拦下的动作之后
+POST /api/node/env/agent         → specflow.runs / specflow.runs.finished
+                                   specflow.run.seconds / specflow.running
+```
+
+顺序：开项目 → 点一个会被闸拦下的动作（`specflow.gate.blocked` 出现）→ 起一段 Agent 活
+（其余四个出现）。**这一条以前是零调用点**——类写完了，一个地方都没用，而 `App` 的注释
+一直写着"actuator 能看到我们自己的计数器"。
+
+### 7. 这一轮的五次事故（记下来，别犯第二次）
 
 1. 用 `pwsh` 的 `.Replace()` 往 Java 文件里塞**新中文**会因编码边界把文件弄成乱码；
    靠 `git checkout` 回滚 + 改用编辑工具重做救回来。教训：**带中文的文件改动一律用编辑工具**。
@@ -231,3 +256,13 @@ node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 4002
    `.bat` 只留 ASCII、`.ps1` 存成 UTF-8 with BOM。教训：批处理里的中文是雷区。
 4. **一次编译命令毁掉一次端到端**：`out\main` 在容器里是错的写法（见上）。教训：
    「跑在哪几处」是写命令时的一部分，不是事后排查时才想的事。
+5. **`.ps1` 少写 BOM，PowerShell 5.1 按 ANSI 读 → 一整行被注释吃掉**（`$root` 变成空字符串，
+   于是所有验证命令都在 `E:\target\...` 这种路径上跑，报错还看不出是这个原因）。
+   教训：**验证脚本一律 ASCII-only，或存 UTF-8 with BOM**。
+
+### 8. 一次"验了个寂寞"（这条最该记）
+
+`mvn package` 报 `Unable to rename target/specflow.jar`（还有一个 java 进程占着它），
+**jar 没更新**，而随后一轮冒烟 + 探针回归 + 端到端**全部通过**——验的是旧包。
+靠 `Get-Item target\specflow.jar` 的时间戳才发现（17:55 vs 19:59）。
+教训：**每次验证前先看 jar 时间戳**；`mvn package` 的输出要盯 `Building jar` 那一行。

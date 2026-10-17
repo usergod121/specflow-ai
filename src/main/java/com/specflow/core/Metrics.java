@@ -27,6 +27,9 @@ public final class Metrics {
     private final ConcurrentMap<String, Counter> counters = new ConcurrentHashMap<>();
     private final AtomicInteger running = new AtomicInteger();
 
+    /** 进程里那一份（装配时装进来；没装之前全部是空实现）。 */
+    private static volatile Metrics installed = noop();
+
     private Metrics(MeterRegistry registry) {
         this.registry = registry;
     }
@@ -37,6 +40,28 @@ public final class Metrics {
 
     public static Metrics noop() {
         return new Metrics(null);
+    }
+
+    /**
+     * 装一份全局的（{@code App} 起来时调一次）。
+     *
+     * <h2>为什么是全局一份，而不是一路当参数传下去</h2>
+     * 计数器要用在<b>很深的地方</b>：{@code Loop} 的每次模型调用、{@code Cmd} 的每条命令、
+     * {@code Approvals} 的每次提问。一路传下去等于给每个构造函数多加一个"我其实不关心"的参数。
+     * 它天生是全局的（Micrometer 自己也这么干），而且没有 registry 时是空实现——
+     * 单测里什么都不用装。
+     *
+     * <p><b>这一条是补的</b>：{@code Metrics} 这个类此前写完<b>一个调用点都没有</b>，
+     * 而 {@code App} 的注释和 {@code docs} 都写着「actuator 能看到我们自己的计数器」——
+     * 也就是说那条能力一直在文档里、不在代码里。
+     */
+    public static void install(Metrics metrics) {
+        installed = metrics == null ? noop() : metrics;
+    }
+
+    /** 现在那一份（永远不为 {@code null}）。 */
+    public static Metrics installed() {
+        return installed;
     }
 
     /** 一段活开工：`specflow.runs{node=env,action=env-up}` 加一，并记下"现在有几段在跑"。 */

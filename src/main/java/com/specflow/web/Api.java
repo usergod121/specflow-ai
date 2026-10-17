@@ -109,10 +109,29 @@ public class Api {
     public Map<String, Object> flowFreeze(@RequestBody Map<String, Object> body) {
         Node node = parseNode(text(body, "node"));
         session.flow().freeze(node);
+        // 冻住 ④ = "这些改动我认了"：那一份写前快照到此为止，删掉（accept）。
+        // 不删的话每跑一次开发就在盘上留一份原文副本，攒着没人处置，而「回滚」永远只指向最近一份。
+        if (node == Node.DEV) {
+            acceptSnapshot();
+        }
         Map<String, Object> answer = new LinkedHashMap<>(flowView());
         answer.put("node", node.key());
         answer.put("state", session.flow().state().stateOf(node).name());
         return answer;
+    }
+
+    /** 把 ④ 留下的写前快照处置掉（{@code accept}）。失败不许拦住冻结——它只是清一份副本。 */
+    private void acceptSnapshot() {
+        try {
+            com.specflow.flow.Snapshot snapshot = com.specflow.flow.Snapshot.latest(session.project());
+            if (snapshot == null) {
+                return;
+            }
+            com.specflow.flow.Snapshot.Report report = snapshot.accept();
+            session.events().say(Node.DEV.key(), "info", report.summarize());
+        } catch (RuntimeException e) {
+            session.events().warn(Node.DEV.key(), "写前快照没处置掉（不影响继续）：" + e.getMessage());
+        }
     }
 
     // SSE 的三个节奏：推一次（250ms 够快，又不至于把文件读成风扇声）、心跳（15s）、空闲多久自己收场（30 分钟）

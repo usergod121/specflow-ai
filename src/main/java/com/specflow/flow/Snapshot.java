@@ -150,6 +150,11 @@ public final class Snapshot {
         return directory;
     }
 
+    /** 这一份快照的号（时间戳，同一毫秒内再加 {@code -2}、{@code -3}）。 */
+    public String id() {
+        return id;
+    }
+
     /** 拍了几个文件。 */
     public int files() {
         return present + absent;

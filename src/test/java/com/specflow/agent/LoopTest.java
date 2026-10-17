@@ -343,30 +343,4 @@ class LoopTest {
         assertThat(outcome.calls().get(0).ok()).isFalse();
         assertThat(outcome.calls().get(0).result()).contains("超过 1 秒");
     }
-
-    @Test
-    void toolResultHookCanReplaceTheInjectedLine() {
-        Scripted model = new Scripted(call("echo", "{\"text\":\"hi\"}"), ANSWER);
-        Loop loop = loop(model, new ArrayList<>(), Watcher.none(), LoopLimits.defaults())
-                .onToolResult((args, result) -> args.put(Loop.INJECT,
-                        "{\"ok\":true,\"data\":{\"编译\":\"通过\"}}"));
-
-        loop.run("系统提示词", "开工");
-
-        List<Llm.Msg> second = model.seen.get(1);
-        assertThat(second.get(second.size() - 1).content()).contains("编译");
-    }
-
-    /** 参数表在钩子里是可写的（钩子要按参数决定注入什么）。 */
-    @Test
-    void hookSeesTheModelArguments() {
-        Scripted model = new Scripted(call("echo", "{\"text\":\"hi\"}"), ANSWER);
-        Map<String, Object> seen = new LinkedHashMap<>();
-
-        loop(model, new ArrayList<>(), Watcher.none(), LoopLimits.defaults())
-                .onToolResult((args, result) -> seen.putAll(args))
-                .run("系统提示词", "开工");
-
-        assertThat(seen).containsEntry("text", "hi");
-    }
 }

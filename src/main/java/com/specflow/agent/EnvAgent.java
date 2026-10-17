@@ -66,8 +66,8 @@ public final class EnvAgent {
 
     public Result run() {
         ToolRegistry tools = ToolRegistry.of(
-                new ReadListTool(new Roots(project.root())),
-                new ReadFileTool(new Roots(project.root())),
+                StuckCheck.wrap(new ReadListTool(new Roots(project.root()))),
+                StuckCheck.wrap(new ReadFileTool(new Roots(project.root()))),
                 new SubmitTool());
         Loop loop = new Loop("环境 Agent", llm, new LoopLimits(rounds, 200, 300, 1), tools, watcher, progress);
         String system = systemPrompt();

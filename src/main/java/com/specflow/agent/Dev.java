@@ -91,9 +91,9 @@ public final class Dev {
             throw new IllegalArgumentException("写白名单是空的：那等于让它对着整个项目猜该动哪儿");
         }
         ToolRegistry tools = ToolRegistry.of(
-                new ReadListTool(new Roots(project.root())),
-                new ReadFileTool(new Roots(project.root())),
-                new Whitelist(new ApplyPatchTool(new Roots(project.root())), whitelist),
+                StuckCheck.wrap(new ReadListTool(new Roots(project.root()))),
+                StuckCheck.wrap(new ReadFileTool(new Roots(project.root()))),
+                StuckCheck.wrap(new Whitelist(new ApplyPatchTool(new Roots(project.root())), whitelist)),
                 new SubmitTool());
 
         Loop loop = new Loop("开发", llm, new LoopLimits(rounds, 200, 300, 1), tools, watcher, progress);

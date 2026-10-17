@@ -67,16 +67,36 @@ class CompactTest {
     }
 
     @Test
-    @DisplayName("压完继续长的话会再压一次（幂等：不会越压越多）")
+    @DisplayName("压完继续长的话会再压一次，而且第二次不许把任务书扔掉、不许把锚点叠成两份")
     void compressionIsRepeatable() {
         List<Llm.Msg> messages = dialogue(40, 2_000);
-        Compact.maybe(messages, "锚点", 20_000, 6);
+        String task = messages.get(1).content();
+
+        Compact.maybe(messages, "- 改过 a.java", 20_000, 6);
         int afterFirst = messages.size();
 
-        Compact.maybe(messages, "锚点", 20_000, 6);
+        // 又跑了几轮，长回去了再压第二次——这才是线上的常态（一段长运行会压好几次）
+        for (int at = 0; at < 40; at++) {
+            messages.add(Llm.Msg.assistant("后来的第 " + at + " 轮：" + "z".repeat(2_000)));
+            messages.add(Llm.Msg.user("工具结果：" + "w".repeat(2_000)));
+        }
+        Compact.maybe(messages, "- 改过 b.java", 20_000, 6);
 
-        assertThat(messages.size()).as("没有新的过程可压时不会再涨").isLessThanOrEqualTo(afterFirst + 1);
+        assertThat(messages.size()).as("没有新的过程可压时不会再涨").isLessThanOrEqualTo(afterFirst + 7);
         assertThat(messages.get(0).role()).isEqualTo("system");
+
+        // ① 原始任务书还在（老写法在这里会把它换成上一次的锚点表，于是"需求"就这么没了）
+        assertThat(messages.stream().map(Llm.Msg::content).toList())
+                .as("需求不能丢")
+                .contains(task);
+        // ② 锚点只有一份（老写法会叠成两份）
+        assertThat(messages.stream().map(Llm.Msg::content).filter(one -> one.startsWith(Compact.ANCHOR_HEAD)))
+                .as("锚点表不该叠")
+                .hasSize(1);
+        // ③ 顺序仍是：system → 锚点 → 任务书 → 说明 → 尾巴
+        assertThat(messages.get(1).content()).startsWith(Compact.ANCHOR_HEAD);
+        assertThat(messages.get(2).content()).isEqualTo(task);
+        assertThat(messages.get(3).content()).startsWith(Compact.NOTE_HEAD);
     }
 
     @Test

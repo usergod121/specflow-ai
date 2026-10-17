@@ -65,7 +65,25 @@ class StuckCheckTest {
             killed = guarded.run(same);
         }
         assertThat(killed).isNotNull();
-        assertThat(killed.reason()).contains("卡死").contains("ERROR").contains("重试这一条");
+        assertThat(killed.reason()).contains("卡死").contains("ERROR").contains("这一轮");
+    }
+
+    @Test
+    @DisplayName("⑤ 传「这条用例」：判死的话术点名标哪一条；不传就按「这一轮」（①~④ 没有用例）")
+    void subjectChangesTheWording() {
+        Map<String, Object> same = Map.of("command", "sleep 240");
+        Tool forCase = StuckCheck.wrap(new Fake(), StuckCheck.CASE);
+        Tool forRound = StuckCheck.wrap(new Fake());
+
+        ToolResult caseKilled = null;
+        ToolResult roundKilled = null;
+        for (int at = 0; at < StuckCheck.HARD_AT; at++) {
+            caseKilled = forCase.run(same);
+            roundKilled = forRound.run(same);
+        }
+
+        assertThat(caseKilled.reason()).contains("这条用例");
+        assertThat(roundKilled.reason()).contains("这一轮").doesNotContain("这条用例");
     }
 
     @Test

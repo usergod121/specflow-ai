@@ -8,8 +8,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BiConsumer;
 
 /**
@@ -42,12 +44,6 @@ public final class Loop {
         String complete(List<Llm.Msg> messages);
     }
 
-    /**
-     * 工具结果默认按 {@code result.json()} 注入一条 user 消息；
-     * {@link #onToolResult} 的钩子往参数表里写这个键（字符串值）就能换掉注入的那一句。
-     */
-    public static final String INJECT = "inject";
-
     private static final Logger log = LoggerFactory.getLogger(Loop.class);
 
     private final String runName;
@@ -57,10 +53,17 @@ public final class Loop {
     private final Watcher watcher;
     private final Progress progress;
 
-    private BiConsumer<Map<String, Object>, ToolResult> onToolResult;
-    private java.util.function.Supplier<String> anchors = () -> "";
+    private java.util.function.Supplier<String> extraAnchors = () -> "";
     private java.util.function.Supplier<String> grounding = () -> "";
     private Compact.Result lastCompact = new Compact.Result(false, 0, 0, 0, 0);
+
+    /** 锚点表里"动过的路径"最多几条、"最近的失败"最多几条（再多就不是锚点，是一份日志）。 */
+    static final int ANCHOR_PATHS = 12;
+    static final int ANCHOR_FAILURES = 3;
+
+    /** 这两样由循环自己攒：每一条工具结果都过一遍（谁都不用去接这个钩子）。 */
+    private final Set<String> touched = new LinkedHashSet<>();
+    private final List<String> failures = new ArrayList<>();
 
     public Loop(String runName, Llm llm, LoopLimits limits, ToolRegistry tools, Watcher watcher,
                 Progress progress) {
@@ -84,26 +87,58 @@ public final class Loop {
     }
 
     /**
-     * 工具结果注入的方式（默认：一条 user 消息，内容是 {@code result.json()}）。
+     * 压缩时那张<b>锚点表</b>里，<b>额外</b>再加几句（默认没有）。
      *
-     * <p>钩子拿到的是<b>模型给的那份参数表</b>与结果；想换掉注入的那一句，
-     * 就往参数表里写 {@link #INJECT} 键（字符串）。钩子抛异常只会被记一行日志。
+     * <h2>"动过哪些文件 / 最近为什么失败"不归调用方管（这一条是补的）</h2>
+     * 原来这张表全交给调用方拼，结果五格 Agent 里<b>只有 ⑤ 真的拼了</b>，
+     * ②③④ 压出来只剩"system + 任务书 + 尾巴"——上下文是省了，可"它到底动过什么、
+     * 刚才为什么失败"这两句最该留的话一句都没有。而这两件事<b>循环自己全看得见</b>
+     * （每次工具调用的参数与结果）。所以现在：
+     * <ul>
+     *   <li><b>动过的路径 / 最近的失败</b>：循环自己攒（{@link #remember}），五格都一样；</li>
+     *   <li><b>进度那一类</b>（清单还剩几条、现在在验哪条）：只有调用方知道，用这个口子补。</li>
+     * </ul>
      */
-    public Loop onToolResult(BiConsumer<Map<String, Object>, ToolResult> hook) {
-        this.onToolResult = hook;
+    public Loop anchors(java.util.function.Supplier<String> supplier) {
+        this.extraAnchors = supplier == null ? () -> "" : supplier;
         return this;
     }
 
-    /**
-     * 压缩时那张<b>锚点表</b>由谁提供（默认空：只留 system + 任务书 + 尾巴）。
-     *
-     * <p>为什么不在这里自己攒：这三件事（动过哪些文件 / 最近为什么失败 / 做到哪一条）
-     * 只有<b>调用方</b>能准地说清——它知道 case 清单长什么样、哪些工具算"动过文件"。
-     * 循环只管"什么时候压、压成什么形状"。
-     */
-    public Loop anchors(java.util.function.Supplier<String> supplier) {
-        this.anchors = supplier == null ? () -> "" : supplier;
-        return this;
+    /** 压一次时交给 {@link Compact} 的那张表：循环自己攒的两句 + 调用方补的那几句。 */
+    private String anchorTable() {
+        StringBuilder out = new StringBuilder();
+        if (!touched.isEmpty()) {
+            out.append("- 读过/改过的路径：").append(String.join("、", touched)).append('\n');
+        }
+        if (!failures.isEmpty()) {
+            out.append("- 最近的失败：").append(String.join("；", failures)).append('\n');
+        }
+        try {
+            String extra = extraAnchors == null ? "" : extraAnchors.get();
+            if (extra != null && !extra.isBlank()) {
+                out.append(extra.strip()).append('\n');
+            }
+        } catch (RuntimeException e) {
+            // 补的那几句算不出来不该掀掉整条链：能留几句就留几句
+            log.warn("拼锚点表时调用方抛了异常（不影响这一次运行）：{}", e.toString());
+        }
+        return out.toString();
+    }
+
+    /** 攒锚点表要用的两件事：这条工具调用动了哪个路径、它为什么失败。 */
+    private void remember(Map<String, Object> args, ToolResult result) {
+        if (args != null) {
+            Object path = args.get("path");
+            if (path instanceof String one && !one.isBlank() && touched.size() < ANCHOR_PATHS) {
+                touched.add(one.strip());
+            }
+        }
+        if (result != null && !result.ok() && failures.size() < ANCHOR_FAILURES) {
+            String why = String.valueOf(result.reason()).lines().findFirst().orElse("").strip();
+            if (!why.isBlank()) {
+                failures.add(why.length() > 90 ? why.substring(0, 90) + "…" : why);
+            }
+        }
     }
 
     /** 最后一次压缩的结果（没压过就是 {@code applied=false}）。 */
@@ -141,7 +176,7 @@ public final class Loop {
                 return outcome(Outcome.CANCELLED, round, "用户叫停", "", calls, modelCalls);
             }
             // 每轮开头看一眼上下文有多大：太长就压成"锚点 + 尾巴"（确定性拼装，不调模型）
-            lastCompact = Compact.maybe(messages, anchors.get(), limits.compactChars(),
+            lastCompact = Compact.maybe(messages, anchorTable(), limits.compactChars(),
                     limits.compactKeepTail());
             if (lastCompact.applied()) {
                 progress.warn(lastCompact.describe());
@@ -216,8 +251,17 @@ public final class Loop {
 
     /** 一次真实的模型调用（空答复当空串处理，交给解析层去说它认不出来）。 */
     private String ask(List<Llm.Msg> messages) {
-        String reply = model.complete(List.copyOf(messages));
-        return reply == null ? "" : reply;
+        long started = System.currentTimeMillis();
+        boolean ok = false;
+        try {
+            String reply = model.complete(List.copyOf(messages));
+            ok = true;
+            return reply == null ? "" : reply;
+        } finally {
+            // 模型调用是最贵的一步：成功/失败各记一次、花了多少秒也记（actuator 里看得见）
+            com.specflow.core.Metrics.installed()
+                    .modelCall(runName, ok, System.currentTimeMillis() - started);
+        }
     }
 
     // ---------- 工具 ----------
@@ -271,24 +315,24 @@ public final class Loop {
         }
     }
 
-    /** 钩子有机会换掉注入的那一句（默认就是 {@code result.json()}）。 */    private String injection(String argsJson, ToolResult result) {
-        String text = result.json();
-        if (onToolResult == null) {
-            return text;
-        }
-        Map<String, Object> table = new LinkedHashMap<>();
+    /**
+     * 工具结果怎么注入下一轮：<b>就是 {@code result.json()} 原文</b>。
+     *
+     * <p>顺手把锚点表的原料攒下来（{@link #remember}）——那两件事只有这里看得见：
+     * 每次调用动了哪个路径、它为什么失败。
+     *
+     * <p>这里原来还有一个 {@code onToolResult} 钩子（可以换掉注入的那一句），
+     * 但<b>生产代码一个调用点都没有，只有测试在用</b>。按"只有测试在用的口子 = 生产没接"
+     * 这条判据，它被删了：需要替换注入内容的那天再连调用方一起加。
+     */
+    private String injection(String argsJson, ToolResult result) {
         try {
-            table.putAll(Json.map(argsJson));
+            remember(Json.map(argsJson), result);
         } catch (RuntimeException e) {
-            // 参数本身是坏的：注册表已经给出同一份原因，这里只保证钩子还能拿到一个空表
+            // 参数本身是坏的：注册表已经给出同一份原因，锚点里就少这一条路径
+            remember(Map.of(), result);
         }
-        try {
-            onToolResult.accept(table, result);
-        } catch (RuntimeException e) {
-            log.warn("工具结果钩子抛了异常（不影响这一次运行）：{}", e.toString());
-        }
-        Object custom = table.get(INJECT);
-        return custom instanceof String one && !one.isBlank() ? one : text;
+        return result.json();
     }
 
     /**

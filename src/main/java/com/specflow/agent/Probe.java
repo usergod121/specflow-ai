@@ -89,8 +89,8 @@ public final class Probe {
             throw new IllegalArgumentException("需求是空的：探针照它去读项目、判断该动哪些文件");
         }
         ToolRegistry tools = ToolRegistry.of(
-                new ReadListTool(new Roots(project.root())),
-                new ReadFileTool(new Roots(project.root())),
+                StuckCheck.wrap(new ReadListTool(new Roots(project.root()))),
+                StuckCheck.wrap(new ReadFileTool(new Roots(project.root()))),
                 new SubmitTool());
 
         Loop loop = new Loop("探针", llm, new LoopLimits(rounds, 200, 300, 1), tools, watcher, progress);

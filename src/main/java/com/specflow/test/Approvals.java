@@ -94,13 +94,19 @@ public final class Approvals implements Approval {
             Boolean allowed = one.answer().get(waitSeconds, TimeUnit.SECONDS);
             // 没人回答时 future 由 clear() 以 false 收场，但那是"换项目/关服务"，
             // 与"用户点了 n" 一样都按拒——区别只在工具对模型说的话（见 Approval.Decision）
-            return Boolean.TRUE.equals(allowed) ? Decision.ALLOW : Decision.DENY;
+            boolean yes = Boolean.TRUE.equals(allowed);
+            com.specflow.core.Metrics.installed().approval(yes);
+            return yes ? Decision.ALLOW : Decision.DENY;
         } catch (java.util.concurrent.TimeoutException e) {
+            // 超时也算"被拒"记一笔：被拒得多说明提示词或者守卫档位该改（actuator 里一眼看得出）
+            com.specflow.core.Metrics.installed().approval(false);
             return Decision.TIMEOUT;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            com.specflow.core.Metrics.installed().approval(false);
             return Decision.DENY;
         } catch (Exception e) {
+            com.specflow.core.Metrics.installed().approval(false);
             return Decision.DENY;
         } finally {
             synchronized (lock) {

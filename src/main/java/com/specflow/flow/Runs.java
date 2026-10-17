@@ -111,6 +111,7 @@ public final class Runs {
             // 开工先写 BEGIN（不变量 7）：崩在这中间的运行，启动时扫得出来
             journal.begin(id, what + (extra == null || extra.isEmpty() ? "" : " · " + brief(extra)));
             log.append(Event.log(0, node.key(), "info", "开始：" + what));
+            com.specflow.core.Metrics.installed().runStarted(node.key(), actionText);
             pool.submit(() -> run(node, log, mine, lease, journal, body, extra));
         } catch (RuntimeException e) {
             // 起不来（池关了、盘写不进去）：把账收干净再抛，
@@ -291,6 +292,8 @@ public final class Runs {
             log.append(Event.result(0, node.key(), payload,
                     label + "：" + what + (reason.isBlank() ? "" : " · " + one(reason, 140))));
             journal.end(runId, status, label + "：" + one(reason, 140));
+            // 计数器：/api/actuator/metrics 里 specflow.runs / runs.finished 就是它
+            com.specflow.core.Metrics.installed().runFinished(node.key(), status, seconds);
             stage = label + "：" + what;
         } finally {
             running = false;

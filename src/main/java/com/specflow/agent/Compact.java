@@ -45,6 +45,10 @@ public final class Compact {
         }
     }
 
+    /** 压缩自己插进去的那两条的抬头：下一次压缩要认得出它们，<b>替换</b>而不是叠加。 */
+    static final String ANCHOR_HEAD = "【压缩前的锚点】";
+    static final String NOTE_HEAD = "【压缩说明】";
+
     private Compact() {
     }
 
@@ -59,7 +63,19 @@ public final class Compact {
     /**
      * 压一次（原地改 {@code messages}）。
      *
-     * @param messages 对话（第 0 条必须是 system，第 1 条必须是原始任务书）
+     * <h2>它必须能被压很多次（这一条是测试逼出来的）</h2>
+     * 一段长运行会压<b>不止一次</b>：压完还剩两万字符，再跑几轮又过线了。所以这个方法
+     * 不能假设"第 1 条永远是任务书"——第一次压缩之后，第 1 条已经变成<b>我们自己插的锚点</b>，
+     * 真正的任务书漂到后面去了。老写法照抄 {@code messages.get(1)}，第二次压缩就会：
+     * <ol>
+     *   <li>把锚点表当成任务书抄下来 → 表里出现两份「【压缩前的锚点】」；</li>
+     *   <li><b>把原始任务书扔掉</b> → 模型再也看不到"需求是什么"，只剩"刚才在干什么"。</li>
+     * </ol>
+     * 两种都不会报错，只会表现为"跑着跑着它跑偏了"。所以现在的形状是：
+     * <b>认头（system + 第一条不是我们插的 user 消息 = 任务书），丢掉自己上次插的那两条，再接尾巴</b>。
+     * 同一个输入压两次，第二次和第一次结果一样（幂等）。
+     *
+     * @param messages 对话（第 0 条是 system）
      * @param anchors  <b>锚点表</b>：引擎拼好的那几句（可以为空串，那就只留任务书与尾巴）
      * @param chars    触发阈值（{@link #DEFAULT_CHARS}）
      * @param keepTail 尾巴保留几条
@@ -73,24 +89,67 @@ public final class Compact {
         }
         int before = messages.size();
         long charsBefore = totalChars(messages);
-        List<Llm.Msg> tail = new ArrayList<>(messages.subList(Math.max(0, before - keep), before));
+
+        Llm.Msg system = messages.get(0);
+        Llm.Msg task = originalTask(messages);
 
         List<Llm.Msg> kept = new ArrayList<>(keep + 4);
-        kept.add(messages.get(0));                       // system：协议与规矩
+        kept.add(system);                                // system：协议与规矩
         String table = anchors == null ? "" : anchors.strip();
         if (!table.isEmpty()) {
-            kept.add(Llm.Msg.user("【压缩前的锚点】（这一段是引擎按事实拼的，不是模型的记忆）\n" + table));
+            kept.add(Llm.Msg.user(ANCHOR_HEAD + "（这一段是引擎按事实拼的，不是模型的记忆）\n" + table));
         }
-        if (before > 1) {
-            kept.add(messages.get(1));                   // 原始任务书：需求不能丢
+        if (task != null) {
+            kept.add(task);                              // 原始任务书：需求不能丢
         }
-        kept.add(Llm.Msg.user("【压缩说明】中间的工具输出为了腾出上下文已经省略。"
+        kept.add(Llm.Msg.user(NOTE_HEAD + "中间的工具输出为了腾出上下文已经省略。"
                 + "不要重复已经做过的事：先看上面的锚点表，再决定下一步。"));
-        kept.addAll(tail);
+
+        // 尾巴：最后 keep 条，但要跳过"我们上次插的那两条"和"头里已经有的那两条"
+        for (int i = Math.max(0, before - keep); i < before; i++) {
+            Llm.Msg one = messages.get(i);
+            if (one == null || one == system || isOwn(one) || same(one, task)) {
+                continue;
+            }
+            kept.add(one);
+        }
 
         messages.clear();
         messages.addAll(kept);
         return new Result(true, before, kept.size(), charsBefore, totalChars(kept));
+    }
+
+    /**
+     * 原始任务书：<b>第一条不是压缩自己插的 user 消息</b>。
+     *
+     * <p>为什么不直接取 {@code messages.get(1)}：见 {@link #maybe} 的注释——
+     * 第二次压缩时第 1 条已经是我们插的锚点表了。
+     */
+    static Llm.Msg originalTask(List<Llm.Msg> messages) {
+        for (int i = 1; i < messages.size(); i++) {
+            Llm.Msg one = messages.get(i);
+            if (one == null) {
+                continue;
+            }
+            boolean user = "user".equals(one.role());
+            String text = one.content() == null ? "" : one.content();
+            if (user && !text.startsWith(ANCHOR_HEAD) && !text.startsWith(NOTE_HEAD)) {
+                return one;
+            }
+        }
+        return null;
+    }
+
+    /** 这条是不是压缩自己插的（锚点 / 说明）。 */
+    private static boolean isOwn(Llm.Msg one) {
+        String text = one.content() == null ? "" : one.content();
+        return text.startsWith(ANCHOR_HEAD) || text.startsWith(NOTE_HEAD);
+    }
+
+    private static boolean same(Llm.Msg one, Llm.Msg other) {
+        return other != null
+                && String.valueOf(one.role()).equals(String.valueOf(other.role()))
+                && String.valueOf(one.content()).equals(String.valueOf(other.content()));
     }
 
     /** 合计字符（各条 content 长度之和；role 不算）。 */

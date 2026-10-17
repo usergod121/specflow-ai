@@ -46,6 +46,15 @@ public class App {
         defaults.put("management.endpoint.health.show-details", "always");
         app.setDefaultProperties(defaults);
         ConfigurableApplicationContext context = app.run();
+        // 把我们自己的计数器接上（没有这一步，/api/actuator/metrics 里只有框架的指标）
+        try {
+            com.specflow.core.Metrics.install(com.specflow.core.Metrics.of(
+                    context.getBean(io.micrometer.core.instrument.MeterRegistry.class)));
+        } catch (RuntimeException e) {
+            // 没有 registry 就继续用空实现：监控缺失不该拦住引擎启动
+            org.slf4j.LoggerFactory.getLogger(App.class)
+                    .warn("业务计数器没接上（不影响使用）：{}", e.getMessage());
+        }
         int actual = context.getEnvironment().getProperty("local.server.port", Integer.class, port);
         System.out.println("specflow 已启动：http://127.0.0.1:" + actual
                 + (project == null ? "（先挑一个项目）" : "（项目：" + project + "）"));

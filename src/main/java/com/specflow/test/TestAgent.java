@@ -148,43 +148,31 @@ public final class TestAgent {
         // 超了就把那一条标成跳过并让模型换下一条——这是"一条用例吃掉整轮预算"的解药。
         CaseBudget budget = new CaseBudget(cases, roundsPerCase, progress);
         ToolRegistry tools = ToolRegistry.of(
-                budget.wrap(com.specflow.agent.StuckCheck.wrap(new ReadListTool(new Roots(sandboxRoot)))),
-                budget.wrap(com.specflow.agent.StuckCheck.wrap(new ReadFileTool(new Roots(sandboxRoot)))),
+                budget.wrap(com.specflow.agent.StuckCheck.wrap(new ReadListTool(new Roots(sandboxRoot)),
+                        com.specflow.agent.StuckCheck.CASE)),
+                budget.wrap(com.specflow.agent.StuckCheck.wrap(new ReadFileTool(new Roots(sandboxRoot)),
+                        com.specflow.agent.StuckCheck.CASE)),
                 budget.wrap(com.specflow.agent.StuckCheck.wrap(
-                        new com.specflow.test.Frozen(new WriteFileTool(new Roots(sandboxRoot)), freeze))),
+                        new com.specflow.test.Frozen(new WriteFileTool(new Roots(sandboxRoot)), freeze),
+                        com.specflow.agent.StuckCheck.CASE)),
                 budget.wrap(com.specflow.agent.StuckCheck.wrap(
-                        new com.specflow.test.Frozen(new ApplyPatchTool(new Roots(sandboxRoot)), freeze))),
+                        new com.specflow.test.Frozen(new ApplyPatchTool(new Roots(sandboxRoot)), freeze),
+                        com.specflow.agent.StuckCheck.CASE)),
                 budget.wrap(com.specflow.agent.StuckCheck.wrap(
-                        new BashTool(shell, sandboxRoot, approval, progress, waitSeconds))),
+                        new BashTool(shell, sandboxRoot, approval, progress, waitSeconds),
+                        com.specflow.agent.StuckCheck.CASE)),
                 budget.wrap(new CaseUpdateTool(cases, onCaseDone)),
                 budget.wrap(new PhaseTool(freeze)),
                 budget.wrap(new SubmitTool()));
 
         Loop loop = new Loop("测试", llm, new LoopLimits(rounds, 400, waitSeconds, 1), tools, watcher, progress);
-        // 压缩时那张锚点表：只有这一层知道"清单长什么样、哪些路径算动过"
-        java.util.Set<String> touched = new java.util.LinkedHashSet<>();
-        java.util.List<String> failures = new java.util.ArrayList<>();
-        loop.onToolResult((args, result) -> {
-            Object path = args.get("path");
-            if (path instanceof String one && !one.isBlank() && touched.size() < 12) {
-                touched.add(one.strip());
-            }
-            if (result != null && !result.ok() && failures.size() < 3) {
-                String why = String.valueOf(result.reason()).lines().findFirst().orElse("");
-                failures.add(why.length() > 90 ? why.substring(0, 90) + "…" : why);
-            }
-        });
         // 每条工具结果后面钉一行"你在哪"：解释一次不如每条都报一次
         //（SWE-agent 给每条 observation 都钉 (Current directory: …)，见其 07.yaml:68-72）
         loop.grounding(() -> containerRoot + "（项目根；文件工具用相对路径，bash 用这个路径）");
+        // 锚点表里「动过的路径 / 最近的失败」由 Loop 自己攒（五格一致，见 Loop.anchors 的注释）；
+        // 这一层只补它独有的那一句：清单还剩几条、现在在验哪条。
         loop.anchors(() -> {
             StringBuilder out = new StringBuilder();
-            if (!touched.isEmpty()) {
-                out.append("- 读过/改过的路径：").append(String.join("、", touched)).append('\n');
-            }
-            if (!failures.isEmpty()) {
-                out.append("- 最近的失败：").append(String.join("；", failures)).append('\n');
-            }
             out.append("- 进度：清单 ").append(cases.count()).append(" 条，还有 ")
                     .append(cases.pending()).append(" 条没到终态");
             String now = budget.current();

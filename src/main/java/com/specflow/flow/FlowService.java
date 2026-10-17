@@ -170,6 +170,7 @@ public final class FlowService {
                 + state().stateOf(previous).name() + "）：到那一格点「冻结」，下游才会解锁"
                 + "（READY = 活干完了但还没冻住）";
         events().append(Event.gate(0, node.key(), blocked));
+        com.specflow.core.Metrics.installed().gateBlocked(node.key());
         String what = action == null || action.isBlank() ? "碰「" + node.title() + "」" : action;
         throw FlowRejected.conflict("不能" + what + "。" + blocked);
     }
@@ -185,6 +186,7 @@ public final class FlowService {
         String blocked = Gates.blocked(node, facts(state), state.states());
         if (!blocked.isEmpty()) {
             events().append(Event.gate(0, node.key(), blocked));
+            com.specflow.core.Metrics.installed().gateBlocked(node.key());
             throw FlowRejected.conflict(blocked);
         }
         state.setState(node, State.DONE);

@@ -97,9 +97,15 @@ public final class CasesAgent {
 
         progress.step("让模型写一版用例", "", 0);
         String reply;
+        long started = System.currentTimeMillis();
         try {
             reply = llm.complete(Llm.Msg.system(system), Llm.Msg.user(user.toString()));
+            // ③ 不走 ReAct 循环（一次模型调用就要一版清单），所以它自己记一笔计数器
+            com.specflow.core.Metrics.installed()
+                    .modelCall("用例", true, System.currentTimeMillis() - started);
         } catch (RuntimeException e) {
+            com.specflow.core.Metrics.installed()
+                    .modelCall("用例", false, System.currentTimeMillis() - started);
             progress.fail("模型没回来：这一版用例没写出来", e.getMessage());
             throw new IllegalStateException("模型没回来，用例没生成：" + e.getMessage(), e);
         }

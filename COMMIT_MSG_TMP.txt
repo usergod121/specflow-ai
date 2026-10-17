@@ -1,0 +1,40 @@
+feat: 交付前系统核查（九条接线缺口）+ SYSTEM.html 大幅充实（顶层抽象 / 源码解读 / 工程细节）
+
+## 核查（判据不是"跑通没跑通"，而是"每一处接了吗"）
+
+九条同形状的缺口（东西都在、不报错、测试全绿，只是中间某段没接上），前四条上一轮已修，
+这一轮修后五条：
+
+5. 压缩的锚点表只有 ⑤ 拼了 → 「读过/改过的路径 / 最近的失败」搬进 Loop 自己攒
+   （remember + anchorTable），调用方只补"进度"那几句；五格一致。
+6. Compact 压第二次会把任务书扔掉、锚点叠成两份（它假设 messages.get(1) 永远是任务书，
+   而第一次压完第 1 条已经是自己插的锚点）→ 改成"认头"，幂等；CompactTest 那条
+   "压两次"现在断言任务书还在、锚点只有一份。
+7. Snapshot（把真项目退回原文）零测试、accept() 从没被调用 → 补 SnapshotTest 6 条；
+   ④ 冻结时 accept() 掉那份写前快照（否则每跑一次开发就在盘上留一份没人处置的副本）。
+8. Metrics 写完零调用点（文档一直写着"actuator 能看到我们自己的计数器"）→ App 装 registry，
+   5 处调用：Runs 起/收场、Loop 每次模型调用、Approvals 每次提问、FlowService 每次被闸拦；
+   真引擎上验到 specflow.runs / runs.finished / run.seconds / running / gate.blocked 五个指标。
+9. StuckCheck 只包了 ⑤ 的工具 → 五格都包（subject 决定话术：这条用例 / 这一轮）。
+另外删掉 Loop.onToolResult + INJECT（只有测试在用的钩子，生产零调用点），连带 2 条测试。
+
+## 文档
+
+docs/SYSTEM.html：8 部分 → 10 部分（76 KB，39 张表，36 个代码/伪代码块）
+- 新增 §2.5 顶层抽象（八个概念 + 一次点击的完整旅程 + 每个抽象的代价）
+- §4 每个包补方法级源码解读：Atomic.write / Cmd.run / Protocol.parse / Loop.turn /
+  Loop.anchorTable+remember / FlowService.freeze+gotoNode / Store.currentId / CaseBudget /
+  TestSandbox.prepare / Approvals.decide / Runs.start / SSE streamTo
+- 新增第 9 部分「这次核查抓到什么」（九条表 + "只问三句"的核查口诀）
+- 新增第 10 部分「工程细节十二条」+ 三条中文 / Windows 专有坑
+- §5.5 / 5.6 / 7.1 / 7.2 对齐现在的行为与数字（211 + 102，e2e 200s / 11 条 / PASS 10）
+
+DELIVERY.md / DECISIONS.md / ARCHITECTURE.md（不变量 12 条，新增"输入有人给、输出有人用"）同步。
+
+## 验证（都在 20:26 那个 jar 上重跑过）
+
+- 后端 211 条全绿（30 个测试类）；前端 102 条全绿
+- 七页浏览器冒烟：零 JS 报错、零失败面板
+- probe-context.mjs：13/13（真 HTTP + 真盘）
+- 端到端：103s / 10 条 / PASS 9 / 闭环（同一个 jar 累计四次全过：200s、153s、103s，另一次 196s）
+- 指标实测：/api/actuator/metrics 里五个 specflow.* 都在
