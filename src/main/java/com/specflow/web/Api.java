@@ -4,6 +4,7 @@ import com.specflow.core.Event;
 import com.specflow.core.EventLog;
 import com.specflow.core.Json;
 import com.specflow.core.Project;
+import com.specflow.env.Capabilities;
 import com.specflow.env.Compiler;
 import com.specflow.env.EnvConfig;
 import com.specflow.env.EnvConfigLoader;
@@ -13,6 +14,7 @@ import com.specflow.flow.FlowService;
 import com.specflow.flow.Node;
 import com.specflow.flow.NodeView;
 import com.specflow.flow.Runs;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -111,6 +113,81 @@ public class Api {
         answer.put("node", node.key());
         answer.put("state", session.flow().state().stateOf(node).name());
         return answer;
+    }
+
+    // SSE 的三个节奏：推一次（250ms 够快，又不至于把文件读成风扇声）、心跳（15s）、空闲多久自己收场（30 分钟）
+    private static final long STREAM_TICK_MILLIS = 250;
+    private static final int STREAM_HEARTBEAT_TICKS = 60;
+    private static final long STREAM_IDLE_MILLIS = 30 * 60 * 1000L;
+
+    /**
+     * <b>同一条事件流的 SSE 版本</b>（`docs/API.md` 里那一行 `GET /api/node/{key}/stream`）。
+     *
+     * <h2>为什么改 SSE（而不是继续轮询）</h2>
+     * 轮询是 1.2 秒一次：拉镜像那种"每几百毫秒冒一行"的过程永远慢半拍，而空轮询还在持续读盘。
+     * SSE 是"服务端有新行就推"，界面的感受从"跳着出现"变成"顺着出来"。
+     *
+     * <h2>为什么它不会变成第二个真相</h2>
+     * 推的载荷与 {@code ?from=} 那条<b>完全同形</b>（{@code events/next/running/stage}），
+     * 游标语义也一样（{@code id ≡ 行号}）。所以断线重连 = 带上最后的 id 再订一次，
+     * 客户端不需要补偿逻辑，服务端也没有第二份状态。
+     *
+     * <p>收场条件是"没有在跑的活"：推一帧 {@code done} 之后主动关闭——
+     * 不关的话浏览器的 EventSource 会自动重连，界面就会永远"显示成在跑"。
+     */
+    @GetMapping(value = "/api/node/{key}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public org.springframework.web.servlet.mvc.method.annotation.SseEmitter nodeStream(
+            @PathVariable("key") String key,
+            @RequestParam(name = "from", defaultValue = "0") long from) {
+        parseNode(key);
+        org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter =
+                new org.springframework.web.servlet.mvc.method.annotation.SseEmitter(STREAM_IDLE_MILLIS);
+        Thread worker = new Thread(() -> streamTo(from, emitter), "sse-" + key);
+        worker.setDaemon(true);
+        emitter.onCompletion(worker::interrupt);
+        emitter.onError(e -> worker.interrupt());
+        emitter.onTimeout(() -> {
+            worker.interrupt();
+            emitter.complete();
+        });
+        worker.start();
+        return emitter;
+    }
+
+    /** SSE 那一条的后台推送：有新行就推，闲时心跳，没活就收场。 */
+    private void streamTo(long from,
+                          org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter) {
+        long cursor = Math.max(0, from);
+        int quiet = 0;
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                Map<String, Object> view = eventsView(cursor);
+                Object rows = view.get("events");
+                boolean fresh = rows instanceof List<?> list && !list.isEmpty();
+                if (fresh) {
+                    cursor = ((Number) view.getOrDefault("next", cursor)).longValue();
+                    emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
+                            .name("events").data(view, MediaType.APPLICATION_JSON));
+                    quiet = 0;
+                } else if (++quiet % STREAM_HEARTBEAT_TICKS == 0) {
+                    emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
+                            .name("ping").data(Map.of("at", Event.now()), MediaType.APPLICATION_JSON));
+                }
+                if (!Boolean.TRUE.equals(view.get("running"))) {
+                    emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
+                            .name("done").data(view, MediaType.APPLICATION_JSON));
+                    emitter.complete();
+                    return;
+                }
+                Thread.sleep(STREAM_TICK_MILLIS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            emitter.complete();
+        } catch (Exception e) {
+            // 客户端关页面/换路由 = 正常断开，不是错误；别往事件流里写噪音
+            emitter.complete();
+        }
     }
 
     /** 五格共用的一条事件流（界面按 `?from=` 增量拉）。 */
@@ -540,26 +617,78 @@ public class Api {
         if (list.count() == 0) {
             throw ApiException.badRequest("③ 的用例清单是空的：测试就是照它逐条验的");
         }
-        String runId = session.runs().start(Node.TEST, "test-run", Map.of(), progress -> {
-            try (com.specflow.test.TestSandbox sandbox = com.specflow.test.TestSandbox.prepare(
-                    session.project(), "t" + progress.elapsedSeconds() + "-" + progress.hashCode(), progress)) {
-                com.specflow.test.TestAgent agent = new com.specflow.test.TestAgent(
-                        com.specflow.core.Llm.from(session.project()), progress,
-                        new com.specflow.agent.EventWatcher(session.events(), Node.TEST.key()),
-                        sandbox.shell(), list, session.approvals(), sandbox.root(),
-                        flow.state().fact(Node.PROBE, "requirement"), 60);
-                com.specflow.test.TestAgent.Result result = agent.run();
-                flow.note(Node.TEST, Map.of("testRun", "true",
-                        "pending", String.valueOf(list.pending())));
-                if (!result.ok()) {
-                    progress.fail("这一段测试没验完（" + result.status() + "）：" + result.reason(), null);
-                    return;
-                }
-                progress.done("测试验完了：清单 " + list.count() + " 条全部到终态",
-                        Map.of("verdicts", list.count(), "cases", list.cases(),
-                                "rounds", result.rounds(), "sandbox", sandbox.root().toString()));
-            }
-        });
+        return startTestRun(list, "");
+    }
+
+    /**
+     * <b>重试这一条</b>：把一条已经到终态的用例改回 {@code PENDING}，再起一轮只验它的运行。
+     *
+     * <p>为什么值得单独一个入口：⑤ 的每用例预算会把"验不动的那一条"变成 {@code SKIPPED}，
+     * 而不是把整轮烧光。用户看到某条被跳过、又把环境修好了（比如换了镜像），
+     * 他想做的就是"再验这一条"——不该被迫把 12 条全部重跑一遍。
+     */
+    @PostMapping("/api/node/test/case/retry")
+    public Map<String, Object> testRetryCase(@RequestBody Map<String, Object> body) {
+        String id = text(body, "id");
+        if (id.isBlank()) {
+            throw ApiException.badRequest("要重试哪一条？请求体里带上用例编号（比如 {\"id\":\"C3\"}）");
+        }
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.TEST, "重试这一条");
+        com.specflow.test.CaseList list = caseList();
+        String wanted = id.strip();
+        boolean exists = list.cases().stream().anyMatch(one -> one.id().equals(wanted));
+        if (!exists) {
+            throw ApiException.badRequest("清单里没有编号 " + wanted + " 的用例（现在有：" + list.ids() + "）");
+        }
+        list.reopen(wanted);
+        session.events().warn(Node.TEST.key(), "把 " + wanted + " 改回 PENDING：这一轮只验它（其余用例不动）");
+        return startTestRun(list, wanted);
+    }
+
+    /** 起一轮测试（两条入口共用：整轮跑 / 单条重试）。 */
+    private Map<String, Object> startTestRun(com.specflow.test.CaseList list, String focus) {
+        FlowService flow = session.flow();
+        String runId = session.runs().start(Node.TEST,
+                focus.isBlank() ? "test-run" : "test-retry-" + focus, Map.of(), progress -> {
+                    try (com.specflow.test.TestSandbox sandbox = com.specflow.test.TestSandbox.prepare(
+                            session.project(), "t" + progress.elapsedSeconds() + "-" + progress.hashCode(), progress)) {
+                        // 开工前先问一句：这个容器能构建吗？缺东西就当场失败并指名 ①
+                        //（实测"让它自己装"那条路花了 28 轮 / 15 分钟）
+                        com.specflow.test.Preflight.Verdict preflight = com.specflow.test.Preflight.check(
+                                sandbox.shell(), session.project().compile());
+                        if (!preflight.ok()) {
+                            com.specflow.test.Preflight.report(progress, preflight);
+                            flow.note(Node.TEST, Map.of(Facts.TEST_RUN, "true", Facts.FAILED, "true"));
+                            throw new IllegalStateException("预检没过：" + preflight.message());
+                        }
+                        int perCase = com.specflow.test.CaseBudget.DEFAULT_PER_CASE;
+                        int totalRounds = Math.max(60, list.count() * perCase + 20);
+                        com.specflow.test.TestAgent agent = new com.specflow.test.TestAgent(
+                                com.specflow.core.Llm.from(session.project()), progress,
+                                new com.specflow.agent.EventWatcher(session.events(), Node.TEST.key()),
+                                sandbox.shell(), list, session.approvals(), sandbox.root(),
+                                flow.state().fact(Node.PROBE, "requirement"), totalRounds, perCase)
+                                .withContainerRoot(com.specflow.env.EnvConfigLoader.load(session.project().layout())
+                                        .map(com.specflow.env.EnvConfig::workdir).orElse("/work"))
+                                .withFocus(focus);
+                        com.specflow.test.TestAgent.Result result = agent.run();
+                        long skipped = list.cases().stream()
+                                .filter(one -> one.status() == com.specflow.test.CaseList.Status.SKIPPED).count();
+                        flow.note(Node.TEST, Map.of(Facts.TEST_RUN, "true",
+                                Facts.CASE_PENDING, String.valueOf(list.pending()),
+                                "verdicts", String.valueOf(result.verdicts()),
+                                "skipped", String.valueOf(skipped)));
+                        if (!result.ok()) {
+                            progress.fail("这一段测试没验完（" + result.status() + "）：" + result.reason()
+                                    + "（已写下 " + result.verdicts() + " 条结论）", null);
+                            return;
+                        }
+                        progress.done("测试验完了：清单 " + list.count() + " 条全部到终态",
+                                Map.of("verdicts", result.verdicts(), "cases", list.cases(),
+                                        "rounds", result.rounds(), "sandbox", sandbox.root().toString()));
+                    }
+                });
         return accepted(runId, Node.TEST);
     }
 
