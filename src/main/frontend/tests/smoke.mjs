@@ -1,178 +1,191 @@
 /**
- * 页面冒烟：**起真 jar、用真浏览器打开七个页面、把 JS 报错与页面上的失败面板抓出来**。
+ * 浏览器冒烟：起真 jar、用真 Chrome 走七个页面，除了"有没有报错"，还要对账三件事：
  *
- * 单测只能证明纯函数对；它证明不了「这行代码跑起来不炸」（取值的时机、模板里的表达式、
- * 调了一个后端没有的出口）。所以这一条做的是真事：开页面、听控制台、看那一条红字。
+ *  1. 后端声明的页头动作，界面上必须真的画出来（上一版漏过一整个 actions 字段）；
+ *  2. 能点的按钮点下去必须发出请求（上一版按钮被 disabled 却不报错）；
+ *  3. 换项目之后五格状态必须跟着换（上一版换了项目还显示上一条流程）。
  *
- * 用法：node tests/smoke.mjs <jar路径> [端口]
- * 退出码：0 = 全过；1 = 有页面有问题（或服务没起来）。
+ * 用法：node tests/smoke.mjs [jar路径] [端口]
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-// 本机的 playwright 装在参考实现那边，直接按绝对路径 import（这边不重复装）。
 import { chromium } from 'file:///E:/specflow-ai/src/main/frontend/node_modules/playwright/index.mjs';
 
 const JAR = process.argv[2] || 'E:/specflow-v2/target/specflow.jar';
-const PORT = Number(process.argv[3] || 3802);
+const PORT = Number(process.argv[3] || 3821);
 const BASE = 'http://127.0.0.1:' + PORT;
 const ROUTES = ['/', '/workbench', '/env', '/probe', '/cases', '/dev', '/test'];
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** 一个最小的目标项目：五格要用的文件都在。 */
-function makeProject() {
-  const root = path.join(os.tmpdir(), 'sf-v2-smoke-' + Date.now());
+function makeProject(name) {
+  const root = path.join(os.tmpdir(), name + '-' + Date.now());
   fs.mkdirSync(path.join(root, '.specflow'), { recursive: true });
   fs.writeFileSync(path.join(root, '.specflow/project.yaml'),
     'build:\n  compile: "echo ok"\n\nllm:\n  base-url: http://127.0.0.1:1\n  model: stub\n'
     + '  api-key-env: SPECFLOW_SMOKE_KEY\n');
   fs.writeFileSync(path.join(root, '.specflow/local.env'), 'SPECFLOW_SMOKE_KEY=sk-smoke\n');
-  fs.writeFileSync(path.join(root, '.specflow/env.yaml'), 'image: eclipse-temurin:17\nworkdir: /work\n');
   fs.writeFileSync(path.join(root, 'README.md'), '# smoke\n');
   return root;
 }
 
-const project = makeProject();
+const projectA = makeProject('sf-smoke-a');
+const projectB = makeProject('sf-smoke-b');
 const log = [];
-const server = spawn('java', ['-jar', JAR, 'web', '--port', String(PORT), '--no-open', '-p', project],
-  { stdio: 'pipe' });
-server.stdout.on('data', chunk => log.push(String(chunk)));
-server.stderr.on('data', chunk => log.push(String(chunk)));
-server.on('error', error => log.push('起不了 java：' + error.message));
-
 const problems = [];
-let browser = null;
 
-async function waitForServer() {
+const server = spawn('java', ['-jar', JAR, 'web', '--port', String(PORT), '--no-open', '-p', projectA],
+  { stdio: 'pipe' });
+server.stdout.on('data', (chunk) => log.push(String(chunk)));
+server.stderr.on('data', (chunk) => log.push(String(chunk)));
+server.on('error', (error) => log.push('起不来 java：' + error.message));
+
+let browser = null;
+try {
   const deadline = Date.now() + 120_000;
   for (;;) {
     try {
       const response = await fetch(BASE + '/api/state');
       if (response.ok) {
-        return;
+        break;
       }
-    } catch (e) { /* 还没起来 */ }
+    } catch {
+      /* 还没起来 */
+    }
     if (Date.now() > deadline) {
       throw new Error('服务 120 秒没起来。日志尾部：\n' + log.join('').slice(-800));
     }
-    await sleep(500);
+    await sleep(400);
   }
-}
 
-try {
-  await waitForServer();
   browser = await chromium.launch({ channel: 'chrome', headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
-  page.on('console', message => {
+  const calls = [];
+  page.on('console', (message) => {
     if (message.type() === 'error') {
       errors.push('console: ' + message.text());
     }
   });
-  page.on('pageerror', error => errors.push('pageerror: ' + error.message));
+  page.on('pageerror', (error) => errors.push('pageerror: ' + error.message));
+  page.on('request', (request) => {
+    const url = request.url();
+    if (url.includes('/api/')) {
+      calls.push(request.method() + ' ' + url.replace(BASE, ''));
+    }
+  });
 
-  const report = [];
-  // 后端声明了哪些"页头按钮"（`GET /api/flow` 的 actions）：界面上必须真的画出来。
-  // 这一条是补的：动作表曾经在 NodeView 里、也在 Actions.TABLE 里，可路由没往外掏 ——
-  // 于是五个页面全都"只有状态、没有按钮"，而且不报任何错。光听控制台发现不了，得拿声明去对账。
-  // 先落到站点上再问接口：about:blank 是不透明来源，fetch 会被 CORS 挡掉
   await page.goto(BASE + '/', { waitUntil: 'networkidle' });
   const declared = await page.evaluate(async (url) => {
     const flow = await (await fetch(url)).json();
     const out = {};
     for (const node of flow.nodes || []) {
       out[node.key] = (node.actions || [])
-        .filter(one => one.menu !== true && one.onlyWhileRunning !== true)
-        .map(one => String(one.label || ''));
+        .filter((one) => one.menu !== true && one.onlyWhileRunning !== true)
+        .map((one) => String(one.label || ''));
     }
     return out;
   }, BASE + '/api/flow');
+
+  const rows = [];
   for (const route of ROUTES) {
     errors.length = 0;
     await page.goto(BASE + route, { waitUntil: 'networkidle' });
-    await sleep(700);
-    // 页面自己那一条失败面板（失败就地显示）也算问题：红字留在屏幕上就是要人看见
-    const shown = await page.evaluate(() => Array.from(document.querySelectorAll('[data-failure]'))
-      .map(one => (one.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120))
-      .filter(Boolean));
+    await sleep(500);
     const seen = await page.evaluate(() => ({
       shell: Boolean(document.querySelector('.shell')),
-      rail: document.querySelectorAll('.rail-item').length,
+      rail: document.querySelectorAll('.rail .step').length,
       title: (document.querySelector('h1') || {}).textContent || '',
-      status: (document.querySelector('.status') || document.querySelector('.statusline') || {}).textContent || '',
-      panels: document.querySelectorAll('.sec, .fold').length,
-      folds: document.querySelectorAll('details.fold').length,
-      chips: document.querySelectorAll('.chips').length,
-      log: document.querySelectorAll('.log > li').length,
-      headButtons: Array.from(document.querySelectorAll('.page-head button.btn'))
-        .map(one => (one.textContent || '').replace(/\s+/g, ' ').trim())
-        .filter(one => one && one !== '\u22ef'),
+      status: (document.querySelector('.head .pill') || {}).textContent || '',
+      buttons: Array.from(document.querySelectorAll('.head button.btn, .head .more > summary'))
+        .map((one) => ({ text: (one.textContent || '').trim(), disabled: one.disabled === true })),
+      failures: Array.from(document.querySelectorAll('[data-failure]')).length,
+      stream: document.querySelectorAll('.ev').length,
     }));
-    report.push({ route, errors: [...errors], shown, seen });
-    if (errors.length || shown.length) {
-      problems.push(route + '：' + [...errors, ...shown].join(' | '));
-    }
+    rows.push({ route, seen, errors: [...errors] });
     if (!seen.shell) {
-      problems.push(route + '：外壳没渲染出来（#app 是空的？）');
+      problems.push(route + '：外壳没渲染');
     }
-    // 五个节点页：声明里有几个页头动作，就得看见几个按钮
+    if (errors.length) {
+      problems.push(route + '：' + errors.join(' | '));
+    }
+    if (seen.failures) {
+      problems.push(route + '：页面上有失败条');
+    }
     const key = route.replace('/', '');
-    if (declared[key] && declared[key].length) {
-      const missing = declared[key].filter(label => !seen.headButtons.includes(label));
-      if (missing.length) {
-        problems.push(route + '：后端声明了页头动作「' + declared[key].join('、')
-          + '」，界面上缺「' + missing.join('、') + '」');
+    const labels = seen.buttons.filter((one) => one.text && one.text !== '⋯').map((one) => one.text);
+    for (const label of declared[key] || []) {
+      if (!labels.includes(label)) {
+        problems.push(`${route}：后端声明了页头动作「${label}」，界面没画出来`);
       }
     }
   }
 
-  // 日志倒序：最新的一条在最上面。抽一行有 at 的时刻比大小。
-  const ordered = await page.evaluate(async () => {
-    const days = ['env', 'probe', 'cases', 'dev', 'test'];
-    for (const day of days) {
-      const response = await fetch('/api/node/' + day + '/events?from=0');
-      if (!response.ok) {
-        continue;
-      }
-      const view = await response.json();
-      const list = (view.events || []).map(one => one.at).filter(Boolean);
-      if (list.length > 1) {
-        return { node: day, first: list[0], last: list[list.length - 1], count: list.length };
+  // ---------- 点「探测环境」：必须真的发请求 ----------
+  await page.goto(BASE + '/env', { waitUntil: 'networkidle' });
+  await sleep(400);
+  const before = calls.length;
+  const probe = page.locator('.head button.btn', { hasText: '探测环境' }).first();
+  if (await probe.count()) {
+    if (await probe.isDisabled()) {
+      problems.push('/env：「探测环境」是灰的，点不动');
+    } else {
+      await probe.click({ force: true });
+      await sleep(1500);
+      const fresh = calls.slice(before).filter((one) => one.includes('/api/node/env/agent'));
+      if (!fresh.length) {
+        problems.push('/env：点了「探测环境」但没有任何请求发出');
       }
     }
-    return null;
-  });
+  }
+
+  // ---------- 换项目：五格必须跟着换 ----------
+  const flowOf = async () => page.evaluate(async (url) => {
+    const view = await (await fetch(url)).json();
+    const states = {};
+    for (const node of view.nodes || []) {
+      states[node.key] = node.state;
+    }
+    return { flowId: view.flowId, states };
+  }, BASE + '/api/flow');
+
+  const flowA = await flowOf();
+  await page.goto(BASE + '/', { waitUntil: 'networkidle' });
+  await sleep(300);
+  await page.fill('#path', projectB);
+  await page.locator('button.btn.primary', { hasText: '打开' }).first().click();
+  await page.waitForURL((url) => String(url).includes('/workbench'), { timeout: 10_000 }).catch(() => {});
+  await sleep(900);
+  const flowB = await flowOf();
+  if (flowB.flowId === flowA.flowId) {
+    problems.push('换项目后 flowId 没变（后端没切）');
+  }
+  await page.goto(BASE + '/env', { waitUntil: 'networkidle' });
+  await sleep(600);
+  const word = ((await page.evaluate(() => (document.querySelector('.head .pill') || {}).textContent || ''))).trim();
+  const expect = { READY: '待完成', DONE: '已完成', LOCKED: '未开始' }[flowB.states.env];
+  if (expect && word !== expect) {
+    problems.push(`换项目后 /env 显示「${word}」，后端是 ${flowB.states.env}（应为「${expect}」）`);
+  }
 
   console.log('=== 逐页 ===');
-  for (const one of report) {
-    const marks = [
-      one.errors.length ? '✗ JS: ' + one.errors.join(' / ') : '✓ 无 JS 报错',
-      one.shown.length ? '✗ 页面有失败信息: ' + one.shown.join(' / ') : '✓ 无失败面板',
-    ];
+  for (const one of rows) {
+    const buttons = one.seen.buttons.map((b) => b.text + (b.disabled ? '(灰)' : '')).join(' ');
     console.log(`${one.route.padEnd(11)} h1「${String(one.seen.title).trim()}」 `
-      + `侧栏 ${one.seen.rail} 格 · 分区 ${one.seen.panels} 块 · 折叠 ${one.seen.folds} 个 · chip 区 ${one.seen.chips} 个 · `
-      + `页头按钮 ${one.seen.headButtons.length} 个${one.seen.headButtons.length ? '「' + one.seen.headButtons.join('」「') + '」' : ''} `
-      + `状态「${String(one.seen.status).replace(/\s+/g, ' ').trim().slice(0, 20)}」 ${marks.join(' ')}`);
+      + `侧栏 ${one.seen.rail} 格 · 状态「${String(one.seen.status).replace(/\s+/g, ' ').trim()}」 · `
+      + `按钮 ${buttons || '（无）'} · 事件 ${one.seen.stream} 条 · 失败条 ${one.seen.failures}`);
   }
-  console.log(ordered
-    ? `事件流倒序抽样：${ordered.node} 共 ${ordered.count} 条，第一条 ${ordered.first}`
-    : '事件流：还没有可抽样的行（新项目正常）');
-  if (log.length) {
-    console.log('服务日志尾部：' + log.join('').trim().split('\n').slice(-3).join(' | '));
-  }
-} catch (e) {
-  problems.push(String((e && e.message) || e));
+  console.log(`换项目：${flowA.flowId} → ${flowB.flowId}`);
+  console.log(problems.length ? '✗ 问题：\n- ' + problems.join('\n- ') : '✓ 七页全过（含按钮对账 / 点击发请求 / 换项目隔离）');
+} catch (error) {
+  problems.push(String((error && error.message) || error));
+  console.log('✗ ' + problems[problems.length - 1]);
 } finally {
   if (browser) {
     await browser.close();
   }
-  spawn('taskkill', ['/PID', String(server.pid), '/T', '/F'], { stdio: 'ignore' });
-  await sleep(600);
-  fs.rmSync(project, { recursive: true, force: true });
+  server.kill();
 }
 
-console.log(problems.length
-  ? `\n✗ ${problems.length} 处有问题：\n- ` + problems.join('\n- ')
-  : `\n✓ ${ROUTES.length} 页全过：没有 JS 报错、没有失败面板、外壳都渲染了`);
 process.exit(problems.length ? 1 : 0);

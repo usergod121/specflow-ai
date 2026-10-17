@@ -162,6 +162,36 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
     进了 Linux 容器照样跑不通——那种情况的正确答案是改 `env.yaml` 的 image / init，
     闸会如实说"容器里构建不起来"，不会假装通过。
 
+## 三点五、前端整段重写（第三版）
+
+第二版的前端不是"不好看"，是**会告诉用户错的事**（按钮不渲染、按钮永远灰着、换项目还显示上一条流程、
+叫停藏着）。按你的要求：整段重写、旧文件搬出项目、bat 加校验。
+
+| 项 | 现在 |
+|---|---|
+| 旧前端备份（**在项目外面**） | `E:\specflow-frontend-old-20261017-234129`（43 个文件） |
+| 新前端 | `src\main\frontend`：`api.js` / `store.js` / `router.js` / `styles/{tokens,app}.css` / `lib/{status,format,useNode}.js` / `components/{PageHead,EventStream}.vue` / `views/*`（7 页） |
+| 状态纪律（这一版的地基） | 所有动作走 `store.act()`：成功之后、409 之后都 `await refresh()`；换项目全量重来；有活在跑 1.5 秒轮询兜底 |
+| 动作按钮 | 只按 `GET /api/flow` 的 `actions` 渲染；`disabled` 每次渲染重算；`onlyWhileRunning`（叫停）提到页头最前 |
+| 测试 | `tests/unit/logic.spec.js` 11 条（状态词 / 格式化 / store 刷新纪律）；`tests/smoke.mjs` 真浏览器七页，对账"声明↔渲染""点了→发请求""换项目→状态跟着换" |
+| bat 校验 | `start.ps1`：缺 `node_modules` 先 `npm install`；`clean package` 重打；**检查 jar 里 `static/index.html` 与 `static/assets/*.js`**，没有就报"包里的界面是空的" |
+
+验证（都在 00:04 那个 jar 上）：
+
+- 前端单元 **11 条全绿**；`vite build` 过（131 kB js / 12.9 kB css）
+- 冒烟 **七页全过**：`/env` 状态「待完成」、页头 `探测环境 起环境 ⋯`；点「探测环境」真的发出 `POST /api/node/env/agent`；换项目 flowId 从 `20261018-001647` → `20261018-001700` 且五格跟着换
+- 真引擎 8780 上七页复验：零控制台报错、零失败条
+
+## 三点六、清掉的东西（别让我的痕迹留在你机器上）
+
+| 清掉的 | 说明 |
+|---|---|
+| `E:\library-management\library-management-backend\.specflow` | 我的运行在里面留下的流程数据。**已先备份**到 `E:\specflow-data-backup-20261018-001749`（91 个文件），再删除；项目目录现在只剩 `.idea / sql / src / target / pom.xml / unknown.bak` |
+| `E:\sf-e2e\` | 我这几轮写的验证脚本（e2e 驱动、冒烟、探针回归、各种 check）整目录删除 |
+| 临时项目目录 | `%TEMP%` 下 `sfv2-*` / `sf-smoke-*` / `sf-v2-*` / `junit-*` / `sf-accept` / `sf-headtree`，共 41 个 |
+| 容器 / 网络 / 卷 | 我起的 `sf-*` 容器 2 个、网络 1 个、卷 230 个（含 `sf-library-management-backend-*` 与一堆 `sf-junit-*`）。你的 `kust-*` / `docker-*` 一个都没动 |
+| `recent.json` | 只剩你自己的那个项目（之前被我的单测塞过 9 个 `junit-` 死条目，已清） |
+| `specflow-v2\.run\` | 我的 pid/端口记录 |
 ## 五、实测记录
 
 ### 1. 后端测试

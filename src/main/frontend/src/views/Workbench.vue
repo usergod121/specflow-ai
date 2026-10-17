@@ -1,74 +1,106 @@
 <script setup>
-// 工作台：当前流程五格速览 + 最近项目（UI.md §3）。
-import { computed } from 'vue';
+/**
+ * 工作台：五格一览 + 新开一条流程 + 跨流程一览。
+ *
+ * 每一行都是「哪一步 / 现在什么状态 / 为什么不能往下（后端原话）/ 去处理」——
+ * 不判任何东西，只把 `/api/flow` 与 `/api/flows` 摊开。
+ */
+import { computed, onMounted, ref } from 'vue';
+import { RouterLink, useRouter } from 'vue-router';
 import * as api from '../api.js';
-import { store, act, loadFlow, loadRecent, openAt } from '../store.js';
-import { nodesOf } from '../lib/flow.js';
-import { badgesOf, statusTextOf } from '../lib/facts.js';
-import { baseName } from '../lib/text.js';
-import Badge from '../components/Badge.vue';
-import Empty from '../components/Empty.vue';
-import Fail from '../components/Fail.vue';
-import { useRouter } from 'vue-router';
+import { store, act, refresh } from '../store.js';
+import { statusWord, toneOf } from '../lib/status.js';
 
 const router = useRouter();
-const rows = computed(() => nodesOf(store.flow));
+const list = ref([]);
+const pick = computed(() => (store.flow && store.flow.nodes) || []);
 
-function open(one) {
-  router.push(one.route);
-}
-
-async function again() {
-  const done = await act('flow', 'new', () => api.newFlow());
+async function load() {
+  const done = await act('flows', () => api.flows(20));
   if (done.ok) {
-    await loadFlow();
-    store.paging = {};
+    list.value = done.value.flows || [];
   }
 }
 
-async function openRecent(one) {
-  const done = await openAt(one.path);
+async function createFlow() {
+  const done = await act('flow:new', () => api.flowNew());
   if (done.ok) {
-    await loadRecent();
+    await refresh();
+    router.push('/env');
   }
 }
+
+onMounted(async () => {
+  await refresh().catch(() => {});
+  await load();
+});
 </script>
 
 <template>
-  <article class="page">
-    <header class="page-head">
+  <div class="page">
+    <header class="head">
       <h1>流程</h1>
-      <span v-if="store.flow && store.flow.flowId" class="sub mono">{{ store.flow.flowId }}</span>
-      <span class="grow"></span>
-      <button type="button" class="btn" :data-loading="store.busy['flow:new'] ? 'true' : 'false'" title="把五格清空，从头再走一遍" @click="again">新开流程</button>
+      <span class="grow" />
+      <button type="button" class="btn primary" :aria-busy="store.busy['flow:new'] ? 'true' : 'false'"
+              :disabled="store.busy['flow:new'] === true" title="新开一条流程：五格回到未开始"
+              @click="createFlow">新开流程</button>
     </header>
-    <Fail scope="flow" action="new" :retry="again" />
 
-    <ul v-if="rows.length" class="steps">
-      <li v-for="one in rows" :key="one.key">
-        <button type="button" class="step" :title="one.blockedReason || '点开这一格'" @click="open(one)">
-          <span class="step-name">{{ one.seq }}{{ one.name }}</span>
-          <span class="step-state">{{ statusTextOf(one.state, false, one.facts) }}</span>
-          <span class="grow"></span>
-          <Badge v-for="badge in badgesOf(one.facts)" :key="badge.key" :text="badge.text" :tone="badge.tone" :mark="badge.mark" />
-        </button>
-        <p v-if="one.blockedReason" class="gate"><span class="gate-mark" aria-hidden="true">!</span>{{ one.blockedReason }}</p>
-      </li>
-    </ul>
-    <Empty v-else text="还没流程" tip="先在欢迎页打开一个项目，这里就会出现五格。" />
+    <p v-if="!store.open" class="empty" style="margin-top: 16px">
+      <b>还没有打开项目。</b><RouterLink to="/">先挑一个项目</RouterLink>。
+    </p>
+
+    <section v-else class="sec">
+      <div class="sec-head">
+        <h2>当前流程</h2>
+        <span class="grow" />
+        <span class="dim mono">{{ store.flow && store.flow.flowId }}</span>
+      </div>
+      <table class="list">
+        <thead>
+          <tr><th style="width: 44px">#</th><th style="width: 130px">这一步</th><th style="width: 90px">状态</th>
+              <th>为什么还不能往下</th><th style="width: 90px" /></tr>
+        </thead>
+        <tbody>
+          <tr v-for="(one, at) in pick" :key="one.key">
+            <td class="mono dim">{{ ['①', '②', '③', '④', '⑤'][at] }}</td>
+            <td>{{ one.title }}</td>
+            <td>
+              <span class="pill" :data-tone="toneOf(one.state, store.running && store.node === one.key)">
+                <i />{{ statusWord(one.state, store.running && store.node === one.key) }}
+              </span>
+            </td>
+            <td class="dim">{{ one.blockedReason || '—' }}</td>
+            <td class="actions-cell">
+              <RouterLink :to="'/' + one.key" class="btn tiny">去处理</RouterLink>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
 
     <section class="sec">
-      <h2>最近项目</h2>
-      <ul v-if="store.recent.length" class="list">
-        <li v-for="one in store.recent" :key="one.path">
-          <button type="button" class="list-main" :title="one.path" @click="openRecent(one)">
-            <span class="name">{{ one.name || baseName(one.path) }}</span>
-            <span class="where mono">{{ one.path }}</span>
-          </button>
-        </li>
-      </ul>
-      <Empty v-else text="还没记录" />
-      <Fail scope="welcome" action="open" :retry="() => openRecent({ path: store.root })" />
+      <div class="sec-head">
+        <h2>所有流程</h2>
+        <span class="grow" />
+        <button type="button" class="btn ghost tiny" @click="load">刷新</button>
+      </div>
+      <p v-if="!list.length" class="empty"><b>还没有别的流程。</b>上面的「新开流程」会开一条新的。</p>
+      <table v-else class="list">
+        <thead>
+          <tr><th>流程</th><th style="width: 90px">阶段</th><th style="width: 90px">用例</th>
+              <th style="width: 70px">闭环</th><th style="width: 170px">时间</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="one in list" :key="one.id">
+            <td class="mono">{{ one.id }}</td>
+            <td>{{ one.stage || '—' }}</td>
+            <td class="nums">{{ one.caseCount || 0 }}</td>
+            <td>{{ one.done ? '✓' : '' }}</td>
+            <td class="dim mono">{{ one.createdAt || '' }}</td>
+          </tr>
+        </tbody>
+      </table>
     </section>
-  </article>
+  </div>
 </template>

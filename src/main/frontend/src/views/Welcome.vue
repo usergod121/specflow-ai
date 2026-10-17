@@ -1,115 +1,77 @@
 <script setup>
-// 欢迎页：挑项目——最近列表 + 手输路径 + 选文件夹（API.md §1）。
-import { computed, ref } from 'vue';
+/**
+ * 欢迎页：挑一个项目。
+ *
+ * 最近列表里的**每一项都是按钮**（不再是"看起来能点但其实是文本"）；
+ * 不存在的条目直接标出来——它们是"被移动/删掉的项目"，不该假装还在。
+ */
+import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import * as api from '../api.js';
-import { store, openAt, loadRecent, act } from '../store.js';
-import { baseName } from '../lib/text.js';
-import Empty from '../components/Empty.vue';
-import Fail from '../components/Fail.vue';
+import { store, openProject, loadRecent } from '../store.js';
 
 const router = useRouter();
-const typed = ref(store.root || '');
-const picked = ref(null);
+const path = ref('');
+const picked = ref('');
 
-const here = computed(() => picked.value && picked.value.path !== '' ? picked.value.path : (store.root || ''));
-
-async function open() {
-  const done = await openAt(typed.value.trim());
+async function enter(where) {
+  const done = await openProject(where);
   if (done.ok) {
     router.push('/workbench');
   }
 }
 
-async function openRecent(one) {
-  typed.value = one.path;
-  await open();
-}
-
-async function forget(one) {
-  await act('welcome', 'forget', () => api.forgetRecent(one.path));
-  await loadRecent();
-}
-
-async function look(path) {
-  const done = await act('welcome', 'browse', () => api.browse(path));
-  if (done.ok) {
-    picked.value = { path: String(done.value.path || path || ''), dirs: done.value.dirs || [], files: done.value.files || [] };
-    typed.value = picked.value.path;
+async function forget(where) {
+  try {
+    await fetch('/api/recent?path=' + encodeURIComponent(where), { method: 'DELETE' });
+  } catch {
+    // 忘记失败不重要，下面重拉一次列表
   }
-  return done;
-}
-
-async function up() {
-  const path = here.value.replace(/[\\/][^\\/]*$/, '');
-  await look(path);
-}
-
-function join(name) {
-  const head = here.value.replace(/[\\/]+$/, '');
-  return head ? head + '\\' + name : name;
+  await loadRecent();
 }
 </script>
 
 <template>
-  <article class="page">
-    <header class="page-head">
+  <div class="page">
+    <header class="head">
       <h1>打开项目</h1>
-      <span class="grow"></span>
+      <span class="grow" />
+      <span class="dim">所有状态都存在项目目录里的 <code class="mono">.specflow/</code></span>
     </header>
 
     <section class="sec">
-      <h2>项目路径</h2>
-      <div class="row">
-        <input
-          v-model="typed"
-          class="grow mono"
-          type="text"
-          id="path-input"
-          placeholder="E:\my-project"
-          title="填项目根目录，然后点「打开」"
-          @keyup.enter="open"
-        />
-        <button type="button" class="btn primary" :data-loading="store.busy['welcome:open'] ? 'true' : 'false'" @click="open">打开</button>
-      </div>
-      <Fail scope="welcome" action="open" :retry="open" />
-      <Fail scope="welcome" action="forget" :retry="loadRecent" />
-    </section>
-
-    <section class="sec">
-      <h2>最近</h2>
-      <ul v-if="store.recent.length" class="list">
-        <li v-for="one in store.recent" :key="one.path">
-          <button type="button" class="list-main" :title="one.path" @click="openRecent(one)">
-            <span class="name">{{ one.name || baseName(one.path) }}</span>
-            <span class="where mono">{{ one.path }}</span>
-            <span v-if="one.exists === false" class="dim">已不在</span>
-          </button>
-          <button type="button" class="btn tiny ghost" title="从最近里去掉" @click="forget(one)">移除</button>
-        </li>
-      </ul>
-      <Empty v-else text="还没记录" tip="打开过一次项目之后，这里会记住它，下次点一下就能回到同一个地方。" />
-    </section>
-
-    <section class="sec">
-      <h2>挑目录</h2>
-      <p class="row">
-        <button type="button" class="btn" @click="look(here || store.root)">
-          {{ picked ? '重读' : '浏览' }}
-        </button>
-        <button v-if="picked && picked.path" type="button" class="btn ghost" @click="up">上一层</button>
-        <span class="grow"></span>
-        <span class="mono dim">{{ here || '（空）' }}</span>
+      <div class="sec-head"><h2>最近打开</h2></div>
+      <p v-if="!store.recent.length" class="empty">
+        <b>还没有打开过项目。</b>在下面填一个目录，或者点「选目录」。
       </p>
-      <Fail scope="welcome" action="browse" :retry="() => look(here)" />
-      <ul v-if="picked && picked.dirs.length" class="list dense">
-        <li v-for="one in picked.dirs" :key="one">
-          <button type="button" class="list-main" @click="look(join(one))">
-            <span class="mono">{{ one }}</span>
+      <ul v-else style="list-style: none; margin: 0; padding: 0">
+        <li v-for="one in store.recent" :key="one.path"
+            style="display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line)">
+          <button type="button" class="btn ghost" style="padding: 0; justify-content: flex-start; min-width: 0"
+                  :disabled="!one.exists" :title="one.exists ? one.path : '这个目录已经不在了'"
+                  @click="enter(one.path)">
+            <span style="font-weight: 600">{{ one.name }}</span>
           </button>
+          <span class="dim mono wrap" style="flex: 1 1 auto; font-size: var(--fs-xs)">{{ one.path }}</span>
+          <span v-if="!one.exists" class="dim">已不在</span>
+          <button type="button" class="btn ghost tiny" title="从列表里去掉" @click="forget(one.path)">去掉</button>
         </li>
       </ul>
-      <p v-if="picked && !picked.dirs.length" class="empty">没有子目录</p>
     </section>
-  </article>
+
+    <section class="sec">
+      <div class="sec-head"><h2>打开别的目录</h2></div>
+      <div style="display: flex; gap: 8px; align-items: flex-end; max-width: 720px">
+        <div class="field" style="flex: 1 1 auto">
+          <label for="path">项目目录（绝对路径）</label>
+          <input id="path" v-model="path" type="text" placeholder="E:\your\project"
+                 @keyup.enter="path && enter(path)" />
+        </div>
+        <button type="button" class="btn primary" :disabled="!path.trim()" @click="enter(path.trim())">打开</button>
+      </div>
+      <p class="dim" style="margin-top: 8px">
+        目录里没有 <code class="mono">.specflow/</code> 也没关系：打开时会铺一份最小配置。
+      </p>
+      <p v-if="picked" class="dim">{{ picked }}</p>
+    </section>
+  </div>
 </template>

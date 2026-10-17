@@ -1,74 +1,85 @@
 <script setup>
-// 外壳：顶栏 56 + 侧栏 232 + 主区（最大 1100，左对齐不居中）——DESIGN.md §3。
-import { computed, onMounted, ref } from 'vue';
-import { useRoute } from 'vue-router';
-import { store, boot, runningNow } from './store.js';
-import { HOME, nodesOf } from './lib/flow.js';
+/**
+ * 外壳：左边五格流水（真正的顺序，所以用编号），右边放这一页。
+ *
+ * 五格的状态、能不能进，全部读 `/api/flow`——这一层**一行判据都没有**：
+ * 它只是把 `state` 翻译成一个小圆点，把 `blockedReason` 交给页面去说。
+ */
+import { computed, onMounted } from 'vue';
+import { RouterLink, RouterView, useRoute } from 'vue-router';
+import { store, boot, node, closeStreams } from './store.js';
+import { statusWord, toneOf } from './lib/status.js';
+import { routes } from './router.js';
 
 const route = useRoute();
-const collapsed = ref(false);
-const nodes = computed(() => nodesOf(store.flow));
-const project = computed(() => store.projectName || store.root || '未打开项目');
 
-onMounted(boot);
+const steps = computed(() =>
+  routes
+    .filter((one) => one.node)
+    .map((one) => {
+      const view = node(one.node);
+      return {
+        path: one.path,
+        key: one.node,
+        title: one.title,
+        state: view.state,
+        blocked: view.blockedReason,
+        tone: toneOf(view.state, store.running && store.node === one.node),
+      };
+    }));
 
-function lockTitle(one) {
-  if (one.blockedReason) {
-    return one.blockedReason;
-  }
-  // 五格自己那句话（`state=READY` 这种）只进 title，正文一个字都不留
-  return one.state ? '后端说它现在是 ' + one.state : '后端还没给这一格的话';
-}
+const index = computed(() => steps.value.findIndex((one) => one.path === route.path));
+
+onMounted(() => {
+  boot();
+  closeStreams();
+});
 </script>
 
 <template>
-  <div class="shell" :data-rail="collapsed ? 'collapsed' : 'full'">
-    <header class="topbar">
-      <span class="brand">specflow</span>
-      <span class="project mono" :title="store.root || '还没打开项目'">{{ project }}</span>
-      <span class="grow"></span>
-      <span class="model" :data-tone="store.hasModel ? 'ok' : 'idle'"
-            :title="store.hasModel ? '已配好模型' : 'project.yaml 里还没写 llm'">
-        <span aria-hidden="true">{{ store.hasModel ? '✓' : '—' }}</span>模型
-      </span>
-      <button type="button" class="btn tiny ghost" :aria-pressed="collapsed ? 'true' : 'false'"
-              title="收起或展开侧栏" @click="collapsed = !collapsed">
-        {{ collapsed ? '展开' : '收起' }}
-      </button>
-    </header>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">specflow <small>v3</small></div>
 
-    <nav class="rail" aria-label="五格">
-      <router-link class="rail-item" to="/" :data-current="route.path === '/' ? 'true' : 'false'">
-        <span class="rail-seq" aria-hidden="true"></span>
-        <span class="rail-name">{{ HOME.name }}</span>
-      </router-link>
-      <ol class="rail-list">
-        <li v-for="one in nodes" :key="one.key">
-          <router-link
-            class="rail-item"
-            :to="one.route"
-            :data-current="route.path === one.route ? 'true' : 'false'"
-            :data-state="one.state || 'READY'"
-            :title="lockTitle(one)"
-          >
-            <span class="rail-seq" aria-hidden="true">{{ one.seq }}</span>
-            <span class="rail-name">{{ one.name }}</span>
-            <span class="rail-dot" :data-tone="one.state === 'DONE' ? 'ok' : (one.state === 'LOCKED' ? 'idle' : 'ready')" aria-hidden="true"></span>
-          </router-link>
-        </li>
-      </ol>
-      <p v-if="!store.flow" class="rail-empty" title="打开一个项目之后，五格才有状态">还没流程</p>
-      <p v-else-if="runningNow()" class="rail-running" title="后端还在跑，事件流一边跑一边往这里写">
-        <span class="status-dot" data-tone="run" aria-hidden="true"></span>进行中
-      </p>
-    </nav>
+      <nav aria-label="五步">
+        <RouterLink
+          v-for="(one, at) in steps"
+          :key="one.key"
+          :to="one.path"
+          class="step"
+          :class="{ on: route.path === one.path }"
+          :title="one.blocked || one.title"
+        >
+          <span class="num">{{ ['①', '②', '③', '④', '⑤'][at] }}</span>
+          <span>{{ one.title }}</span>
+          <span class="dot" :class="one.tone" />
+        </RouterLink>
+        <RouterLink to="/workbench" class="step" :class="{ on: route.path === '/workbench' }">
+          <span class="num">·</span>
+          <span>工作台</span>
+          <span class="dot" />
+        </RouterLink>
+      </nav>
+
+      <div class="rail-foot">
+        <div class="project-line" :title="store.root">
+          <span class="dot" :class="store.open ? 'done' : ''" />
+          <span class="name">{{ store.projectName || '还没打开项目' }}</span>
+        </div>
+        <RouterLink v-if="store.open" to="/" class="dim">换项目</RouterLink>
+        <span v-if="store.open && !store.hasModel" class="dim" title="项目里没有可用的 key">
+          没有密钥
+        </span>
+      </div>
+    </aside>
 
     <main class="main">
-      <p v-if="store.shellError" class="fail" data-failure="true" role="alert">
-        <span class="fail-mark" aria-hidden="true">✗</span>
-        <span class="fail-text">{{ store.shellError }}</span>
-      </p>
-      <router-view />
+      <div v-if="!store.boot" class="page">
+        <div class="sk" style="width: 40%" />
+        <div class="sk" style="width: 70%; margin-top: 12px" />
+        <div class="sk" style="width: 55%; margin-top: 12px" />
+      </div>
+      <RouterView v-else />
     </main>
 
     <p v-if="store.toast" class="toast" role="status">{{ store.toast }}</p>

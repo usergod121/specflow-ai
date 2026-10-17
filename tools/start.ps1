@@ -38,18 +38,40 @@ Write-Ok $java
 
 # ---------- 2. 产物 ----------
 if ($Rebuild -or -not (Test-Path -LiteralPath $jar)) {
-    Write-Step '编 Java + 前端（第一次会慢，要几分钟）'
+    Write-Step '编前端 + Java（第一次会慢，要几分钟）'
     $mvn = Get-Command mvn.cmd -ErrorAction SilentlyContinue
     if (-not $mvn) { $mvn = Get-Command mvn -ErrorAction SilentlyContinue }
     if (-not $mvn) {
         Write-Bad '没找到 maven：装一个（或把 mvn 加进 PATH），或者手工 `mvn -o package` 出 target\specflow.jar 再双击。'
         exit 1
     }
+
+    # 前端依赖：package 那一步会跑 `npm run build`，没有 node_modules 就直接失败。
+    # 与其让它报一堆模块找不到，不如在这里一次说清。
+    $front = Join-Path $root 'src\main\frontend'
+    if (-not (Test-Path -LiteralPath (Join-Path $front 'node_modules'))) {
+        $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+        if (-not $npm) { $npm = Get-Command npm -ErrorAction SilentlyContinue }
+        if (-not $npm) {
+            Write-Bad '前端依赖没装，而这里也没有 npm：装 Node 20+ 之后重试（或者把 src\main\frontend\node_modules 放回来）。'
+            exit 1
+        }
+        Write-Step '装前端依赖（npm install，第一次要一会儿）'
+        $install = Invoke-Native -File $npm.Source -Arguments @('install', '--no-audit', '--no-fund') -WorkDir $front
+        if ($install.code -ne 0) {
+            Write-Bad "npm install 没成功（退出码 $($install.code)）。最后几行："
+            $install.output -split "`r?`n" | Select-Object -Last 20 | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkGray }
+            exit 1
+        }
+    }
+
     Push-Location $root
     try {
         # Maven 在中文 Windows 上按平台编码打日志，失败尾巴得能看懂
         $env:MAVEN_OPTS = '-Dfile.encoding=UTF-8'
-        $build = Invoke-Native -File $mvn.Source -Arguments @('-o', '-q', 'package', '-DskipTests') -WorkDir $root
+        # clean 是必须的：target\classes\static 不会自己清，重打几次就会把旧的前端包一起塞进 jar，
+        # 于是「我明明改好了」而浏览器拿到的还是上一版（这一类"验了旧包"真发生过）。
+        $build = Invoke-Native -File $mvn.Source -Arguments @('-o', '-q', 'clean', 'package', '-DskipTests') -WorkDir $root
     } finally {
         Pop-Location
     }
@@ -58,10 +80,24 @@ if ($Rebuild -or -not (Test-Path -LiteralPath $jar)) {
         $build.output -split "`r?`n" | Select-Object -Last 25 | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkGray }
         exit 1
     }
-    Write-Ok '产物好了：target\specflow.jar'
+
+    # **校验：界面真的打进 jar 了吗**。前端构建失败时 Maven 仍可能打出一个没有界面的包，
+    # 双击进去是一片白——这种"看着成功其实空的"必须在这里拦住。
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $entries = @()
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($jar)
+    try { $entries = $zip.Entries | ForEach-Object { $_.FullName } } finally { $zip.Dispose() }
+    $hasIndex = @($entries | Where-Object { $_ -like '*static/index.html' }).Count -gt 0
+    $bundles = @($entries | Where-Object { $_ -like '*static/assets/*.js' }).Count
+    if (-not ($hasIndex -and $bundles -gt 0)) {
+        Write-Bad "包里的界面是空的（index.html=$hasIndex，js 包 $bundles 个）：前端构建没成功。"
+        Write-Note '先在 src\main\frontend 里手工 `npm run build` 看报错，再重试。'
+        exit 1
+    }
+    Write-Ok "产物好了：target\specflow.jar（界面 $bundles 个资源，已 clean 重打）"
 } else {
     $stamp = (Get-Item -LiteralPath $jar).LastWriteTime.ToString('MM-dd HH:mm')
-    Write-Note "用现成的 target\specflow.jar（$stamp；改了 Java 就加 -Rebuild）"
+    Write-Note "用现成的 target\specflow.jar（$stamp；改了 Java 或界面就加 -Rebuild）"
 }
 
 # ---------- 3. docker（只是提醒） ----------

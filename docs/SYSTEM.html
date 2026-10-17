@@ -865,16 +865,30 @@ streamTo(from, emitter):                       <span class="c">// 每 250ms 一�
 没有在跑的活就推一帧 <code>done</code> 并主动关 —— 不关的话 EventSource 会自动重连，界面永远"显示成在跑"。
 <span class="cite">参考 Dify 用 SSE 推进度、Vercel AI SDK 的 data stream 分帧</span></div>
 
-<h3>4.7 前端（Vue 3 + Vite）</h3>
+<h3>4.7 前端（Vue 3 + Vite，<b>第三版：整段重写</b>）</h3>
+<p>第二版的前端不是"不好看"，是<b>会告诉用户错的事</b>：动作表没随响应下发（页面只有状态没有按钮）、
+禁用条件被冻在组件挂载那一刻（按钮永远灰着）、换项目不重拉流程（显示上一条流程的五格）、
+叫停藏在「⋯」里（提示让你点却找不到）。所以按用户要求<b>整段重写</b>，旧文件搬到项目外面
+（<code>E:\specflow-frontend-old-20261017-234129</code>）。</p>
 <table>
   <tr><th>文件</th><th>作用</th></tr>
-  <tr><td><code>store.js</code></td><td>共享状态与动作；<b>闸不在这里判</b>（读后端给的 <code>blockedReason</code> / 409 原话）；SSE 主路 + 轮询备路共用一个 <code>ingest()</code></td></tr>
-  <tr><td><code>api.js</code></td><td>41 个函数，一一对应 API.md</td></tr>
-  <tr><td><code>lib/actions.js</code></td><td><b>按 id 绑处理函数</b>：动作的名字/顺序/位置来自后端；声明里有、这里没接的 → 渲染成灰的并说明原因（不再静默消失）</td></tr>
-  <tr><td><code>lib/{events,facts,flow,pages,text}.js</code></td><td>纯函数：事件→chip、facts→徽章、文案预算（正文 ≤6 汉字）</td></tr>
-  <tr><td><code>components/</code></td><td>NodeShell（页头+状态条+调用+留档）/ Fold / Chip(s) / Badge / MoreMenu / Fail / Empty</td></tr>
-  <tr><td><code>views/</code></td><td>Welcome / Workbench / ①–⑤</td></tr>
+  <tr><td><code>store.js</code></td><td><b>唯一状态 + 唯一刷新口</b>：<code>refresh()</code> 读 <code>/api/flow</code>（连 <code>running</code> 一起）；
+    所有动作走 <code>act()</code>，<b>成功之后与 409 之后都 <code>await refresh()</code></b>；换项目全量重来；有活在跑 1.5 秒轮询兜底</td></tr>
+  <tr><td><code>api.js</code></td><td>唯一发请求的地方：40 条路由 + <code>ApiError</code>（正文就是后端那句人话）</td></tr>
+  <tr><td><code>router.js</code></td><td>七条路由，history 模式（后端有 SPA 回落，刷新任意一页都能起来）</td></tr>
+  <tr><td><code>App.vue</code></td><td>外壳：左栏五格流水（三态圆点）+ 右栏页面 + toast；窄屏变顶部横条（结构变化，不是缩字号）</td></tr>
+  <tr><td><code>components/PageHead.vue</code></td><td>页头：标题 + 状态 pill + 动作条（<b>只按后端 <code>actions</code> 渲染</b>）+ 闸原话 + 就地失败条；
+    <code>onlyWhileRunning</code> 的那一枚（叫停）<b>插队到页头最前</b>，<code>disabled</code> 每次渲染重算</td></tr>
+  <tr><td><code>components/EventStream.vue</code></td><td>事件流：最新在最上面、工具调用一枚 chip、点开看原始参数与输出</td></tr>
+  <tr><td><code>lib/{status,format,useNode}.js</code></td><td>状态→人话（未开始/待完成/进行中/已完成/失败）· 秒与行数组 ↔ 多行文本 · 进哪一格就设「当前格」并接流</td></tr>
+  <tr><td><code>views/</code></td><td>Welcome / Workbench / ①环境 ②探针 ③用例 ④开发 ⑤测试</td></tr>
+  <tr><td><code>styles/{tokens,app}.css</code></td><td>颜色/字级/间距/动效的唯一一处定义 + 手写组件样式（不引组件库）。细则在 <code>DESIGN.md</code></td></tr>
+  <tr><td><code>tests/</code></td><td><code>unit/logic.spec.js</code> 11 条（状态词 / 格式化 / <b>store 刷新纪律</b>）；
+    <code>smoke.mjs</code> 真 Chrome 七页 + 三件对账（声明↔渲染 / 点了→发请求 / 换项目→状态跟着换）</td></tr>
 </table>
+<div class="why"><b>一句话记住这一版的设计</b>：<b>界面不猜任何后端已经知道的事</b>。
+每次动作之后重新问一次 <code>/api/flow</code>（代价是一个很小的 GET），换来的是
+"状态永不发霉"——换项目、409、动作改了什么，界面看到的都是后端的新值。</div>
 
 <!-- ============================================================ -->
 <p class="part">第 5 部分</p>
