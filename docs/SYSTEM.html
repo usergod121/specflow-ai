@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>specflow v3 · 系统说明书</title>
+<style>
+  :root{
+    --ink:#12141a; --paper:#f7f6f3; --dim:#6b6f7a; --line:#dcd9d2; --soft:#eeebe4;
+    --accent:#a9781f; --code:#f0eee8; --ok:#2f7d4f; --bad:#a33b32; --run:#2f5f9e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+       font:16px/1.8 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  main{max-width:920px;margin:0 auto;padding:40px 24px 120px}
+  h1{font-size:32px;margin:0 0 4px;letter-spacing:.01em}
+  h2{font-size:24px;margin:52px 0 10px;padding:14px 0 0;border-top:2px solid var(--ink)}
+  h3{font-size:19px;margin:30px 0 6px}
+  h4{font-size:16px;margin:20px 0 2px;color:#33384a}
+  p,li{color:#23262e}
+  .lead{color:var(--dim);margin:0 0 24px}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13.3px;
+       font-family:"Cascadia Mono",Consolas,monospace}
+  pre{background:#1d2027;color:#e6e4de;padding:13px 15px;border-radius:8px;overflow-x:auto;
+      font-size:12.6px;line-height:1.62;font-family:"Cascadia Mono",Consolas,monospace;margin:10px 0}
+  pre code{background:none;padding:0;color:inherit;font-size:inherit}
+  pre .c{color:#8f9aa8}
+  pre .k{color:#e0b060}
+  .why{border-left:3px solid var(--accent);padding:6px 0 6px 12px;margin:8px 0 18px;
+       color:#33384a;font-size:15px}
+  .why b{color:var(--ink)}
+  table{border-collapse:collapse;width:100%;margin:10px 0 18px;font-size:14.1px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:var(--soft);font-weight:600}
+  td code{white-space:nowrap}
+  .note{border-left:3px solid var(--accent);background:#fbf7ee;padding:9px 13px;margin:13px 0}
+  .bad{border-left-color:var(--bad);background:#fbf1ef}
+  .ok{border-left-color:var(--ok);background:#eff7f1}
+  ul,ol{padding-left:22px}
+  .toc{columns:2;font-size:14.3px;margin-top:8px}
+  .toc a{color:#2a4d8f;text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  .cite{font-size:12.6px;color:#7a6250;background:#f6efe4;border-radius:4px;padding:1px 6px;
+        display:inline-block;margin:2px 0}
+  .part{font-size:13px;letter-spacing:.14em;color:var(--accent);text-transform:uppercase;
+        margin:44px 0 -6px;font-weight:600}
+  /* 方框图：分层 / 流程 / 数据流 */
+  .flow{display:grid;gap:8px;margin:14px 0}
+  .flow.h5{grid-template-columns:repeat(5,1fr)}
+  .flow.h4{grid-template-columns:repeat(4,1fr)}
+  .flow.h3{grid-template-columns:repeat(3,1fr)}
+  .flow.h2{grid-template-columns:repeat(2,1fr)}
+  .box{border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:#fff;font-size:13.8px}
+  .box b{display:block;font-size:14.3px;margin-bottom:2px}
+  .box .sub{color:var(--dim);font-size:12.6px;line-height:1.5}
+  .box.dark{background:#1d2027;color:#e6e4de;border-color:#1d2027}
+  .box.dark .sub{color:#a8a49c}
+  .box.gate{border-color:var(--accent);background:#fdfaf2}
+  .box.ext{border-style:dashed;background:#faf9f6}
+  .box.small{font-size:12.6px;padding:7px 9px}
+  .arrow{text-align:center;color:var(--accent);font-size:14px;line-height:1;margin:2px 0}
+  .layer{display:grid;gap:8px;margin:12px 0;grid-template-columns:118px 1fr}
+  .layer .side{background:var(--soft);border-radius:8px;padding:8px;font-size:13.2px;
+               font-weight:600;display:flex;align-items:center}
+  .layer .body{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+  /* 时序 */
+  .tl{display:grid;grid-template-columns:92px 1fr;margin:14px 0}
+  .tl .t{color:var(--dim);font-size:12.8px;padding:8px 8px 8px 0;text-align:right}
+  .tl .e{border-left:2px solid var(--line);padding:8px 0 8px 14px;font-size:14.1px}
+  .tl .e b{color:#252932}
+  /* 状态机 */
+  .sm{display:grid;gap:6px;align-items:center;margin:12px 0;font-size:13.6px}
+  .sm.row{grid-template-columns:auto 26px auto 26px auto}
+  .st{background:#fff;border:1px solid var(--line);border-radius:999px;padding:3px 11px;text-align:center}
+  .st.p{border-color:var(--run);color:var(--run);font-weight:600}
+  .st.good{border-color:var(--ok);color:var(--ok);font-weight:600}
+  .st.bad2{border-color:var(--bad);color:var(--bad);font-weight:600}
+  .st.neutral{border-color:var(--accent);color:#7a5f18;font-weight:600}
+  .lbl{color:var(--dim);font-size:12.4px;text-align:center}
+  hr{border:0;border-top:1px dashed var(--line);margin:26px 0}
+  .kv{font-size:13.6px}
+  .kv b{color:#252932}
+</style>
+</head>
+<body>
+<main>
+
+<h1>specflow v3 · 系统说明书</h1>
+<p class="lead">
+一个「规格驱动」的代码 Agent + 工作流引擎。这份文档按<b>八个部分</b>讲：需求 → 认识系统 → 架构 →
+契约与接口 → 逐包逐类 → 关键机制 → 参考与借鉴 → 质量与运维。<br />
+读者对象：要接手改它的人、要评估它的人、以及三个月后的我自己。
+</p>
+
+<div class="toc">
+  <a href="#p0">第 0 部分 · 需求</a><br />
+  <a href="#p1">第 1 部分 · 认识这个系统</a><br />
+  <a href="#p2">第 2 部分 · 系统架构</a><br />
+  <a href="#p3">第 3 部分 · 契约与 API</a><br />
+  <a href="#p4">第 4 部分 · 逐包逐类</a><br />
+  <a href="#p5">第 5 部分 · 关键机制（10 条）</a><br />
+  <a href="#p6">第 6 部分 · 参考与借鉴 ★</a><br />
+  <a href="#p7">第 7 部分 · 质量：测试与已知缺口</a><br />
+  <a href="#p8">第 8 部分 · 怎么跑、怎么修</a>
+</div>
+
+<!-- ============================================================ -->
+<p class="part">第 0 部分</p>
+<h2 id="p0">需求</h2>
+
+<h3>0.1 要解决什么问题</h3>
+<p>给一个已有的项目和一个"要改什么"的需求，<b>目前的做法是</b>：人自己搭环境、自己读代码、
+自己想验收标准、自己写代码、自己跑测试——每一步都在反复切换身份，而且"验过了"这三个字
+没有任何证据支撑。</p>
+<p>这个系统把这件事拆成<b>五个有闸的站点</b>，让每一步都有产物、有判据、有留档：</p>
+
+<div class="flow h5">
+  <div class="box gate"><b>① 环境</b><span class="sub">项目跑在什么容器里、怎么起、能不能构建</span></div>
+  <div class="box gate"><b>② 探针</b><span class="sub">读项目，交出「改哪儿、怎么改」的上下文</span></div>
+  <div class="box gate"><b>③ 用例</b><span class="sub">把一句模糊需求变成可逐条验收的清单</span></div>
+  <div class="box gate"><b>④ 开发</b><span class="sub">在白名单内改真项目代码，每次交差编译一次</span></div>
+  <div class="box gate"><b>⑤ 测试</b><span class="sub">在副本 + 真容器里逐条验，结论与证据写回清单</span></div>
+</div>
+
+<h3>0.2 硬需求（这一版不许违反的）</h3>
+<table>
+  <tr><th>#</th><th>需求</th><th>为什么它是硬的</th></tr>
+  <tr><td>R1</td><td><b>五站语义与顺序不变</b></td><td>它是"卡在哪一站"的唯一答案来源；一变，所有历史留档都失去意义</td></tr>
+  <tr><td>R2</td><td><b>一个 bat 入口</b>（起 / 停 / 销毁）</td><td>用户明确要求"别让我自己敲命令"</td></tr>
+  <tr><td>R3</td><td><b>前端尽量少改</b>，只许加流式与必要按钮</td><td>时间与风险都不允许重做界面</td></tr>
+  <tr><td>R4</td><td><b>状态是人能打开看的文本</b></td><td>排错时这一条比任何查询语言都值钱</td></tr>
+  <tr><td>R5</td><td><b>不碰用户自己的旧实例</b>（8770）</td><td>那是他正在用的东西</td></tr>
+</table>
+
+<h3>0.3 非目标（刻意不做）</h3>
+<ul>
+  <li><b>不做全能 Agent</b>：不让模型决定"下一步做哪一站"。顺序写死，模型只负责站内那一段活。</li>
+  <li><b>不做多智能体群聊</b>：五站已经是编排；自由对话会让"卡在哪"失去答案。</li>
+  <li><b>不换数据库</b>：事件流 <code>id ≡ 行号</code> + 人能打开看，是这套东西最值钱的性质。</li>
+  <li><b>不把引擎自己塞进容器</b>：引擎要调 docker 造沙箱，给了 <code>docker.sock</code> 就等于给了宿主 root。</li>
+</ul>
+
+<h3>0.4 什么叫"跑通了"（验收口径）</h3>
+<ol>
+  <li><b>端到端</b>：真模型 + 真 Docker，五站从"起环境"走到"接受"，且 ④ 的成果由<b>独立脚本</b>核对（不采信 Agent 自述）。</li>
+  <li><b>单元与模块</b>：闸、用例状态机、预算、守卫、事件流、断点、压缩、路由形状，每条都有测试。</li>
+  <li><b>界面</b>：七个路由在真浏览器里零控制台错误、零失败面板；事件走 SSE。</li>
+  <li><b>收场</b>：容器与卷能被一条命令收干净，且不动别人的东西。</li>
+</ol>
+
+<!-- ============================================================ -->
+<p class="part">第 1 部分</p>
+<h2 id="p1">认识这个系统</h2>
+
+<h3>1.1 一句话</h3>
+<p><b>给它一个项目 + 一句需求，它自己把五站跑完；每一站都有闸，上一站没冻结，下一站连点都点不动。</b></p>
+
+<h3>1.2 三层核心认知</h3>
+
+<h4>第一层：它是流水线，不是全能 Agent</h4>
+<p>Agent 只是流水线上那几站的"手"。站序、每站产物、站与站之间的闸<b>都不由模型决定</b>。
+这一条是整个系统可解释性的来源。</p>
+
+<h4>第二层：闸是纯函数</h4>
+<pre><code><span class="c">// flow/Gate.java —— 一格一个实现，签名只有这一行</span>
+String blocked(Facts facts);   <span class="c">// 空串 = 能做；否则就是直接给用户看的那句话</span></code></pre>
+<div class="why">实现里不许读盘、不许看时间、不许写事件——同一份 <code>Facts</code> 永远给同一个答案。
+于是闸能被单测钉死，而<b>界面上的"为什么还不能点"与 409 的正文是同一句话</b>。</div>
+
+<h4>第三层：状态是文件，事件是流水账</h4>
+<div class="flow h3">
+  <div class="box"><b>flow.json</b><span class="sub">五格状态 + 每格产物（原子替换写）</span></div>
+  <div class="box"><b>events.jsonl</b><span class="sub">唯一归档日志；行号 = 事件 id</span></div>
+  <div class="box"><b>cases.json / probe.json / summary.md</b><span class="sub">人能直接改的产物</span></div>
+</div>
+
+<h3>1.3 三条铁律 + 五条不变式</h3>
+<table>
+  <tr><th>铁律（<code>EventLog</code>）</th><th>意思</th></tr>
+  <tr><td>只有一个写者</td><td>日志、工具调用、闸、收场，全从 <code>append()</code> 出去</td></tr>
+  <tr><td><code>id</code> 恒等于行号</td><td>追加前现读行数、盖号、写一行 → 游标与"第几条"是同一个数，重启接着数</td></tr>
+  <tr><td>盘上是唯一真相</td><td>内存里那份只是副本，用 <code>(大小, mtime)</code> 校验，对不上就整份重读</td></tr>
+</table>
+<table>
+  <tr><th>不变式</th><th>违反会怎样</th></tr>
+  <tr><td>事件只有一个写者</td><td>两个写者各数一套 id → 界面拉取时重复或跳过（v2 之前就这样）</td></tr>
+  <tr><td><code>Event.id ≡ 行号</code></td><td>重启后历史错位</td></tr>
+  <tr><td>一个事实只有一个名字（<code>Facts</code> 常量）</td><td>写的人写 <code>envConfirmed</code>、读的人读 <code>envReady</code> → 闸永远看不见</td></tr>
+  <tr><td><code>Layout</code> 是唯一路径权威</td><td>四处各拼一遍字符串，必有一处少一层目录</td></tr>
+  <tr><td>长任务只从 <code>Progress</code> 一个口说话</td><td>两条进度通道 → 界面读不到（用户原话"只听到风扇转"）</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<p class="part">第 2 部分</p>
+<h2 id="p2">系统架构</h2>
+
+<h3>2.1 分层架构图</h3>
+<div class="layer">
+  <div class="side">① 浏览器</div>
+  <div class="body">
+    <div class="box"><b>七个页面</b><span class="sub">欢迎 / 工作台 / ①–⑤</span></div>
+    <div class="box"><b>store.js</b><span class="sub">一段共享状态；闸不在这里判</span></div>
+    <div class="box"><b>SSE 订阅</b><span class="sub">EventSource，三次连不上退回轮询</span></div>
+    <div class="box"><b>chip / Fold / Badge</b><span class="sub">纯函数渲染</span></div>
+  </div>
+</div>
+<div class="arrow">HTTP JSON ⇅ ／ text/event-stream ⇊（只监听 127.0.0.1）</div>
+<div class="layer">
+  <div class="side">② web</div>
+  <div class="body">
+    <div class="box"><b>Api（41 条路由）</b><span class="sub">取参数 → 调下层 → 拼响应</span></div>
+    <div class="box"><b>Session</b><span class="sub">当前项目 + 崩溃恢复扫描</span></div>
+    <div class="box"><b>Runs</b><span class="sub">正在跑的那一条（可叫停）</span></div>
+    <div class="box"><b>TraceFilter / Errors / Spa</b><span class="sub">链路 id / 错误口径 / 前端路由</span></div>
+  </div>
+</div>
+<div class="layer">
+  <div class="side">③ 业务四包</div>
+  <div class="body">
+    <div class="box"><b>flow</b><span class="sub">Facts·Gate·State·Store·Snapshot·Journal·Checkpoint·FlowIndex</span></div>
+    <div class="box"><b>env</b><span class="sub">EnvConfig·Compose·Environment·Compiler·Capabilities·Budgets·CommandGuard</span></div>
+    <div class="box"><b>agent</b><span class="sub">Loop·Tool·ToolRegistry·Protocol·StuckCheck·Compact·Outcome</span></div>
+    <div class="box"><b>test</b><span class="sub">CaseList·CaseBudget·TestAgent·TestSandbox·Preflight·Approvals·Freeze</span></div>
+  </div>
+</div>
+<div class="layer">
+  <div class="side">④ core</div>
+  <div class="body">
+    <div class="box small"><b>Json / Atomic</b><span class="sub">唯一序列化 / 唯一写盘</span></div>
+    <div class="box small"><b>Layout</b><span class="sub">唯一路径权威</span></div>
+    <div class="box small"><b>EventLog / Event</b><span class="sub">单写者 + 行快照</span></div>
+    <div class="box small"><b>Progress / Jobs</b><span class="sub">过程口 / 可叫停</span></div>
+    <div class="box small"><b>Cmd / Llm</b><span class="sub">进程（超时+杀树）/ 模型</span></div>
+    <div class="box small"><b>Logs / Metrics</b><span class="sub">MDC 链路 / 计数器</span></div>
+  </div>
+</div>
+<div class="layer">
+  <div class="side">⑤ 外部</div>
+  <div class="body">
+    <div class="box ext"><b>Docker</b><span class="sub">app 容器（uid 1000 + cap_drop ALL）+ 依赖容器 + external 缓存卷</span></div>
+    <div class="box ext"><b>模型</b><span class="sub">OpenAI 兼容（LangChain4j）</span></div>
+    <div class="box ext"><b>项目目录</b><span class="sub">.specflow/ 全是文本</span></div>
+  </div>
+</div>
+
+<h3>2.2 模块依赖规则</h3>
+<table>
+  <tr><th>包</th><th>可以依赖</th><th>禁止依赖</th><th>为什么</th></tr>
+  <tr><td><code>core</code></td><td>只有 JDK + Jackson</td><td>任何业务包</td><td>地基不许反过来认识上层</td></tr>
+  <tr><td><code>flow</code></td><td><code>core</code>、<code>env</code>（读编译命令/环境声明）</td><td><code>web</code>、<code>test</code></td><td>流程不知道界面；测试是它的下游</td></tr>
+  <tr><td><code>env</code></td><td><code>core</code></td><td><code>flow</code>、<code>agent</code>、<code>web</code></td><td>它只认"一个项目 + 一份声明"</td></tr>
+  <tr><td><code>agent</code></td><td><code>core</code>、<code>env</code>（守卫判据）</td><td><code>flow</code>、<code>web</code></td><td>循环不该知道闸在哪</td></tr>
+  <tr><td><code>test</code></td><td><code>core</code>、<code>env</code>、<code>agent</code></td><td><code>web</code></td><td>它能被单独测</td></tr>
+  <tr><td><code>web</code></td><td>全部</td><td>—</td><td>它只做装配与翻译</td></tr>
+</table>
+
+<h3>2.3 数据流：一次运行读了什么、写了什么</h3>
+<div class="flow h3">
+  <div class="box"><b>读</b><span class="sub">project.yaml（编译命令、模型）· env.yaml（容器）· cases.json（清单）· probe.json（需求）</span></div>
+  <div class="box"><b>写</b><span class="sub">flow.json（状态+产物）· events.jsonl（每条事件）· runs/（BEGIN/END）· checkpoint.json · snapshot/（写前快照）· cases.json（结论）</span></div>
+  <div class="box"><b>不进盘的东西</b><span class="sub">模型对话（压缩后仍在内存）· 待回答的审批（进程内）· 计数器</span></div>
+</div>
+
+<h3>2.4 部署图</h3>
+<pre><code>你的机器
+├── java -jar target/specflow.jar web --port 8780        ← 一个进程就是全部（前端已打进 jar）
+│     ├── Tomcat（只绑 127.0.0.1）   /api/** + 静态资源
+│     ├── 日志  %USERPROFILE%\.specflow\logs\engine.log  （10MB × 5 滚动）
+│     └── 监控  GET /api/actuator/{health,metrics,loggers}   POST …/loggers/com.specflow 运行期调级别
+├── Docker
+│     ├── sf-&lt;项目&gt;-&lt;指纹&gt;-app-1        项目容器（uid 1000、cap_drop ALL、限额）
+│     ├── sf-&lt;项目&gt;-&lt;指纹&gt;-db-1  等      依赖容器（只 no-new-privileges + 限额）
+│     └── sf-&lt;项目&gt;-&lt;指纹&gt;-home         external 卷：~/.m2 之类跨轮复用
+└── 项目目录
+      .specflow/{flow/&lt;id&gt;/{flow.json,events.jsonl,cases.json,runs,checkpoint.json,sandbox}}
+      src/  …                            ← ④ 改这里（有快照可回滚）；⑤ 只碰副本</code></pre>
+
+<h3>2.5 技术栈（以及为什么不选别的）</h3>
+<table>
+  <tr><th>层</th><th>选了什么</th><th>为什么</th><th>考虑过但没选</th></tr>
+  <tr><td>语言</td><td>Java 17</td><td>用户既有栈；records / 文本块让"数据类"写起来很薄</td><td>Kotlin（团队不熟）</td></tr>
+  <tr><td>Web</td><td>Spring Boot 3.5（<b>只</b> starter-web + actuator）</td><td>内嵌 Tomcat 一行起；不引 JPA/Security/Validation，暴露面越小越好</td><td>Quarkus/Micronaut（生态更小）；Javalin（配置要自己写很多）</td></tr>
+  <tr><td>模型</td><td>LangChain4j（OpenAI 兼容）</td><td>只要一个 <code>complete(messages)</code>，协议解析自己写更可控</td><td>Spring AI（抽象更重，且当时版本不稳）</td></tr>
+  <tr><td>序列化</td><td>Jackson（JSON + YAML）</td><td>同一个类能同时读 <code>.json</code> 与 <code>.yaml</code>；<code>NON_NULL</code> 让事件流不吐空字段</td><td>Gson（无 YAML）</td></tr>
+  <tr><td>存储</td><td><b>文件</b>（JSONL + JSON）</td><td>人能打开看；<code>id ≡ 行号</code> 让游标与行号同一个数</td><td>SQLite / H2（会把"能打开看"换成"要用工具查"）</td></tr>
+  <tr><td>容器</td><td><b>docker CLI</b>（不用 docker-java）</td><td>离线仓库里没有 docker-java；CLI 的行为和排错话术完全可读</td><td>docker-java（多一个依赖 + 抽象层）</td></tr>
+  <tr><td>前端</td><td>Vue 3 + Vite，<b>无组件库 / 无 Tailwind / 无 Pinia</b></td><td>七个页面不需要框架；手写 CSS 才控得住"整洁、适当装饰"</td><td>Element Plus（观感千篇一律）</td></tr>
+  <tr><td>测试</td><td>JUnit 5 + AssertJ；前端 vitest</td><td>没有 Spring 上下文也能测（<code>Api</code> 是包内构造）</td><td>spring-boot-starter-test（为 5 个 GET 养一个上下文不值）</td></tr>
+  <tr><td>日志</td><td>logback + MDC（<code>req</code> / <code>run</code>）</td><td>一段运行能被 <code>grep run=r-…</code> 整段拉出来</td><td>第三方追踪（单机没必要）</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<p class="part">第 3 部分</p>
+<h2 id="p3">契约与 API</h2>
+
+<h3>3.1 五格状态机</h3>
+<div class="sm row">
+  <div class="st">LOCKED</div><div class="lbl">→</div>
+  <div class="st p">READY</div><div class="lbl">→ 冻结 →</div>
+  <div class="st good">DONE</div>
+</div>
+<pre><code>LOCKED  前置没冻结：连点都点不动（409 + 一句话）
+READY   这一格可以做活了，但还没冻结 —— 每次读都<b>现推</b>，不落盘
+DONE    冻结了：下游随之解锁；回退会把下游一起作废</code></pre>
+<div class="why"><b>为什么 READY/LOCKED 不落盘</b>：落盘就会"过时"。每次现推的代价是读一次 <code>flow.json</code>，
+换来的是状态永远不骗人；只有 <code>DONE</code> 是记下来的（它代表"人确认过"）。</div>
+
+<h3>3.2 用例状态机（③ 的产物 → ⑤ 的结论）</h3>
+<pre><code>生成时：  PENDING
+验完：    PENDING → PASS（必须有证据原文）
+        PENDING → FAIL（说清哪里不对）
+        PENDING → ERROR（说清为什么没测成）
+预算用尽：PENDING → SKIPPED（终态，<b>但不是结论</b>；可「重试这一条」）
+重试：    SKIPPED / FAIL / ERROR → PENDING（只重验这一条）</code></pre>
+<div class="why">提交时的五条机器判据：① 清单非空 ② 没有 PENDING ③ PASS 有证据 ④ 非 PASS 有原因
+⑤ <b>至少一条真结论</b>——全是 ERROR 等于"没验"，把它当通过等于把"没验"说成"没问题"。</div>
+
+<h3>3.3 API 全表（41 条）</h3>
+<h4>外壳与项目</h4>
+<table>
+  <tr><th>方法</th><th>路径</th><th>做什么</th></tr>
+  <tr><td>GET</td><td><code>/api/state</code></td><td>打开了哪个项目、有没有密钥、flowId、最近列表</td></tr>
+  <tr><td>POST</td><td><code>/api/open</code></td><td>打开一个项目（换项目会先收掉上一个的运行）</td></tr>
+  <tr><td>GET</td><td><code>/api/browse?path=</code></td><td>目录浏览（欢迎页选项目）</td></tr>
+  <tr><td>GET / DELETE</td><td><code>/api/recent</code></td><td>最近项目列表 / 忘掉一个</td></tr>
+</table>
+<h4>流程与事件</h4>
+<table>
+  <tr><th>方法</th><th>路径</th><th>做什么</th></tr>
+  <tr><td>GET</td><td><code>/api/flow</code></td><td>五格视图：state / blockedReason / facts / 游标</td></tr>
+  <tr><td>POST</td><td><code>/api/flow/new</code></td><td>新开一条流程</td></tr>
+  <tr><td>POST</td><td><code>/api/flow/goto</code></td><td>回退到某格（<b>下游一起作废</b>，事件流截断前先留副本）</td></tr>
+  <tr><td>POST</td><td><code>/api/flow/freeze</code></td><td>冻结一格（闸不过 → 409 + 那句话）</td></tr>
+  <tr><td>GET</td><td><code>/api/flows?limit=</code></td><td><b>跨流程一览</b>：每条流程的状态与结论数（扫目录，不建索引）</td></tr>
+  <tr><td>GET</td><td><code>/api/node/{key}/events?from=</code></td><td>增量拉事件（轮询备路）</td></tr>
+  <tr><td>GET</td><td><code>/api/node/{key}/stream?from=</code></td><td><b>SSE 主路</b>：<code>events</code> / <code>ping</code> / <code>done</code> 三帧</td></tr>
+  <tr><td>POST</td><td><code>/api/node/cancel</code></td><td>叫停（立标记 + 杀整棵进程树）</td></tr>
+</table>
+<h4>① 环境</h4>
+<table>
+  <tr><th>方法</th><th>路径</th><th>做什么</th></tr>
+  <tr><td>POST</td><td><code>/api/node/env/agent</code></td><td>环境 Agent：读项目 → 交回 env.yaml 草稿与编译命令</td></tr>
+  <tr><td>POST</td><td><code>/api/node/env/save</code></td><td>保存声明（env.yaml 与编译命令<b>各写各的落点</b>）</td></tr>
+  <tr><td>GET</td><td><code>/api/node/env/view</code></td><td>当前 env.yaml 原文 + 编译命令（长任务状态与叫停标记也在这）</td></tr>
+  <tr><td>POST</td><td><code>/api/node/env/up</code></td><td><b>同步</b>：起容器 → 跑 init → <b>在容器里真构建一次</b>（能力校验）</td></tr>
+  <tr><td>POST</td><td><code>/api/node/env/compile</code></td><td>在<b>宿主机</b>编译一次（④ 的快速反馈；命令过守卫）</td></tr>
+  <tr><td>POST</td><td><code>/api/node/env/skip</code></td><td>显式声明"这个项目不需要环境"（闸的另一条出路）</td></tr>
+  <tr><td>GET / POST</td><td><code>/api/node/env/settings</code></td><td>「这一步我愿意等多久」（唯一旋钮，1 分钟～4 小时）</td></tr>
+</table>
+<h4>② 探针 / ③ 用例 / ④ 开发</h4>
+<table>
+  <tr><th>方法</th><th>路径</th><th>做什么</th></tr>
+  <tr><td>POST</td><td><code>/api/node/probe/brief</code></td><td>存需求与设计（写回项目文件）</td></tr>
+  <tr><td>POST / GET</td><td><code>/api/node/probe/agent</code> · <code>/view</code> · <code>/save</code></td><td>跑探针 / 看产物 / 保存人改过的产物</td></tr>
+  <tr><td>POST / GET</td><td><code>/api/node/cases/agent</code> · <code>/api/node/cases</code> · <code>/save</code></td><td>AI 写用例 / 读清单 / 保存（不合规整份不落盘）</td></tr>
+  <tr><td>POST / GET</td><td><code>/api/node/dev/run</code> · <code>/view</code> · <code>/rollback</code></td><td>跑开发 / 看白名单与 prompt / 按快照回滚</td></tr>
+</table>
+<h4>⑤ 测试</h4>
+<table>
+  <tr><th>方法</th><th>路径</th><th>做什么</th></tr>
+  <tr><td>POST</td><td><code>/api/node/test/run</code></td><td>拍副本 → 起容器 → 预检 → 逐条验</td></tr>
+  <tr><td>POST</td><td><code>/api/node/test/case/retry</code></td><td><b>重试这一条</b>：改回 PENDING 并只验它</td></tr>
+  <tr><td>GET / POST</td><td><code>/api/node/test/checkpoint</code> · <code>/resume</code></td><td>看断点 / 从断点接着跑</td></tr>
+  <tr><td>GET / POST</td><td><code>/api/node/test/approvals</code> · <code>/approve</code></td><td>待回答的高危命令 / y-n</td></tr>
+  <tr><td>POST</td><td><code>/api/node/test/submit</code> · <code>/accept</code> · <code>/optimize</code></td><td>提交（附总结）/ 接受闭环 / 再优化一轮</td></tr>
+</table>
+<h4>监控</h4>
+<table>
+  <tr><th>方法</th><th>路径</th><th>做什么</th></tr>
+  <tr><td>GET</td><td><code>/api/actuator/health</code></td><td>活着吗（带详情）；启动脚本就是轮询它</td></tr>
+  <tr><td>GET</td><td><code>/api/actuator/metrics</code></td><td>JVM / HTTP / 业务计数器（<code>specflow.runs</code> 等）</td></tr>
+  <tr><td>GET / POST</td><td><code>/api/actuator/loggers</code></td><td>看级别 / <b>运行期改级别</b>（出 bug 不用重启）</td></tr>
+</table>
+
+<h3>3.4 错误口径（四类，前端只认这四种）</h3>
+<table>
+  <tr><th>状态码</th><th>什么时候</th><th>正文</th></tr>
+  <tr><td>400</td><td>参数错（缺 id、节点名不认识、清单不合规）</td><td><code>{"error":"一句人话"}</code></td></tr>
+  <tr><td>409</td><td><b>闸拒绝</b> / 有活在跑还要换项目</td><td><code>{"error":"不能跑测试。前置「开发」还没做完…"}</code></td></tr>
+  <tr><td>404</td><td>静态资源找不到（浏览器要 favicon 那种）</td><td><code>{"error":"没有这个资源"}</code>，<b>且不记 ERROR 日志</b></td></tr>
+  <tr><td>500</td><td>只有真没料到的情况</td><td><code>{"error":"接口炸了：…"}</code></td></tr>
+</table>
+<div class="why">闸拒绝是 <b>409 而不是 500</b>：它不是一个故障，是"这一步现在还不能做"。
+正文就是界面上那句原话——用户看 409 的理由和看界面提示是<b>同一句</b>，不需要翻译。</div>
+
+<h3>3.5 事件协议</h3>
+<table>
+  <tr><th>字段</th><th>含义</th></tr>
+  <tr><td><code>id</code></td><td>≡ 行号（游标）</td></tr>
+  <tr><td><code>type</code></td><td><code>log</code> / <code>tool</code> / <code>gate</code> / <code>result</code></td></tr>
+  <tr><td><code>node</code> · <code>level</code> · <code>text</code></td><td>属于哪一格 / info·warn·error / 那一行话</td></tr>
+  <tr><td><code>tool</code> · <code>args</code> · <code>result</code> · <code>callId</code> · <code>status</code> · <code>millis</code></td><td>工具调用那两条事件：<code>running</code> 与 <code>ok|error</code> <b>共用 callId</b></td></tr>
+  <tr><td><code>round</code> · <code>payload</code></td><td>第几轮 / 收场载荷</td></tr>
+</table>
+<pre><code><span class="c">// SSE 帧（与 ?from= 的载荷完全同形，所以断线重连只是"带同一个游标再订一次"）</span>
+event: events   data: {"events":[…],"next":121,"running":true,"stage":"⑤ 跑测试"}
+event: ping     data: {"at":"14:20:11"}
+event: done     data: {…}          <span class="c">没有在跑的活了 → 推完主动关（不关的话浏览器会自动重连）</span></code></pre>
+
+<!-- ============================================================ -->
+<p class="part">第 4 部分</p>
+<h2 id="p4">逐包逐类</h2>
+
+<h3>4.1 <code>core</code>：地基（9 个类）</h3>
+<table>
+  <tr><th>类</th><th>一句话</th><th>关键方法</th></tr>
+  <tr><td><code>Layout</code></td><td>每一样东西落在哪，<b>只有这一处定义</b></td><td><code>flowJson</code> <code>events</code> <code>cases</code> <code>runs</code> <code>checkpoint</code> <code>show</code></td></tr>
+  <tr><td><code>Atomic</code></td><td>写盘唯一入口</td><td><code>write</code>（临时文件+ATOMIC_MOVE）、<code>appendLine</code>、<code>read</code>、<code>copy</code></td></tr>
+  <tr><td><code>EventLog</code></td><td>单写者归档日志</td><td><code>append</code> <code>read(from,limit)</code> <code>lines</code> <code>truncateTo</code></td></tr>
+  <tr><td><code>Event</code></td><td>一条事件（13 个字段的 record）</td><td>工厂 <code>log</code> / <code>toolStart</code> / <code>toolEnd</code> / <code>gate</code> / <code>result</code></td></tr>
+  <tr><td><code>Progress</code></td><td>长任务的唯一过程口</td><td><code>step</code> <code>stepDone</code> <code>line</code> <code>warn</code> <code>fail</code> <code>done</code> <code>cancelled</code></td></tr>
+  <tr><td><code>EventProgress</code></td><td>把过程写成事件</td><td><code>markCancelled</code></td></tr>
+  <tr><td><code>Cmd</code></td><td>跑一条命令</td><td><code>run(argv,workdir,stdin,timeout,onLine)</code>、<code>killTree</code></td></tr>
+  <tr><td><code>Jobs</code></td><td>什么在跑、叫停杀谁</td><td><code>register</code> <code>cancelAll</code></td></tr>
+  <tr><td><code>Json</code> / <code>Project</code> / <code>Llm</code> / <code>Logs</code> / <code>Metrics</code></td><td>序列化 / 项目与密钥 / 模型 / 链路与脱敏 / 计数器</td><td>—</td></tr>
+</table>
+
+<h4>代码：<code>EventLog.append</code>（这是全系统最要紧的 7 行）</h4>
+<pre><code>public synchronized Event append(Event event) {
+    Event stamped = event.withId(rows().size() + 1L);   <span class="c">// ① 行数 + 1 = id</span>
+    String row = Json.line(stamped);
+    Atomic.appendLine(file, row);                       <span class="c">// ② 只追加，一次写一行</span>
+    extend(row);                                        <span class="c">// ③ 把内存快照接上（O(1)）</span>
+    return stamped;
+}</code></pre>
+<div class="why"><b>为什么"盖号"要现读行数</b>：进程重启后计数器会从 0 重来，而界面的游标停在"第 1200 条" ——
+两边一错位，要么重复要么漏。现读行数之后，<b>行号就是唯一的号源</b>。</div>
+
+<h4>代码：<code>EventLog.rows()</code>（"不缓存"那条铁律怎么守住的）</h4>
+<pre><code>Snapshot cached = CACHE.get(file);
+long size = Files.size(file), mtime = Files.getLastModifiedTime(file).toMillis();
+if (cached != null &amp;&amp; cached.size() == size &amp;&amp; cached.mtime() == mtime) return cached.rows();
+List&lt;String&gt; fresh = List.copyOf(Files.readAllLines(file));   <span class="c">// 对不上就整份重读</span>
+CACHE.put(file, new Snapshot(size, mtime, fresh));
+return fresh;</code></pre>
+<div class="why">缓存的是"盘上内容的副本 + 校验和"，对不上就整份重读——<b>盘上永远是唯一真相</b>。
+必须加它的原因：界面改 SSE 后每 250 毫秒读一次"从第 N 行到末尾"，不缓存等于每秒读几遍全文件。</div>
+
+<h3>4.2 <code>flow</code>：流程（8 个类）</h3>
+<table>
+  <tr><th>类</th><th>职责</th></tr>
+  <tr><td><code>Node</code></td><td>五站枚举；<code>ordinal()</code> 就是顺序；<code>previous()</code> 给闸用</td></tr>
+  <tr><td><code>State</code></td><td>LOCKED / READY / DONE</td></tr>
+  <tr><td><code>Facts</code></td><td>闸的输入（13 个字段），事实名字只在这里出现一次</td></tr>
+  <tr><td><code>Gate</code> + <code>Gates</code></td><td>一格一个实现 + 一张表；<code>Gates.blocked(n,f,states)</code> 是完整闸（含顺序那条硬规则）</td></tr>
+  <tr><td><code>FlowState</code></td><td>五格状态 + 产物袋（<code>flag</code>/<code>number</code>/<code>note</code>）</td></tr>
+  <tr><td><code>Store</code></td><td><code>flow/current</code> 指针 + <code>flow.json</code> 原子读写</td></tr>
+  <tr><td><code>FlowService</code></td><td>五格动作的唯一住处：<code>requireOpen</code> / <code>requireReachable</code> / <code>freeze</code> / <code>note</code> / <code>gotoNode</code> / <code>view</code></td></tr>
+  <tr><td><code>Snapshot</code> / <code>Journal</code> / <code>Checkpoint</code> / <code>FlowIndex</code></td><td>写前快照与回滚 / 运行账（BEGIN-END）/ 断点 / 跨流程一览</td></tr>
+</table>
+
+<h4>代码：<code>Gates</code> 的两个重载（这是最容易被改错的地方）</h4>
+<pre><code><span class="c">// 完整闸：先判顺序，再判这一格自己的门槛</span>
+public static String blocked(Node node, Facts facts, Map&lt;Node, State&gt; states) {
+    Node previous = node.previous();
+    if (previous != null &amp;&amp; states != null &amp;&amp; states.getOrDefault(previous, LOCKED) != DONE) {
+        return "上一步「" + previous.title() + "」" + word(was) + "：先把…做完并冻结…";
+    }
+    return blocked(node, facts);       <span class="c">// 只判这一格的门槛（给"自己满足自己门槛"的场合）</span>
+}</code></pre>
+<div class="why"><b><code>requireReachable</code> 为什么非有不可</b>：① 的门槛是"编译命令非空 + 环境起过"，
+而「探测环境」正是产出编译命令的那一步 —— 按完整闸判，用户第一次进来连点都点不了（<b>自锁</b>）。
+这是端到端实跑撞出来的 <code>409 环境还没起来</code>，不是想出来的。</div>
+
+<h4>伪代码：一次读状态的完整路径</h4>
+<pre><code>FlowService.state():
+    state = Store.current()                 <span class="c">// 读 flow/current 指针 → 读 flow/&lt;id&gt;/flow.json</span>
+    changed = refresh(state)                <span class="c">// DONE 不动；其余按"前置是不是 DONE"重推 READY/LOCKED</span>
+    if changed: Store.save(state)           <span class="c">// 变了才写盘（读一次写一次是白花）</span>
+    return state
+
+FlowService.facts(state):
+    compile          = Project.compile()                       <span class="c">// 现读 project.yaml</span>
+    envReady         = state.flag(ENV, envReady)
+    containerBuild   = state.flag(ENV, containerBuild)          <span class="c">// v3 新增：容器里真构建过</span>
+    … 其余 10 项
+    return Facts(...)</code></pre>
+
+<h3>4.3 <code>env</code>：环境（7 个类）</h3>
+<table>
+  <tr><th>类</th><th>职责</th><th>关键约束</th></tr>
+  <tr><td><code>EnvConfigLoader</code></td><td>读 <code>env.yaml</code>：结构校验带行号、一次报全</td><td>只判结构；"这条命令危不危险"不在这层</td></tr>
+  <tr><td><code>EnvConfig</code></td><td>声明模型：image/workdir/dependencies/env/init/reset</td><td><code>Step(command,service,stdin)</code> 三栏</td></tr>
+  <tr><td><code>Compose</code></td><td>按声明渲染 compose</td><td>app：uid 1000 + cap_drop ALL + 限额 + 只挂项目树 + external 缓存卷</td></tr>
+  <tr><td><code>Environment</code></td><td>up / reset / down / status / <b>inApp</b></td><td>init 走 <code>sh -s</code> 的 stdin；失败即 <code>down -v</code> 不留半成品</td></tr>
+  <tr><td><code>Compiler</code></td><td>在<b>宿主机</b>跑项目配的编译命令</td><td>命令过 <code>CommandGuard.forbidden</code></td></tr>
+  <tr><td><code>Capabilities</code></td><td>起完环境<b>在容器里</b>验能力</td><td>先 <code>command -v</code>（便宜）再真构建（贵）</td></tr>
+  <tr><td><code>Budgets</code> / <code>CommandGuard</code></td><td>超时唯一换算处 / 三档守卫</td><td>1 分钟～4 小时夹紧 / 拒·问·装工具链拒</td></tr>
+</table>
+
+<h4>代码：<code>Environment.inApp</code>（唯一一条"进容器"的路）</h4>
+<pre><code>public Cmd.Result inApp(String command, long timeoutSeconds, Progress progress) {
+    Path file = activeCompose();
+    if (file == null) return new Cmd.Result(125, "环境还没起过…", false, 0);
+    return run.step("在容器里跑：" + commandSummary(command),
+            run.argv("exec", "-T", Compose.APP_SERVICE, "sh", "-s"), command, timeoutSeconds);
+}</code></pre>
+<div class="why">命令原文走 <b>stdin</b> 而不是 argv：Windows 上 <code>docker.exe</code> 会把参数里的引号吃掉一层，
+用户的 SQL/脚本在容器里散架，而报错方向完全指错。宿主上被启动的程序只有 <code>docker.exe</code> 一个。</div>
+
+<h4>伪代码：能力校验（把"能用"变成可执行）</h4>
+<pre><code>verify(env, project, timeout):
+    tool = toolOf(project.compile())        <span class="c">// 从命令里认出 mvn / gradle / npm …</span>
+    if not env.inApp("command -v " + tool).ok():
+        return Report(ok=false, "容器里没有 <b>tool</b> … 改 image 或 init")
+    built = env.inApp(project.compile(), timeout)
+    return Report(ok=built.ok(), detail=…, raw=tail(built.output))</code></pre>
+
+<h3>4.4 <code>agent</code>：ReAct 与工具（11 个类）</h3>
+<table>
+  <tr><th>类</th><th>职责</th></tr>
+  <tr><td><code>Loop</code></td><td>ReAct 本体：问模型 → 解析 → 工具 → 回喂；四道闸（轮次/工具数/输出长度/超时）</td></tr>
+  <tr><td><code>Protocol</code></td><td>工具调用与交差的协议（两道围栏：<code>specflow-tool</code> / <code>json</code>）；认不出来时的补问话术</td></tr>
+  <tr><td><code>Tool</code> / <code>ToolRegistry</code> / <code>ToolResult</code></td><td>工具接口 / 注册与参数校验（异常翻成 <code>ok=false</code>）/ 结果两态</td></tr>
+  <tr><td><code>Compact</code></td><td>上下文压缩：确定性锚点 + 任务书 + 尾巴（<b>不调模型</b>）</td></tr>
+  <tr><td><code>StuckCheck</code></td><td>打转检测：<b>第 4 次提醒、第 6 次判死</b></td></tr>
+  <tr><td><code>LoopLimits</code> / <code>Outcome</code> / <code>Watcher</code> / <code>EventWatcher</code> / <code>Shell</code> / <code>Whitelist</code> / <code>Signal</code></td><td>上限 / 收场档 / 观察者 → 事件 / 命令出口 / 白名单 / 交差信号</td></tr>
+</table>
+
+<h4>代码：<code>Loop.run</code> 的主循环（压缩挂在这里）</h4>
+<pre><code>while (round &lt; limits.maxRounds()) {
+    round++;
+    if (progress.cancelled()) return outcome(CANCELLED, …);
+    lastCompact = Compact.maybe(messages, anchors.get(), limits.compactChars(), limits.compactKeepTail());
+    Turn turn = turn(messages);                     <span class="c">// 问模型 + 认它（认不出就同轮补问两次）</span>
+    if (turn.parsed().kind() == ANSWER) return outcome(DONE, …);
+    if (++toolCalls &gt; limits.maxInstalls()) return outcome(TOOL_LIMIT, …);
+    Signal signal = runTool(round, turn.parsed(), messages, calls);
+    if (signal != null) return outcome(DONE, "模型交差", …);
+}</code></pre>
+<div class="why">四条上限各有自己的收场档；工具坏了不崩循环（注册表把异常翻成 <code>ok=false</code> 喂回模型）。
+一轮里"开始时推一条、结束时推一条"是<b>本线程顺序发生</b>的——界面的 chip 就是靠这个成对。</div>
+
+<h4>代码：<code>Compact</code> 压出来的形状</h4>
+<pre><code>[system]                     <span class="c">原样保留（协议、规矩）</span>
+[user]   【压缩前的锚点】       <span class="c">引擎按事实拼的：动过的路径 / 最近失败 / 做到哪一条</span>
+[user]   原始任务书            <span class="c">需求不能丢</span>
+[user]   【压缩说明】          <span class="c">"不要重复已经做过的事"</span>
+……（中间几万字符的工具输出全丢）……
+[assistant/user] 最后 N 条     <span class="c">模型要看到"刚才在干什么"</span></code></pre>
+<div class="why">不让模型写摘要：多一次延迟、多一次花钱、多一个故障点；而它要保住的只有那三件事，
+引擎自己就知道。<span class="cite">参考 Claude Code 的三类锚点 + LangGraph 的「账本 ≠ 模型视图」</span></div>
+
+<h3>4.5 <code>test</code>：容器里逐条验（13 个类）</h3>
+<table>
+  <tr><th>类</th><th>职责</th></tr>
+  <tr><td><code>CaseList</code></td><td>清单与结论：状态机 + 五条提交判据（<code>settle</code> / <code>skip</code> / <code>reopen</code>）</td></tr>
+  <tr><td><code>CaseBudget</code></td><td>每条用例 12 轮 + 准备宽限 8：超了标 <code>SKIPPED</code> 并推进下一条</td></tr>
+  <tr><td><code>TestAgent</code></td><td>两阶段（准备 / 验收）：装配工具链、锚点、位置提示、断点回调</td></tr>
+  <tr><td><code>TestSandbox</code></td><td>把项目复制到 <code>flow/&lt;id&gt;/sandbox/&lt;runId&gt;</code>，渲染挂副本的 compose 并起容器</td></tr>
+  <tr><td><code>Preflight</code></td><td>开工前 <code>command -v</code>：缺工具 → 立刻失败并指名 ①</td></tr>
+  <tr><td><code>Approvals</code> / <code>Approval</code></td><td>高危命令停等：三态 <code>ALLOW/DENY/TIMEOUT</code>，等 2 分钟</td></tr>
+  <tr><td><code>Sandbox</code> / <code>BashTool</code> / <code>Freeze</code> / <code>Frozen</code> / <code>PhaseTool</code> / <code>CaseUpdateTool</code></td><td>容器出口 / ⑤ 的 bash / 验收阶段冻结 src / 切阶段 / 写结论</td></tr>
+</table>
+
+<h4>代码：<code>CaseBudget</code> 的分级（"笨规则 + 一条边界"）</h4>
+<pre><code>当前用例 = 清单里第一条还没到终态的用例
+if (calls &lt;= PREP_GRACE) return null;                  <span class="c">// 准备阶段 8 次宽限，不算账</span>
+if (spentOn(当前) &lt; perCase) return null;
+cases.skip(当前, "超出每用例预算（12 轮）…");            <span class="c">// 标 SKIPPED + 原因，推进下一条</span></code></pre>
+<div class="why">为什么"笨规则"要配宽限：Agent 开始验之前要先 <code>read_list</code> 七八次、读几个关键文件，
+那些调用如果记在第一条头上，<b>第一条会一秒没验就被跳过</b>——端到端实测撞到两次才看清。
+<span class="cite">参考 Airflow：跳过是终态，但<b>不是结论</b></span></div>
+
+<h3>4.6 <code>web</code>：路由与装配（7 个类）</h3>
+<table>
+  <tr><th>类</th><th>职责</th></tr>
+  <tr><td><code>Api</code></td><td>41 条路由：取参数 → 调下层 → 拼响应（<b>判据一条都不在这里</b>）</td></tr>
+  <tr><td><code>Session</code></td><td>当前项目 + <code>open()</code> 时跑一遍崩溃恢复扫描 + 最近列表</td></tr>
+  <tr><td><code>Runs</code></td><td>一条运行的登记/叫停/阶段（事件流与 BEGIN-END 账）</td></tr>
+  <tr><td><code>TraceFilter</code></td><td>每请求一个 <code>req</code> id，进出各一行（静态资源不打）</td></tr>
+  <tr><td><code>Errors</code></td><td>四类错误的唯一翻译处</td></tr>
+  <tr><td><code>Spa</code> / <code>App</code> / <code>Main</code> / <code>ApiException</code></td><td>前端路由回落 / Spring 装配（只绑回环）/ 命令行三子命令 / 业务异常</td></tr>
+</table>
+
+<h4>代码：SSE 端点（40 行里最要紧的部分）</h4>
+<pre><code>public SseEmitter nodeStream(@PathVariable String key, @RequestParam(defaultValue="0") long from) {
+    SseEmitter emitter = new SseEmitter(STREAM_IDLE_MILLIS);
+    Thread worker = new Thread(() -> streamTo(from, emitter), "sse-" + key);
+    worker.setDaemon(true);
+    emitter.onCompletion(worker::interrupt);      <span class="c">// 客户端断开 → 线程也得停</span>
+    worker.start();
+    return emitter;
+}</code></pre>
+<div class="why">载荷与 <code>?from=</code> <b>完全同形</b>，所以断线重连 = 带同一个游标再订一次（客户端零补偿逻辑）；
+没有在跑的活就推一帧 <code>done</code> 并主动关 —— 不关的话 EventSource 会自动重连，界面永远"显示成在跑"。
+<span class="cite">参考 Dify 用 SSE 推进度、Vercel AI SDK 的 data stream 分帧</span></div>
+
+<h3>4.7 前端（Vue 3 + Vite）</h3>
+<table>
+  <tr><th>文件</th><th>作用</th></tr>
+  <tr><td><code>store.js</code></td><td>共享状态与动作；<b>闸不在这里判</b>（读后端给的 <code>blockedReason</code> / 409 原话）；SSE 主路 + 轮询备路共用一个 <code>ingest()</code></td></tr>
+  <tr><td><code>api.js</code></td><td>41 个函数，一一对应 API.md</td></tr>
+  <tr><td><code>lib/{events,facts,flow,pages,text}.js</code></td><td>纯函数：事件→chip、facts→徽章、文案预算（正文 ≤6 汉字）</td></tr>
+  <tr><td><code>components/</code></td><td>NodeShell（页头+状态条+调用+留档）/ Fold / Chip(s) / Badge / MoreMenu / Fail / Empty</td></tr>
+  <tr><td><code>views/</code></td><td>Welcome / Workbench / ①–⑤</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<p class="part">第 5 部分</p>
+<h2 id="p5">关键机制（10 条）</h2>
+
+<h3>5.1 两条编译：宿主机 vs 容器</h3>
+<table>
+  <tr><th></th><th>宿主机 <code>Compiler</code></th><th>容器 <code>Capabilities</code></th></tr>
+  <tr><td>问的问题</td><td>这台机器能不能构建</td><td>下游真要用的时候能不能用</td></tr>
+  <tr><td>谁需要</td><td>④ 每次交差的快速反馈</td><td><b>① 的闸</b></td></tr>
+  <tr><td>产出事实</td><td><code>compilePassed</code></td><td><code>containerBuild</code></td></tr>
+</table>
+<div class="why"><b>事故</b>：用户项目的 <code>env.yaml</code> 用 <code>eclipse-temurin:17-jdk</code>（只有 JDK，没有 Maven）。
+① 在宿主机编译（宿主装了 Maven）→ 绿灯；⑤ 进容器 <code>mvn</code> 找不到，自己下载安装，
+烧掉 60 轮里的 28 轮、34 分钟，<b>12 条用例 0 条结论</b>。</div>
+
+<h3>5.2 三层预算</h3>
+<table>
+  <tr><th>层</th><th>上限</th><th>超了怎么办</th></tr>
+  <tr><td>整轮</td><td><code>max(60, 用例数×12+20)</code> 轮</td><td>失败收场，但<b>如实报</b>已写下几条结论</td></tr>
+  <tr><td>每条用例</td><td>12 轮（+ 准备宽限 8）</td><td>标 <code>SKIPPED</code>；可「重试这一条」</td></tr>
+  <tr><td>单条命令</td><td><code>min(Budgets, 600s)</code></td><td>终止，并说清"容器里那半截可能还在跑"</td></tr>
+</table>
+<div class="why">为什么单条命令要另设上限：<code>Budgets</code> 是给<b>我们自己的</b>长任务用的（拉镜像、构建），
+而 ⑤ 里跑的是<b>模型写的</b>命令 —— 实测它写了个死循环程序，在容器里 150% CPU 转了 15 分钟。</div>
+
+<h3>5.3 守卫三档</h3>
+<table>
+  <tr><th>档</th><th>判据</th><th>处置</th></tr>
+  <tr><td>一律拒</td><td><code>--privileged</code>、<code>docker.sock</code>、<code>-v /:/host</code>、<code>--net host</code>、写块设备</td><td>直接失败，不问</td></tr>
+  <tr><td>停下来问</td><td><code>dd</code>、<code>curl … | sh</code>、<code>chmod 777</code>、成片删</td><td>y/n 面板，最多等 2 分钟；超时按拒<b>但话术不同</b></td></tr>
+  <tr><td>v3 新增</td><td><code>sudo</code>（容器里不可能成功）／装工具链</td><td>直接拒 + 指名去改 <code>env.yaml</code></td></tr>
+</table>
+<div class="why"><b>事故</b>：原来 <code>sudo</code> 在"问一句"里 → 用户等了 <b>187 秒</b>回答"允许"，
+结果 <code>sh: 1: sudo: not found</code>。而 <code>$HOME</code> 在"一律拒"里 → <code>echo $HOME</code> 被硬拒两次。</div>
+
+<h3>5.4 依赖缓存卷：数据每轮重置、依赖跨轮复用</h3>
+<pre><code>- type: volume
+  source: "sf-&lt;项目&gt;-&lt;指纹&gt;-home"      <span class="c"># 挂到 /specflow-home，HOME 也指向它</span>
+  target: "/specflow-home"
+volumes:
+  "sf-…": { external: true }          <span class="c"># ← 关键：不属于这次 up/down 的生命周期</span></code></pre>
+<div class="why"><code>external: true</code> 让 <code>down -v</code> 不删它（<code>~/.m2</code> 跨轮复用），
+而项目树每轮仍是新副本。<b>不这么做的代价是实测过的</b>：每轮重下依赖，7 轮 <code>sleep 240</code>、17 分钟白等。</div>
+
+<h3>5.5 上下文压缩</h3>
+<p>见 §4.4 的 <code>Compact</code>。触发：合计字符 &gt; 6 万；形状：system + 锚点 + 任务书 + 说明 + 尾巴 8 条。</p>
+
+<h3>5.6 打转检测（分级）</h3>
+<pre><code>same = 连续相同调用的次数
+if (same &gt;= 6) → 判死："…该收场了：把这条用例标 ERROR…"
+if (same &gt;= 4) → 提醒："…这是原地打转。换一种做法…（再 2 次就收场）"</code></pre>
+<div class="why"><b>为什么是两级</b>：<span class="cite">OpenHands 是 3 次提醒、4 次判死</span>；
+那份研究里有句话很扎：<b>我们原来是在最有救的那一刻把用例判死</b>。</div>
+
+<h3>5.7 运行级断点</h3>
+<pre><code>Checkpoint(node, runId, at, next, doneCases, roundsUsed, status)
+写：每写回一条用例结论落一次 + 开工时 RUNNING + 预检失败 BLOCKED + 整轮失败留断点 + 全绿清掉
+恢复：POST /api/node/test/resume —— 不做魔法（已到终态的本来就不会重验），只是把话说清</code></pre>
+<div class="why"><b>不存对话历史</b>：两万字符一条的工具结果存下来就是第二份真相，恢复时还要处理
+"模型看到的历史和我认为的历史不一致"。断点只说三件事：哪几条硬了、下一步干什么、花了几轮。
+<span class="cite">参考 LangGraph 的 <code>durability="exit"</code>：一步做完才落一次</span></div>
+
+<h3>5.8 位置提示</h3>
+<pre><code>messages.add(user(结果正文 + "\n（当前位置：" + containerRoot + "）"))</code></pre>
+<div class="why">实测模型在容器路径（<code>/work</code>）与相对路径之间猜，白烧 5 轮。解释一次不如每条报一次。
+<span class="cite">参考 SWE-agent：每条 observation 都钉 <code>(Current directory: …)</code></span></div>
+
+<h3>5.9 崩溃恢复</h3>
+<pre><code>Journal.sweep():  有 BEGIN 没有 END 的运行 = 被杀过 → 补记 END 成 INTERRUPTED，并如实报出来
+接线点：Session.open() 每次打开项目都跑一遍（v3 之前这个方法<b>没有调用点</b>——文档说了、代码没做到）</code></pre>
+
+<h3>5.10 收场如实</h3>
+<ul>
+  <li>⑤ 撞整轮上限也<b>如实报已写下几条结论</b>（原来是恒报 0）。</li>
+  <li>有 <code>SKIPPED</code> 时不说"验完了"，而说"有 N 条被跳过（预算用尽）"。</li>
+  <li>超时与失败分开说：命令超时不是"命令失败"，是"它没跑完"。</li>
+</ul>
+
+<!-- ============================================================ -->
+<p class="part">第 6 部分</p>
+<h2 id="p6">参考与借鉴 ★</h2>
+<p class="small">先读源码、再决定抄不抄。研究原文在 <code>docs/v3/research/</code>（394 KB，8 个项目，逐条带 <code>文件:行</code>）；
+被否掉的方案与理由在 <code>docs/v3/DECISIONS.md</code>。</p>
+
+<h3>6.1 八个项目，各抄了什么、没抄什么</h3>
+<table>
+  <tr><th>项目</th><th>看到什么（证据）</th><th>抄了什么 → 落点</th><th>明确不抄</th></tr>
+  <tr>
+    <td><b>LangGraph</b></td>
+    <td><code>interrupt()</code> 抛 <code>GraphInterrupt</code> 结束 run、退出时落 checkpoint、
+    恢复时按"节点内第 N 个调用"取值（<code>types.py:1019-1038</code>、<code>_loop.py:1500-1511</code>）；
+    <code>pre_model_hook</code> 让"账本 ≠ 模型视图"</td>
+    <td>checkpoint 只取 <code>durability="exit"</code> 一档 + 存"状态+下一步" → <code>flow/Checkpoint</code>；<br />
+    "账本 ≠ 模型视图" → <code>agent/Compact</code></td>
+    <td>它的恢复要靠<b>整段重放</b>（<code>types.py:918</code> "re-executing all logic"）—— ⑤ 有 docker 副作用，不能重放；
+    每 superstep 全量快照 + 版本调度也不要</td>
+  </tr>
+  <tr>
+    <td><b>Temporal</b></td>
+    <td><code>RetryOptions</code> 逐字段（<code>doNotRetry</code>/退避）；四种超时；心跳 = 由外部时钟裁定"还活着吗"</td>
+    <td>"重试前先分类" → 审批三态 + 永久失败不重试；<br />"心跳 vs 内容猜测"的差别 → 明确 <code>StuckCheck</code> 覆盖不到"命令执行期间"</td>
+    <td>确定性 replay 全套（<code>NonDeterministicException</code>/<code>sideEffect</code>）—— 我们存的是已落盘的副作用结果，不需要确定性</td>
+  </tr>
+  <tr>
+    <td><b>Argo</b></td>
+    <td><code>RetryStrategy</code> 把失败切成 Failed / Error 两轴（<code>operator.go:1218-1237</code>）；
+    <code>backoff.maxDuration</code> 是"从第一次尝试起算的截止"（<code>retry.go:15-16</code>）；
+    全仓 <code>onExit</code> 零命中</td>
+    <td>"失败分类" → <code>Preflight</code>/<code>CommandGuard</code> 的"立刻失败"；<br />
+    "最该补的不是重试，是收尾" → 接上 <code>Journal.sweep()</code> 与 <code>FlowService.close()</code></td>
+    <td>把流程做成 YAML（它指出我们真正的问题是"节点定义有 6 个落点"，YAML 会是第 7 个）；<code>affinity</code> 等单机无意义字段</td>
+  </tr>
+  <tr>
+    <td><b>Dify</b></td>
+    <td>失败→事件而非抛异常（<code>node_failure.py:48-97</code> 全链路无 raise）；
+    SSE 内部多种状态对外只发一个 <code>node_finished</code>；<code>workflow_finished</code> 带 <code>exceptions_count</code>（<code>task_entities.py:233-254</code>）</td>
+    <td>"收敛式事件 + 状态字段" → 我们的事件 <code>type=tool</code> + <code>status</code>；<br />
+    "部分成功要单列" → 收场如实报跳过条数（<code>partial</code>）</td>
+    <td>整套图调度（<code>Engine</code>+<code>WorkerPool</code>+<code>Dispatcher</code> 50 KB+）—— 我们是强顺序带闸、并行需求为零</td>
+  </tr>
+  <tr>
+    <td><b>OpenHands</b></td>
+    <td>StuckDetector 5 条判据；处置是<b>3 次提醒、4 次判死</b>（<code>controller/stuck.py</code>）；
+    Runtime 抽象上游自己从 13 方法砍到 5</td>
+    <td>"分级处置" → <code>StuckCheck</code> 的 4/6 两级</td>
+    <td>Runtime 抽象（只有一个后端，纯负债）；独白/压缩循环等我们压根没有的判据</td>
+  </tr>
+  <tr>
+    <td><b>SWE-agent / Aider</b></td>
+    <td><code>LastNObservations</code>：只留最后 n 条 observation，首条永不删；
+    每条 observation 钉 <code>(Current directory: …)</code>（<code>07.yaml:68-72</code>）</td>
+    <td>"每条结果报一次位置" → <code>Loop.grounding()</code>；<br />"锚点保留法" → <code>Compact</code> 的三类锚点</td>
+    <td>行号编辑器那套 <code>open/goto/scroll</code>（上游自己已退到 <code>config/exotic/</code>）；YAML 定义工具（我们工具少，手写更直白）</td>
+  </tr>
+  <tr>
+    <td><b>Claude Code 生态</b></td>
+    <td>compact 的 token 算术（93% 触发 / 硬阻断）；三类锚点；27 事件 hooks（单函数 590 行）；
+    连续 3 次被拒 → 熔断升级</td>
+    <td>三类锚点 → <code>Compact</code> 的锚点内容</td>
+    <td>27 事件 hooks（是给"用户注入脚本"的生态，不是正确性所需）；六条 compact 管道</td>
+  </tr>
+  <tr>
+    <td><b>toonflow</b>（用户点名）</td>
+    <td>约 1.8 万 star，TypeScript。<b>它不是工作流引擎</b>：没有 executor/DAG，流程是 1406 行 Markdown 提示词；
+    但节点动作<b>只有一份定义</b>，后端只解析元数据、能力由组件运行期注册</td>
+    <td>"同一份定义只存在一处"这个原则 → 记入待办（把前端几张表压成后端下发的一份）</td>
+    <td>提示词当流程引擎（它自己文件里 60+ 行反复加固"禁止/必须"，就是证据）；依赖单进程内存的回传通道</td>
+  </tr>
+</table>
+
+<h3>6.2 因为读了源码而改掉的设计（三处）</h3>
+<ol>
+  <li><b>不做"可恢复中断"的重放实现</b>：LangGraph 靠重放，代价是节点从第一行重跑；⑤ 里有容器副作用。
+      改成"用例粒度续跑"（已到终态的不重验）。</li>
+  <li><b>不做流程 YAML</b>：Argo 的结论是"问题问反了"—— 我们的节点定义已经散在 6 个落点，
+      加一份 YAML 是第 7 个。正解是把前端那几张表压成后端下发的一份（待办）。</li>
+  <li><b>卡死检测从"3 次判死"改成两级</b>：OpenHands 的做法证明"先提醒"更合理。</li>
+</ol>
+
+<!-- ============================================================ -->
+<p class="part">第 7 部分</p>
+<h2 id="p7">质量：测试与已知缺口</h2>
+
+<h3>7.1 测试矩阵</h3>
+<table>
+  <tr><th>层面</th><th>数量</th><th>钉的是什么</th></tr>
+  <tr><td><code>flow/</code></td><td>18</td><td>闸（14）· 断点（4）</td></tr>
+  <tr><td><code>test/</code></td><td>36</td><td>用例清单（18）· 每用例预算（6）· 沙箱（7）· 审批（7）</td></tr>
+  <tr><td><code>agent/</code></td><td>41</td><td>循环（13）· 协议（8）· 注册表（9）· 工具（27）· 压缩（4）· 打转（3）</td></tr>
+  <tr><td><code>env/</code></td><td>41</td><td>声明加载（8）· compose（6）· 起环境（9）· 守卫（6）· 预算（4）· CLI（9）</td></tr>
+  <tr><td><code>core/</code></td><td>10</td><td>事件流（6）· JSON/YAML 入口（5）</td></tr>
+  <tr><td><code>web/</code></td><td>6</td><td>路由形状与增量语义（v3 补上，此前为零）</td></tr>
+  <tr><td>前端</td><td>105</td><td>纯函数（事件→chip / facts→徽章 / 文案预算）+ 页面接线（10）</td></tr>
+  <tr><td><b>合计</b></td><td><b>183 + 105</b></td><td><code>mvn -o test -Dfrontend.skip=true</code> · <code>npx vitest run</code></td></tr>
+</table>
+
+<h3>7.2 端到端（真模型 + 真 Docker）</h3>
+<pre><code>node run2.mjs --jar target/specflow.jar --port 3987      → 通过（91s）
+  ① 环境 Agent 9.3s → 起容器 4.9s → 编译 PASSED → 冻结
+  ② 探针 8.2s → 冻结        ③ 11 条用例 → 冻结
+  ④ 开发 6.1s → <b>脚本自己 javac+java 核出 reserve(5)=false、onHand(A)=3</b> → 冻结
+  ⑤ 测试 55.1s：11 条全到终态（PASS 10）· <b>替你点了 1 条审批</b>
+  ⑤ 提交 + 接受 → 闭环</code></pre>
+<div class="why">④ 那一行<b>不采信 Agent 自述</b>：脚本自己编译目标项目、自己跑、要求打出指定结果——
+这是整个验证里唯一不依赖模型的地方。</div>
+
+<h3>7.3 已知缺口（不许当成做了）</h3>
+<table>
+  <tr><th>#</th><th>缺口</th><th>性质</th></tr>
+  <tr><td>1</td><td>流程 DSL / 节点定义仍散在 6 个落点</td><td><b>该做</b>：把前端几张表压成 <code>GET /api/flow</code> 下发的一份</td></tr>
+  <tr><td>2</td><td>工具中间件链</td><td><b>不必做</b>：三个装饰器已等价覆盖；只差"返回值升级成四值枚举拿 <code>updatedInput</code>"</td></tr>
+  <tr><td>3</td><td>跨重启的对话续跑</td><td><b>刻意不做</b>：需要把两万字符的工具结果落盘（第二份真相）；改用例粒度续跑</td></tr>
+  <tr><td>4</td><td>审批"人不在等满 2 分钟"</td><td><b>已补单测</b>（1 秒时限验 TIMEOUT），没有真等 2 分钟</td></tr>
+  <tr><td>5</td><td>界面逐页视觉走查</td><td><b>做不到</b>：我看不到图；只有浏览器结构断言（七页零控制台错误）</td></tr>
+  <tr><td>6</td><td>跨流程"通过率趋势"</td><td><b>已有一览</b>（<code>/api/flows</code>），没有时间序列</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<p class="part">第 8 部分</p>
+<h2 id="p8">怎么跑、怎么修</h2>
+
+<h3>8.1 三个入口</h3>
+<table>
+  <tr><th>双击</th><th>它干什么</th></tr>
+  <tr><td><code>start.bat</code></td><td>找 Java 17+ / 缺 jar 就编 / 看 Docker / 挑空端口 / 找密钥 / 起引擎 / 等健康 / 开浏览器</td></tr>
+  <tr><td><code>stop.bat</code></td><td>停引擎 + 按项目名收容器与卷；<code>-Purge</code> 连流程数据一起删</td></tr>
+  <tr><td><code>dev.bat</code></td><td>改前端时才用（引擎 + Vite 热更新）</td></tr>
+</table>
+<p>不开界面的命令：<code>java -jar target/specflow.jar env prepare|init|reset|status|down [-p 项目]</code>。</p>
+
+<h3>8.2 出问题先看哪儿</h3>
+<table>
+  <tr><th>症状</th><th>先看这里</th></tr>
+  <tr><td>界面点不动某一格</td><td>那一格的 <code>blockedReason</code>（就是 409 正文）→ 再看 <code>docs/API.md</code> 对应接口</td></tr>
+  <tr><td>某一段跑得奇怪</td><td><code>events.jsonl</code>（<code>id</code> 就是行号）→ 按 <code>run=r-…</code> 过滤 <code>engine.log</code></td></tr>
+  <tr><td>想看模型到底收到什么</td><td><code>POST /api/actuator/loggers/com.specflow {"configuredLevel":"debug"}</code> 再跑一遍</td></tr>
+  <tr><td>容器起不来 / 构建不过</td><td><code>env/&lt;时间戳&gt;/compose.log</code>（原始输出全文）+ <code>env.yaml</code> 的 image/init</td></tr>
+  <tr><td>测试卡住</td><td><code>GET /api/node/test/checkpoint</code> 看断点；<code>approvals</code> 看是不是在等人</td></tr>
+  <tr><td>崩溃/被杀过</td><td><code>runs/&lt;runId&gt;.jsonl</code> 里 BEGIN 没有 END；打开项目时事件流会有"被中断"的 warn</td></tr>
+</table>
+
+<h3>8.3 两条排查用的小命令</h3>
+<pre><code>Get-Content $env:USERPROFILE\.specflow\logs\engine.log -Tail 40          <span class="c"># 最近发生了什么</span>
+docker ps --filter name=sf- --format '{{.Names}}\t{{.Status}}'          <span class="c"># 我这套起了哪些容器</span></code></pre>
+
+<hr />
+<p class="small">判据永远在三处：<code>docs/ARCHITECTURE.md</code>（契约）、<code>docs/API.md</code>（接口）、
+<code>docs/DELIVERY.md</code>（验过什么 / 没做什么）。这一本解释的是<b>为什么长这样</b>。</p>
+
+</main>
+</body>
+</html>

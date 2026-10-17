@@ -19,7 +19,7 @@ M4 闸拆表）→ 再把用户实测出来的 8 条缺陷修掉（C1）→ 全�
 - [x] M1–M4 + 事件流行快照 + 压缩 + 断点 + 三态审批 + 位置提示 + 跨流程一览（后端测试 149 → **175 条**）
 - [x] C3 SSE（后端 + 前端 + 真浏览器验证）
 - [x] D 端到端（真模型 + 真 Docker）：**连着三次通过**（98s / 91s / 227s；PASS 8–10 条，模型每次即兴写法不同）；`reports-v2\v3-e2e-*.log`
-- [x] E 交付：`docs/BOOK.html`（类书）、`docs/DELIVERY.md`、三个 bat
+- [x] E 交付：`docs/SYSTEM.html`（类书）、`docs/DELIVERY.md`、三个 bat
 
 ## 端到端里又抓到的两条（都修了，值得记住）
 
@@ -33,13 +33,13 @@ M4 闸拆表）→ 再把用户实测出来的 8 条缺陷修掉（C1）→ 全�
 1. 五节点语义与顺序不变 ✓（`GatesTest` 一个字节都没改就是机器证明）
 2. 前端只加 SSE / 新按钮 ✓（`store.js` 一处 + 两个视图各一行）
 3. 一个 bat 入口 ✓（`start.bat` / `stop.bat` / `dev.bat`，本轮复验过）
-4. 交付 HTML 讲解文档 ✓（`docs/BOOK.html`）
+4. 交付 HTML 讲解文档 ✓（`docs/SYSTEM.html`）
 5. 没碰 8770 ✓、密钥没进版本库 ✓
 
 ## 文件地图
 
 - 架构与账：`docs/v3/{ARCH-V3,DECISIONS,PLAN,STATE}.md`、`docs/v3/{REVIEW-arch,REVIEW-scope}.md`
-- 交付：`docs/BOOK.html`（讲解）、`docs/DELIVERY.md`（怎么跑 / 验过什么 / 没做什么）
+- 交付：`docs/SYSTEM.html`（讲解）、`docs/DELIVERY.md`（怎么跑 / 验过什么 / 没做什么）
 - 代码：`src/main/java/com/specflow/{core,flow,env,agent,test,web}`；前端 `src/main/frontend`
 - 测试证据：`E:\sf-e2e\reports-v2\`（`v3-e2e-3.log` 是最后那次端到端）
 - 用户真项目（回归样本）：`E:\library-management\library-management-backend`

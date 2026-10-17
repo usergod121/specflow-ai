@@ -64,7 +64,19 @@ public final class Approvals implements Approval {
 
     private final Map<String, Waiting> waiting = new LinkedHashMap<>();
 
+    /** 这一次愿意等多久（秒）。默认 {@link #WAIT_SECONDS}；测试用它把 2 分钟缩成 1 秒。 */
+    private final long waitSeconds;
+
     private int seq;
+
+    public Approvals() {
+        this(WAIT_SECONDS);
+    }
+
+    /** @param waitSeconds 等的时限（秒）；{@code <=0} 用默认。**只为测试留的**，生产用无参构造。 */
+    public Approvals(long waitSeconds) {
+        this.waitSeconds = waitSeconds <= 0 ? WAIT_SECONDS : waitSeconds;
+    }
 
     private record Waiting(String id, String command, String reason, String askedAt,
                            CompletableFuture<Boolean> answer) {
@@ -79,7 +91,7 @@ public final class Approvals implements Approval {
             waiting.put(one.id(), one);
         }
         try {
-            Boolean allowed = one.answer().get(WAIT_SECONDS, TimeUnit.SECONDS);
+            Boolean allowed = one.answer().get(waitSeconds, TimeUnit.SECONDS);
             // 没人回答时 future 由 clear() 以 false 收场，但那是"换项目/关服务"，
             // 与"用户点了 n" 一样都按拒——区别只在工具对模型说的话（见 Approval.Decision）
             return Boolean.TRUE.equals(allowed) ? Decision.ALLOW : Decision.DENY;

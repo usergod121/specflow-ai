@@ -1,7 +1,7 @@
 # specflow v3 · 交付说明
 
 > 2026-10-17。这一版是**在 v2 上就地升级**（没有新开目录）：`E:\specflow-v2`。
-> 三份契约在 `docs/`（架构 / API / UI），**讲解这一本在 `docs/BOOK.html`**（用浏览器打开），
+> 三份契约在 `docs/`（架构 / API / UI），**讲解这一本在 `docs/SYSTEM.html`**（用浏览器打开），
 > 设计在 `PRODUCT.md` / `DESIGN.md`，任务账在 `TASKS.md` 与 `docs/v3/PLAN.md`，
 > 这一轮的取舍与评审记录在 `docs/v3/DECISIONS.md`。
 >
@@ -52,7 +52,7 @@ java -jar target\specflow.jar env down    -p <项目>  # 收干净（主环境 +
 
 | 套件 | 数量 | 命令 |
 |---|---|---|
-| 后端 | **175 条全绿** | `mvn -o test -Dfrontend.skip=true` |
+| 后端 | **183 条全绿** | `mvn -o test -Dfrontend.skip=true` |
 | 前端 | **105 条全绿**（7 个文件） | `cd src/main/frontend; npx vitest run` |
 | 前端构建 | 过（143 kB js / 14 kB css） | `npx vite build` |
 
@@ -110,7 +110,7 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
    （那是 187 秒的真正来源），没有改中断模型。
 4. **运行级 checkpoint / 崩溃后接着跑没做**：仍然只有「没写 END = 中断」+ 快照回滚。
 5. **工具中间件链（`ToolHook`）没做**：仍然是装饰器（`Frozen` / `CaseBudget` / `StuckCheck` 各包一层）。
-6. **`Api` 这一层仍没有单元测试**：项目没引 `spring-boot-starter-test`，MockMvc 要动 pom。
+6. ~~`Api` 这一层没有单元测试~~ ——**已补**：`Api` 的构造是包内可见，测试直接 `new Api(session)` 调方法（不启 Spring、不动 pom），6 条钉住响应形状与增量语义。
    现在的覆盖是「浏览器冒烟 + SSE curl + 端到端 HTTP 全链路」——**更弱但够用**，如实写在这里。
 7. **审批（y/n）已在真链路上触发过一次**（最后一次端到端：`替你点了 1 条审批`，问→答→执行→写回走通）。
    但"人不在、等满 2 分钟按拒"这条分支**仍只有单测覆盖**，没在真跑里等待过。
@@ -126,7 +126,7 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 ```
 cd E:\specflow-v2
 mvn -o test -Dfrontend.skip=true
-→ [INFO] Tests run: 175, Failures: 0, Errors: 0, Skipped: 0
+→ [INFO] Tests run: 183, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 
