@@ -92,8 +92,8 @@
 <h2 id="abs">2. 顶层抽象</h2>
 <table>
   <tr><th>抽象</th><th>类</th><th>职责</th><th>不许做什么</th></tr>
-  <tr><td>事实</td><td><code>flow.Facts</code></td><td>闸的输入：编译命令、环境起过没、容器能构建没、用例几条…</td><td>不读盘、不判闸</td></tr>
-  <tr><td>闸</td><td><code>flow.Gates</code></td><td><b>唯一判据</b>：空串=能做，否则是给用户看的那句话</td><td>不读盘、不看时间</td></tr>
+  <tr><td><code>Facts</code></td><td>闸的输入：编译命令、环境起过没、容器能构建没、用例几条…</td><td>不读盘、不判闸</td></tr>
+  <tr><td>闸</td><td><code>flow.Gate</code> ×5 + <code>flow.Gates</code> 一张表</td><td>一格一个实现：空串=能做，否则是给用户看的那句话；顺序那一条硬规则在 <code>Gates</code> 里</td><td>不读盘、不看时间</td></tr>
   <tr><td>状态</td><td><code>flow.FlowState</code></td><td>五格 <code>LOCKED/READY/DONE</code> + 每格产物</td><td>不判能不能动</td></tr>
   <tr><td>落盘</td><td><code>flow.Store</code> / <code>core.Atomic</code></td><td>原子读写（临时文件 + ATOMIC_MOVE）</td><td>不解释业务</td></tr>
   <tr><td>事件</td><td><code>core.EventLog</code></td><td>单写者日志，<code>id ≡ 行号</code>，重启接着数</td><td>不缓存</td></tr>
@@ -238,6 +238,14 @@ requireReachable(node, action) // 只判前置：给「这一格的活正是为�
   <tr><td><code>bash</code></td><td>在<b>容器</b>里跑一条命令</td><td>三条拦截：<code>forbidden</code>（挂宿主/借网络栈/写块设备）、<code>privilege</code>（sudo 直接拒）、<code>bootstrap</code>（装工具链直接拒）</td></tr>
   <tr><td><code>case_update</code></td><td>写回一条用例的终态 + 证据</td><td>只能写清单里已有的编号</td></tr>
 </table>
+<p>另外三层"外包"在工具<b>外面</b>（装饰器，与 <code>Loop</code> 解耦）：</p>
+<table>
+  <tr><th>装饰器</th><th>管什么</th><th>为什么不做成中间件</th></tr>
+  <tr><td><code>test.CaseBudget</code></td><td>每条用例的轮次预算 → 超了标 SKIPPED</td><td rowspan="2">动 <code>Loop</code> 会让 13 条钉时序的测试变红；
+  装饰器效果一样、可单独测。中间件链（<code>ToolHook</code>）是下一轮的事，写在「没做的」里。</td></tr>
+  <tr><td><code>agent.StuckCheck</code></td><td>连续 3 次相同调用 → 打断并回喂三条出路</td></tr>
+  <tr><td><code>test.Frozen</code></td><td>验收阶段不许改 <code>src/</code></td><td>同上</td></tr>
+</table>
 
 <h3>5.5 <code>test</code> —— 容器里逐条验</h3>
 <p><b><code>TestSandbox</code></b>：把项目复制到 <code>flow/&lt;id&gt;/sandbox/&lt;runId&gt;</code>，
@@ -316,7 +324,10 @@ event: done    data: {…}                    # 没有在跑的活了 → 推完
   <tr><td><code>CommandGuard</code>：放行 <code>$HOME</code>、<code>sudo</code> 直接拒、新增装工具链拦截</td><td>2 轮无理由硬拒 + 187 秒无效审批 + 20 轮装 Maven</td><td><code>CommandGuardTest</code> 6 条</td></tr>
   <tr><td><code>Budgets</code>：超时收成一个来源</td><td>界面「改超时」只回显不生效</td><td><code>BudgetsTest</code> 4 条 + <code>Select-String</code> 查硬编码</td></tr>
   <tr><td>依赖缓存卷（external）</td><td>每轮重下依赖（17 分钟 / 7 轮 sleep）</td><td><code>ComposeTest</code> 断言 <code>external: true</code> 与 <code>HOME</code></td></tr>
-  <tr><td>SSE + 单条重试入口</td><td>1.2 秒轮询慢半拍；被跳过的用例无法单独重跑</td><td>curl 看 <code>event: events</code>；105 条前端测试</td></tr>
+  <tr><td>SSE + 单条重试入口</td><td>1.2 秒轮询慢半拍；被跳过的用例无法单独重跑</td><td>curl 看 <code>event: events</code> → <code>event: done</code>；真浏览器七页各订一条 <code>/stream</code>；105 条前端测试</td></tr>
+  <tr><td><code>StuckCheck</code>：连续 3 次相同调用就打断</td><td>连着 7 轮 <code>sleep 240</code>，每轮成功、每轮毫无进展（17.5 分钟）</td><td><code>StuckCheckTest</code> 3 条</td></tr>
+  <tr><td><code>Gate</code> ×5 + 一张表（替掉 switch）</td><td>加一格要改三处；漏改只会"这一格永远不动"</td><td><b>`GatesTest` 一个字节都没改</b>（`git diff` 为空 = 行为不变的机器证明）</td></tr>
+  <tr><td><code>EventLog</code> 行快照（校验和失效）</td><td>SSE 每 250ms 读一次全文件；这个类此前零测试</td><td><code>EventLogTest</code> 6 条</td></tr>
   <tr><td>① 与 ④ 补「冻结」按钮 + <code>wiring.spec.js</code></td><td>页面没有冻结入口，下游永远解锁不了</td><td>前端 10 条接线钉子</td></tr>
 </table>
 
@@ -330,7 +341,9 @@ event: done    data: {…}                    # 没有在跑的活了 → 推完
   （那是 187 秒的真正来源）。</li>
   <li><b>运行级 checkpoint / 崩溃后接着跑没做</b>：仍然只有「没写 END = 中断」+ 快照回滚。</li>
   <li><b>工具中间件链（ToolHook）没做</b>：仍然是装饰器（<code>Frozen</code>/<code>CaseBudget</code> 各包一层）。</li>
-  <li><b>跨流程查询、事件流 O(n) 优化没做</b>：<code>EventLog.append</code> 仍是全量读行数。</li>
+  <li><b>跨流程查询没做</b>：要统计"上周那几轮的通过率"只能遍历各 <code>events.jsonl</code>。
+  <s>事件流 O(n) 已修</s>——<code>EventLog</code> 现在带 (大小, 修改时间) 校验和的行快照，追加是 O(1)，
+  SSE 每 250 毫秒读的也是内存里的副本（校验和对不上才重读盘）。</li>
 </ul>
 </div>
 

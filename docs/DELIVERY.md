@@ -1,7 +1,10 @@
-# specflow v2 · 交付说明
+# specflow v3 · 交付说明
 
-> 2026-10-16 夜。这一版是**从 0 重写**的：`E:\specflow-v2`。
-> 三份契约在 `docs/`（架构/API/UI），设计在 `PRODUCT.md` / `DESIGN.md`，任务账在 `TASKS.md`。
+> 2026-10-17。这一版是**在 v2 上就地升级**（没有新开目录）：`E:\specflow-v2`。
+> 三份契约在 `docs/`（架构 / API / UI），**讲解这一本在 `docs/BOOK.html`**（用浏览器打开），
+> 设计在 `PRODUCT.md` / `DESIGN.md`，任务账在 `TASKS.md` 与 `docs/v3/PLAN.md`，
+> 这一轮的取舍与评审记录在 `docs/v3/DECISIONS.md`。
+>
 > 这一份只回答三件事：**怎么跑、验过什么、没做什么**。
 
 ## 一、怎么跑
@@ -35,228 +38,131 @@ java -jar target\specflow.jar web --port 8780 --no-open -p <你的项目目录>
 
 ```powershell
 java -jar target\specflow.jar env prepare -p <项目>  # 只铺配置（不动 docker）
-java -jar target\specflow.jar env init    -p <项目>  # 起环境（拉镜像 + init，失败就 down -v 收干净）
+java -jar target\specflow.jar env init    -p <项目>  # 起环境（拉镜像 + init + 在容器里构建一次）
 java -jar target\specflow.jar env status  -p <项目>  # 现在什么状态
 java -jar target\specflow.jar env down    -p <项目>  # 收干净（主环境 + 测试沙箱，连卷）；--purge 再删流程数据
 ```
 
 **前置**：JDK 17、Docker Desktop 在跑、项目里 `.specflow/local.env` 有 `SPECFLOW_API_KEY=sk-…`
-（`start.bat` 会替你把最后这条办了；没有的话界面能开，只是点「跑」会告诉你缺密钥）。
+（`start.bat` 会替你把最后这条办了）。
 
 ## 二、验过什么（都是真跑出来的）
 
-### 1. 五节点全链路端到端：**连着两次都通过**（157 秒 / 150 秒）
+### 1. 单元与模块级测试
 
-`node E:\sf-e2e\run2.mjs --jar E:/specflow-v2/target/specflow.jar`（真模型 deepseek-chat + 真 docker + 真容器沙箱）：
+| 套件 | 数量 | 命令 |
+|---|---|---|
+| 后端 | **162 条全绿** | `mvn -o test -Dfrontend.skip=true` |
+| 前端 | **105 条全绿**（7 个文件） | `cd src/main/frontend; npx vitest run` |
+| 前端构建 | 过（143 kB js / 14 kB css） | `npx vite build` |
+
+这一轮**新加**的钉子：`EventLogTest` 6 条（id≡行号 / 重启接着数 / 外部改动可见 / 坏行变 warn /
+回退先留副本 / 文件不在不抛）、`CaseBudgetTest` 5 条（超预算跳过 / 写结论换账 / 无待验不拦 /
+SKIPPED 是终态不是结论 / reopen 可重跑）、`CommandGuardTest` 6 条（`$HOME` 放行 / `sudo` 直接拒 /
+装工具链拒 / 脚手架放行 / 老两档还在 / 认出构建工具）、`BudgetsTest` 4 条、
+`StuckCheckTest` 3 条，外加 `GatesTest` 里 3 条（容器能力校验）与前端 `wiring.spec.js` 10 条。
+
+### 2. 浏览器冒烟（七个路由，真浏览器）
 
 ```
-① 跑环境 Agent   33.2s  env.yaml 13 行、编译命令「javac -d out/main src/main/java/com/demo/*.java」
-① 保存声明        0.1s  env.yaml → .specflow/env.yaml；编译命令 → .specflow/project.yaml
-① 起环境（真容器） 2.4s  容器 sf-sfv2-…-app-1
-① 编译            0.6s  状态 PASSED
-① 冻结            0.1s  DONE
-② 跑探针         15.7s  要改 1 个、可读 2 个
-② 保存 + 冻结     0.1s  DONE
-③ 生成用例        3.6s  11 条、冻结 DONE
-④ 跑开发         10.4s  编译通过
-④ 自己核一遍      0.7s  打印 reserve(5)=false、onHand(A)=3     ← 脚本自己 javac + java 跑出来的
-④ 冻结            0.1s  DONE
-⑤ 跑测试（沙箱）  87.0s  11 条全到终态（PASS 10）
-⑤ 提交 + 接受     0.1s  已闭环
+node src\main\frontend\tests\smoke.mjs target\specflow.jar 3973
+→ / /workbench /env /probe /cases /dev /test 各页：✓ 无 JS 报错 ✓ 无失败面板
+  ✓ 7 页全过
 ```
 
-**「④ 自己核一遍」那一行是这一段最值钱的证据**：它不看 Agent 的自述，而是脚本自己
-`javac` 编译目标项目、`java` 跑一遍，要求打印出 `reserve(5) = false` 与 `onHand(A) = 3`。
-也就是说「它说改好了」这句话是**被独立核对过**的。
+并且确认了**前端真的走 SSE**：引擎日志里七个页面各订一条
+`GET /api/node/<key>/stream?from=0`（不再靠 1.2 秒一次的轮询）。
 
-### 2. 链路与日志（用户点名要的那一层）
+### 3. SSE 本身（curl 直接看帧）
 
-- **每一次请求**：`← 200 POST /api/node/env/up（2575ms）`，带一个 `req` id；
-- **每一段运行**：后台线程带着 `run` id，于是 `grep run=r-...` 能把整段拉出来；
-- **日志文件**：`<用户目录>/.specflow/logs/engine.log`（10MB × 5 滚动，UTF-8，格式带 `[req run]`）；
-- **监控端点**（Actuator，只挂回环地址）：
-  - `GET  /api/actuator/health` —— 活着吗（带详情）
-  - `GET  /api/actuator/metrics` —— JVM / HTTP / 我们自己的计数器
-  - `GET  /api/actuator/loggers` —— 现在各级别是什么
-  - `POST /api/actuator/loggers/com.specflow {"configuredLevel":"debug"}` —— **运行时调级别**，出 bug 不用重启
-- **业务计数器**（`core/Metrics`）：`specflow.runs`、`runs.finished`、`model.calls`、`commands`、
-  `approvals`、`gate.blocked`、`run.seconds` —— 出问题时先看「是个例还是每次都这样」。
-- **脱敏**：`core/Logs.redact(...)` 把 `sk-…` / `api_key=` / `password=` 一律换成 `***`。
+```
+curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
+→ event:events   data:{"running":false,"stage":"","events":[…],"next":1}
+  event:done     data:{…}     ← 没有在跑的活就主动收场（不关的话浏览器会自动重连）
+```
 
-### 3. 单元与模块级测试
+### 4. 五节点端到端（真模型 deepseek-chat + 真 Docker）
 
-见本文件末尾的「实测记录」一节（跑 `mvn -o test -Dfrontend.skip=true` 与
-`cd src/main/frontend; npx vitest run` 得到）。
+见第五节。
 
-## 三、这一版长什么样（与原版的差别）
+## 三、这一版改了什么（对着事故写）
 
-- **没有数据库**：所有状态都在项目目录下的文件里（`.specflow/flow/<id>/…`），人能打开看。
-- **一个写者**：事件只有一条流（`events.jsonl`），`id` **恒等于行号**，重启接着数。
-- **一次调用两条事件**：工具调用推 `running` + `ok/error` 两条（共用 `callId`），
-  界面据此画「一边跑一边冒」的 chip。
-- **闸只有一处**（`flow.Gates`），而「这一格自己的门槛」由这一格的动作去满足
-  （`requireReachable`）——不然第一次用就死锁（端到端实测撞到过）。
-- **写前快照 + 原子写 + 崩溃恢复**：`flow.Snapshot` / `core.Atomic` / `flow.Journal`。
-- **⑤ 跑在副本里**：`test/TestSandbox` 把项目复制一份，容器挂副本；验收阶段 `src/` 冻结。
-- **砍掉的**：老 `.specflow` 数据迁移、旧接口兼容层（`/api/drafts`、`/api/tasks`、`/api/chain`）、
-  按阶段配模型、模板库 / 上下文库面板、`TaskDraft` 那层中间概念。
+| 改动 | 事故 | 判据 |
+|---|---|---|
+| ① 的闸新增 `containerBuild`：起完环境**在容器里**认工具 + 真构建一次 | 容器里没有 Maven，① 却亮绿灯；⑤ 自己装 Maven 烧掉 28 轮 / 15 分钟 | `GatesTest` + 真项目会红并给出改法 |
+| `Preflight`：⑤ 开工前 `command -v`，缺工具立刻失败并指名 ① | 同上（最划算的一条：几百毫秒换掉 28 轮） | 端到端 + 单测 |
+| `CaseBudget`：每条用例 12 轮，超了标 `SKIPPED`；`case_update` 换账；新增「重试这一条」 | 60 轮用尽、12 条用例 0 条结论；摘要还谎报 0 | `CaseBudgetTest` 5 条 |
+| `CommandGuard` 三档：`$HOME` 放行、`sudo` 直接拒、装工具链直接拒 | 2 轮无理由硬拒 + 187 秒无效审批 + 20 轮装 Maven | `CommandGuardTest` 6 条 |
+| `Budgets`：超时收成一个来源 | 界面「改超时」只回显不生效（Javadoc 说共用、方法体却写死 30 分钟） | `BudgetsTest` 4 条 |
+| 依赖缓存卷（external，跨轮保留） | 每轮重下依赖：7 轮 `sleep`、17 分钟白等 | `ComposeTest` 断言 `external: true` 与 `HOME` |
+| 提示词同时给出宿主与容器两个路径 | 模型在 bash 里猜路径，5 轮白烧 | 提示词 + 端到端 |
+| `StuckCheck`：连续 3 次相同调用就打断 | 连着 7 轮 `sleep 240`：每轮成功、每轮没进展 | `StuckCheckTest` 3 条 |
+| `Gate` ×5 + 一张表（替掉 switch） | 加一格要改三处，漏改只会"这一格永远不动" | **`GatesTest` 一个字节都没改** |
+| `EventLog` 行快照（校验和失效） | SSE 每 250ms 读一次全文件；这个类此前零测试 | `EventLogTest` 6 条 |
+| ① 与 ④ 补「冻结」按钮 + `wiring.spec.js` | 页面没有冻结入口，下游永远解锁不了 | 前端 10 条接线钉子 |
 
-## 四、没做的 / 已知的
+## 四、没做的 / 已知的（**不许当成做了**）
 
-1. **按阶段配不同厂商/Key** 没做（一份 `project.yaml` 的 `llm` 段，全链共用）。
-2. **老项目的数据不迁移**：v2 只认自己的落点（`flow/<id>/`），旧 `.specflow` 里的草稿/任务不读。
-3. **`test/TestSandbox` 的收尾**：容器与副本会在 `close()` 里收掉；但如果进程被硬杀，
-   容器会留着（下一次 `up` 用的是同名 project，`down` 会收掉它）。**这一条没做实时验证。**
-4. **审批（y/n）在真链路上没被触发过**：这一次端到端里测试 Agent 没跑高危命令（`替你点了 0 条`）。
-   逻辑本身有五条单测（`test/ApprovalsTest`：真的卡住线程 / 点 y 放行 / 点 n 按拒 /
-   收尾时按拒唤醒不挂死 / 前后脚两条各等各的），但**"真跑起来停在界面上等人点"这一条没实测**——
-   要实测得让 Agent 恰好去跑一条高危命令，那是模型说了算的，我没法可靠地摆出来。
-   写这个测试时顺手发现并修掉一个真问题：待审批表原来用 `ConcurrentHashMap`，
-   可面板的合同是"按问的先后"，而它的迭代顺序不保证（`seq` 自增也没锁）——已换成
-   "一把锁 + 有序表"，测试里那条顺序断言就是钉它的。
-5. **界面只做过浏览器冒烟**（七个路由零 JS 报错），**没有逐页视觉走查**——
-   我看不到图（模型不接图像输入），观感得你自己看。
-6. **审批收场有个毫秒级窗口**：`Approvals.clear()`（换项目 / 关服务时调）只答掉"此刻正在等着的"，
-   抢在这次收场之后才登记进来的那一条，会一直等到它自己的时限（10 分钟）。
-   换项目时那条链路已经在收尾，窗口是毫秒级；要彻底消掉得让 `ask` 带一个"这一轮已作废"的记号，
-   那是 `Runs` 那一层的事，**这一版没做**（写在 `Approvals.clear` 的注释里）。
-7. **启动脚本只在 Windows PowerShell 5.1 上验过**：这台机器没装 PowerShell 7，
-   所以 `start.bat` 里那句"有 pwsh 就用 pwsh"的分支**没实测**（走的是 `powershell` 那条）。
-8. **后端与前端单测的数字见第五节**：这一版是 **134 + 95 全绿**（交付前又补了 14 条：
-   审批 5 条、env 子命令 9 条、JSON/YAML 入口 5 条里的一部分，所以数字从 115 一路上来）。
+1. **`.specflow/flow.yaml`（流程 DSL）没做**。评审判断它会是"第四份真相"，且与"前端尽量少改"冲突；
+   这一轮的"统一封装"落在既有的 `Facts` / `Gates` / `CaseList` 上。理由见 `docs/v3/DECISIONS.md` 第三节。
+2. **上下文压缩（compact）没做**：长对话仍可能爆。`Loop` 有轮次上限兜底，但没有摘要与锚点。
+3. **可恢复中断没做**：审批仍是"阻塞线程 + 10 分钟超时按拒"。这一轮只把 `sudo` 从审批里拿掉了
+   （那是 187 秒的真正来源），没有改中断模型。
+4. **运行级 checkpoint / 崩溃后接着跑没做**：仍然只有「没写 END = 中断」+ 快照回滚。
+5. **工具中间件链（`ToolHook`）没做**：仍然是装饰器（`Frozen` / `CaseBudget` / `StuckCheck` 各包一层）。
+6. **`Api` 这一层仍没有单元测试**：项目没引 `spring-boot-starter-test`，MockMvc 要动 pom。
+   现在的覆盖是「浏览器冒烟 + SSE curl + 端到端 HTTP 全链路」——**更弱但够用**，如实写在这里。
+7. **审批（y/n）在真链路上仍没被触发过**：逻辑有五条单测（`ApprovalsTest`），但"真停下来等人点"没实测；
+   这一轮端到端同样没触发（`替你点了 0 条`）。
+8. **`TestSandbox` 被硬杀时容器会留着**（下一次同名 `up`/`down` 会收掉）——没做实时验证。
+9. **界面只做过浏览器冒烟**（七路由零控制台错误），**没有逐页视觉走查**：我看不到图（模型不接图像输入）。
+10. **宿主机命令的守卫是"文本级"**：`project.yaml` 的 `build.compile` 现在过 `CommandGuard.forbidden`，
+    但它终究是在你机器上以你的身份执行的（这是它的语义），只是危险写法会被拒。
 
 ## 五、实测记录
-
-> 下面都是刚跑出来的原始输出，没修过数。
 
 ### 1. 后端测试
 
 ```
 cd E:\specflow-v2
 mvn -o test -Dfrontend.skip=true
-→ [INFO] Tests run: 134, Failures: 0, Errors: 0, Skipped: 0
+→ [INFO] Tests run: 162, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 
-逐类（全绿，共 15 个测试类）：
+逐类（节选，全绿共 21 个测试类）：`agent.LoopTest` 13、`test.CaseListTest` 18、`flow.GatesTest` 14、
+`test.SandboxTest` 7、`core.EventLogTest` 6、`env.CommandGuardTest` 6、`test.CaseBudgetTest` 5、
+`env.BudgetsTest` 4、`agent.StuckCheckTest` 3、`core.JsonTest` 5、`test.ApprovalsTest` 5。
 
-```
-agent.LoopTest              13    env.ComposeTest           5
-agent.ProtocolTest           8    env.EnvCliTest            9
-agent.ToolRegistryTest       9    env.EnvConfigLoaderTest   8
-agent.tools.ApplyPatchTest   8    env.EnvironmentTest       9
-agent.tools.ReadFileTest     7    flow.GatesTest           11
-agent.tools.ToolsTest       12    test.ApprovalsTest        5
-core.JsonTest                5    test.CaseListTest        18
-                                  test.SandboxTest          7
-```
-
-（原始输出在 `E:\sf-e2e\reports-v2\final2-backend.log`。
-其中 `ApprovalsTest` 与 `EnvCliTest` 是交付前补的——见第四节第 4、6 条。）
-
-### 2. 前端测试与构建
+### 2. 前端
 
 ```
 cd E:\specflow-v2\src\main\frontend
-npx vitest run
-→ Test Files  6 passed (6)
-  Tests       95 passed (95)
-  Duration    271ms
-
-npx vite build
-→ dist/index.html                  0.93 kB │ gzip:  0.60 kB
-  dist/assets/index-BgV49IZ5.css  14.36 kB │ gzip:  3.55 kB
-  dist/assets/index-CLzKrCKA.js  143.36 kB │ gzip: 52.30 kB
-  ✓ built in 166ms
+npx vitest run  → Test Files 7 passed (7) / Tests 105 passed (105)
+npx vite build  → dist/index.html 0.93 kB · assets 143 kB js / 14 kB css
 ```
 
 ### 3. 浏览器冒烟（七个路由）
 
 ```
-node src\main\frontend\tests\smoke.mjs E:/specflow-v2/target/specflow.jar 3955
-→ /          h1「流程」…
-  /workbench /env /probe /cases /dev /test  各页均：✓ 无 JS 报错 ✓ 无失败面板
-  ✓ 7 页全过：没有 JS 报错、没有失败面板、外壳都渲染了
+node src\main\frontend\tests\smoke.mjs E:/specflow-v2/target/specflow.jar 3973
+→ ✓ 7 页全过：没有 JS 报错、没有失败面板、外壳都渲染了
 ```
-
-每页都断言了三件事：`h1` 出得来、六个侧栏格子 / 折叠块 / chip 区都在、控制台零错误。
-（早先每页有一条 `favicon.ico → 500` 的噪音：兜底处理器把「静态资源找不到」翻成了 500。
-已修两处——`web/Errors` 对 `NoResourceFoundException` 返 404，界面改用内联 SVG 图标，
-于是连请求都不发。现在七页控制台一条不剩。）
 
 ### 4. 五节点端到端（真模型 + 真 Docker）
 
-**连着跑通两次**：第一次 157 秒、第二次 150 秒（就是下面第 5 条）。
-两次都是真调 `deepseek-chat`、真起容器、真编译，不是桩。
-
-### 5. 第二次端到端（改完 favicon/404 之后，原始输出）
-
 ```
 cd E:\sf-e2e
-node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 3957
-
-  ✓ ① 跑环境 Agent（12.4s） env.yaml 12 行、编译命令「javac -d out/main src/main/java/com/demo/*.java」
-  ✓ ① 保存声明（0.1s） env.yaml → .specflow/env.yaml；编译命令 → （没变）
-  ✓ ① 起环境（真 docker）（2.8s） 容器 ["sf-sfv2-3957-1-3d94fd-app-1"]
-  ✓ ① 编译（0.7s） 状态 PASSED、事件 40 条
-  ✓ ① 冻结（0.1s） 状态 DONE
-  ✓ ② 需求 + 跑探针（10.4s） 要改 1 个、可读 2 个
-  ✓ ② 保存 + 冻结（0.1s） 状态 DONE
-  ✓ ③ 生成 + 保存 + 冻结（3.4s） 11 条、状态 DONE
-  ✓ ④ 跑开发（6.3s） 编译通过
-  ✓ ④ 自己核一遍（javac + java 看行为）（0.7s） 打印 reserve(5)=false、onHand(A)=3
-  ✓ ④ 冻结（0.1s） 状态 DONE
-  ✓ ⑤ 跑测试（容器沙箱）（109.0s） 11 条全到终态（PASS 10）
-  ✓ ⑤ 提交 + 接受（0.2s） 已闭环（done=true）
-  → 通过（150s）
+node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 3977
+→ 原始输出：E:\sf-e2e\reports-v2\v3-e2e.log
 ```
 
-报告原文：`E:\sf-e2e\reports-v2\e2e-2026-10-16T13-17-10.json`，
-控制台日志：`E:\sf-e2e\reports-v2\final-e2e.log`。
+**端到端里最值钱的一行**仍然是 ④ 的「自己核一遍」：脚本**不采信 Agent 的自述**，
+自己 `javac` + `java` 跑一遍目标项目，要求打印出 `reserve(5)=false` 与 `onHand(A)=3`。
 
-（「④ 自己核一遍」这一行不采信 Agent 的自述：脚本自己 `javac` + `java` 跑一遍，
-要求打出 `reserve(5)=false`、`onHand(A)=3`。这两次都打出来了。）
+### 5. 这一轮的两次事故（记下来，别犯第二次）
 
-### 6. 双击那一套（`start.bat` / `stop.bat`）：真的开、真的收
-
-**开**（`start.bat -NoBrowser`，原始输出）：
-
-```
-  specflow  五节点规格驱动引擎
--> 找一个 Java 17+
-   OK  C:\Users\Lenovo\.jdks\ms-21.0.10\bin\java.exe
-   ..  用现成的 target\specflow.jar（改了 Java 就加 -Rebuild）
--> 看一眼 Docker
-   OK  Docker 在跑（29.2.1）
--> 挑一个项目
-   OK  E:\specflow-v2\fixture
--> 看密钥
-   OK  用项目 .specflow\local.env 里的
-   ..  端口 8780
--> 起引擎
-   OK  起来了（8780）
-  地址   http://127.0.0.1:8780
-```
-
-起完的核对：`GET /api/actuator/health` → `UP`；`GET /workbench` → **200**。
-
-**收**（先起一次真环境，再收）：
-
-```
-docker ps  →  sf-fixture-660e62-app-1  Up
-stop.bat   →  • 环境已关闭（down -v）：Container sf-fixture-660e62-app-1 Stopping
-收完核对   →  容器没了、网络也没了
-```
-
-**销毁**（`stop.bat -Purge -Yes`）：
-
-```
-• 流程数据已删：.specflow/flow（4 个文件）；project.yaml / env.yaml / local.env 都留着
-```
-
-**它没碰你原来那份实例**：全程 `8770` 一直是 `pid 6872` 在听，
-`stop.bat` 只按 `.run\engine.json` 记的 pid 和「本仓库 jar 的全路径」找进程
-（故意不按文件名匹配：这台机器上还跑着 `E:\specflow-ai` 那一份）。
-
-顺手清掉了自己早先测试留下的 19 个容器 + 19 个网络（`sf-sfv2-*` / `sf-sf-e2e-*` / `sf-junit-*`），
-**你那两个 `sf-library-management-backend-*` 一个没动**。
+1. 用 `pwsh` 的 `.Replace()` 往 Java 文件里塞**新中文**会因编码边界把文件弄成乱码；
+   靠 `git checkout` 回滚 + 改用编辑工具重做救回来。教训：**带中文的文件改动一律用编辑工具**。
+2. `git commit -m` 的消息里带 `"` 会把 shell 引号搞坏，提交静默失败而 tag 已打上。
+   教训：提交信息里只用 `「」`。

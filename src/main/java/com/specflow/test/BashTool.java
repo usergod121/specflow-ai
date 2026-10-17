@@ -27,8 +27,22 @@ import java.util.Map;
  */
 public final class BashTool implements Tool {
 
-    /** 单条命令的默认时限：15 分钟。**这个数必须可配**——写死 300 秒的那一版把长构建掐了两次。 */
-    public static final long DEFAULT_TIMEOUT_SECONDS = 15 * 60;
+    /**
+     * 单条命令的<b>上限</b>：10 分钟。
+     *
+     * <p>为什么要单独一个上限，明明已经有 {@code env.Budgets} 那个"我愿意等多久"的旋钮了：
+     * 那个旋钮是给<b>我们自己的</b>长任务用的（拉镜像、容器内构建——它们会推进，只是慢）。
+     * 而这里的命令是<b>模型写的</b>：一次端到端实测里，Agent 为了验一条并发用例写了个死循环程序，
+     * 在容器里 150% CPU 转了 15 分钟还没完——如果它能吃掉整个 30 分钟的额度，
+     * 这一格就会在"什么都没验出来"上耗掉半轮。
+     *
+     * <p>600 秒够不够真需要它做的事？够：有了依赖缓存卷之后，冷启动构建是分钟级；
+     * 而起容器、装脚手架这类事本来就不在这里做。
+     */
+    public static final long MAX_TIMEOUT_SECONDS = 600;
+
+    /** 调用方没给时的默认值（同样受 {@link #MAX_TIMEOUT_SECONDS} 约束）。 */
+    public static final long DEFAULT_TIMEOUT_SECONDS = 10 * 60;
 
     private final Shell shell;
     private final Path sandboxRoot;
@@ -40,14 +54,15 @@ public final class BashTool implements Tool {
         this(shell, sandboxRoot, approval, progress, DEFAULT_TIMEOUT_SECONDS);
     }
 
-    /** @param timeoutSeconds 单条命令最多等多久（由调用方按"这一步我愿意等多久"给） */
+    /** @param timeoutSeconds 单条命令最多等多久（超过 {@value #MAX_TIMEOUT_SECONDS} 会被夹回来） */
     public BashTool(Shell shell, Path sandboxRoot, Approval approval, Progress progress,
                     long timeoutSeconds) {
         this.shell = shell;
         this.sandboxRoot = sandboxRoot.toAbsolutePath().normalize();
         this.approval = approval == null ? Approval.allowAll() : approval;
         this.progress = progress == null ? Progress.quiet() : progress;
-        this.timeoutSeconds = timeoutSeconds <= 0 ? DEFAULT_TIMEOUT_SECONDS : timeoutSeconds;
+        long wanted = timeoutSeconds <= 0 ? DEFAULT_TIMEOUT_SECONDS : timeoutSeconds;
+        this.timeoutSeconds = Math.min(wanted, MAX_TIMEOUT_SECONDS);
     }
 
     @Override
