@@ -447,6 +447,7 @@ return fresh;</code></pre>
   <tr><td><code>Store</code></td><td><code>flow/current</code> 指针 + <code>flow.json</code> 原子读写</td></tr>
   <tr><td><code>FlowService</code></td><td>五格动作的唯一住处：<code>requireOpen</code> / <code>requireReachable</code> / <code>freeze</code> / <code>note</code> / <code>gotoNode</code> / <code>view</code></td></tr>
   <tr><td><code>Snapshot</code> / <code>Journal</code> / <code>Checkpoint</code> / <code>FlowIndex</code></td><td>写前快照与回滚 / 运行账（BEGIN-END）/ 断点 / 跨流程一览</td></tr>
+  <tr><td><code>Actions</code></td><td><b>每一格有哪些按钮——只有这一处声明</b>（id/label/tip/primary/danger/进页头还是「⋯」），随 <code>GET /api/flow</code> 下发</td></tr>
 </table>
 
 <h4>代码：<code>Gates</code> 的两个重载（这是最容易被改错的地方）</h4>
@@ -591,6 +592,7 @@ cases.skip(当前, "超出每用例预算（12 轮）…");            <span cla
   <tr><th>文件</th><th>作用</th></tr>
   <tr><td><code>store.js</code></td><td>共享状态与动作；<b>闸不在这里判</b>（读后端给的 <code>blockedReason</code> / 409 原话）；SSE 主路 + 轮询备路共用一个 <code>ingest()</code></td></tr>
   <tr><td><code>api.js</code></td><td>41 个函数，一一对应 API.md</td></tr>
+  <tr><td><code>lib/actions.js</code></td><td><b>按 id 绑处理函数</b>：动作的名字/顺序/位置来自后端；声明里有、这里没接的 → 渲染成灰的并说明原因（不再静默消失）</td></tr>
   <tr><td><code>lib/{events,facts,flow,pages,text}.js</code></td><td>纯函数：事件→chip、facts→徽章、文案预算（正文 ≤6 汉字）</td></tr>
   <tr><td><code>components/</code></td><td>NodeShell（页头+状态条+调用+留档）/ Fold / Chip(s) / Badge / MoreMenu / Fail / Empty</td></tr>
   <tr><td><code>views/</code></td><td>Welcome / Workbench / ①–⑤</td></tr>
@@ -769,7 +771,7 @@ if (same &gt;= 4) → 提醒："…这是原地打转。换一种做法…（再
   <tr><td><code>core/</code></td><td>10</td><td>事件流（6）· JSON/YAML 入口（5）</td></tr>
   <tr><td><code>web/</code></td><td>6</td><td>路由形状与增量语义（v3 补上，此前为零）</td></tr>
   <tr><td>前端</td><td>105</td><td>纯函数（事件→chip / facts→徽章 / 文案预算）+ 页面接线（10）</td></tr>
-  <tr><td><b>合计</b></td><td><b>183 + 105</b></td><td><code>mvn -o test -Dfrontend.skip=true</code> · <code>npx vitest run</code></td></tr>
+  <tr><td><b>合计</b></td><td><b>189 + 102</b></td><td><code>mvn -o test -Dfrontend.skip=true</code> · <code>npx vitest run</code></td></tr>
 </table>
 
 <h3>7.2 端到端（真模型 + 真 Docker）</h3>
@@ -785,7 +787,7 @@ if (same &gt;= 4) → 提醒："…这是原地打转。换一种做法…（再
 <h3>7.3 已知缺口（不许当成做了）</h3>
 <table>
   <tr><th>#</th><th>缺口</th><th>性质</th></tr>
-  <tr><td>1</td><td>流程 DSL / 节点定义仍散在 6 个落点</td><td><b>该做</b>：把前端几张表压成 <code>GET /api/flow</code> 下发的一份</td></tr>
+  <tr><td>1</td><td>~~节点定义散在 6 个落点~~ <b>已收敛</b>：动作表只有 <code>flow/Actions.java</code> 一份，随 <code>GET /api/flow</code> 下发；视图里<b>不许再出现按钮文案</b>（`wiring.spec.js` 机器检查）</td><td><b>已做</b></td></tr>
   <tr><td>2</td><td>工具中间件链</td><td><b>不必做</b>：三个装饰器已等价覆盖；只差"返回值升级成四值枚举拿 <code>updatedInput</code>"</td></tr>
   <tr><td>3</td><td>跨重启的对话续跑</td><td><b>刻意不做</b>：需要把两万字符的工具结果落盘（第二份真相）；改用例粒度续跑</td></tr>
   <tr><td>4</td><td>审批"人不在等满 2 分钟"</td><td><b>已补单测</b>（1 秒时限验 TIMEOUT），没有真等 2 分钟</td></tr>

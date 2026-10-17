@@ -7,6 +7,7 @@ import { NODES } from '../lib/flow.js';
 import NodeShell from '../components/NodeShell.vue';
 import Fail from '../components/Fail.vue';
 import Empty from '../components/Empty.vue';
+import { head, menu as menuOf } from '../lib/actions.js';
 
 const node = 'test';
 const rows = ref([]);
@@ -67,14 +68,10 @@ async function answer(one, allow) {
 }
 
 const done = computed(() => rows.value.filter(one => String(one.status).toUpperCase() !== 'PENDING').length);
-const actions = computed(() => [
-  { id: 'run', label: '跑测试', primary: true, tip: '在容器副本里逐条验，结论写回清单', on: run },
-  { id: 'submit', label: '提交', tip: '落 summary.md；清单还有未定的会被拦', on: submit },
-]);
-const menu = computed(() => [
-  { id: 'accept', label: '接受并完成', tip: '闭环：这一轮到此为止', on: accept },
-  { id: 'optimize', label: '再优化一轮', tip: '把总结回喂给 ④ 再来一次', on: optimize },
-]);
+// 名字/顺序/进哪个按钮组由后端 flow/Actions.java 声明，这里只绑处理函数
+const handlers = { run, submit, accept, optimize };
+const actions = head(node, handlers);
+const menu = menuOf(node, handlers);
 
 function back() {
   return NODES[3].route;

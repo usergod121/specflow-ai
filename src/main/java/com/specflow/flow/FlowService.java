@@ -87,7 +87,8 @@ public final class FlowService {
         List<NodeView> out = new ArrayList<>();
         for (Node node : Node.values()) {
             String blocked = Gates.blocked(node, facts, state.states());
-            out.add(new NodeView(node, state.stateOf(node), blocked, visible(state, node)));
+            // 动作表由 Actions 那一份声明给（界面按它渲染；加/删动作只改那一处）
+            out.add(new NodeView(node, state.stateOf(node), blocked, visible(state, node), Actions.of(node)));
         }
         return List.copyOf(out);
     }

@@ -52,8 +52,8 @@ java -jar target\specflow.jar env down    -p <项目>  # 收干净（主环境 +
 
 | 套件 | 数量 | 命令 |
 |---|---|---|
-| 后端 | **183 条全绿** | `mvn -o test -Dfrontend.skip=true` |
-| 前端 | **105 条全绿**（7 个文件） | `cd src/main/frontend; npx vitest run` |
+| 后端 | **189 条全绿** | `mvn -o test -Dfrontend.skip=true` |
+| 前端 | **102 条全绿**（7 个文件） | `cd src/main/frontend; npx vitest run` |
 | 前端构建 | 过（143 kB js / 14 kB css） | `npx vite build` |
 
 这一轮**新加**的钉子：`EventLogTest` 6 条（id≡行号 / 重启接着数 / 外部改动可见 / 坏行变 warn /
@@ -103,7 +103,7 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 
 ## 四、没做的 / 已知的（**不许当成做了**）
 
-1. **`.specflow/flow.yaml`（流程 DSL）没做**。评审判断它会是"第四份真相"，且与"前端尽量少改"冲突；
+1. **流程 DSL 没做，但"节点定义散在 6 处"这个真问题已经收敛**：动作表只有 `flow/Actions.java` 一份，随 `GET /api/flow` 下发，视图只按 id 绑处理函数（且视图里不许再出现按钮文案，由 `wiring.spec.js` 机器检查）。把"流程"本身做成 YAML 仍然判断为不值：
    这一轮的"统一封装"落在既有的 `Facts` / `Gates` / `CaseList` 上。理由见 `docs/v3/DECISIONS.md` 第三节。
 2. **上下文压缩（compact）没做**：长对话仍可能爆。`Loop` 有轮次上限兜底，但没有摘要与锚点。
 3. **可恢复中断没做**：审批仍是"阻塞线程 + 10 分钟超时按拒"。这一轮只把 `sudo` 从审批里拿掉了
@@ -126,7 +126,7 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 ```
 cd E:\specflow-v2
 mvn -o test -Dfrontend.skip=true
-→ [INFO] Tests run: 183, Failures: 0, Errors: 0, Skipped: 0
+→ [INFO] Tests run: 189, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 

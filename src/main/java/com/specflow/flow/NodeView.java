@@ -11,13 +11,22 @@ import java.util.Map;
  * <p>{@code key()} / {@code title()} 是给路由的方便方法：直接序列化这个记录，
  * 出来的形状就与 API.md §2 对得上（前端读 {@code key}），不必在路由里再拼一遍对象。
  *
- * @param facts 这一格的产物（扁平字符串表，给界面画徽章）；<b>没有就是空表，不是 null</b>
+ * @param facts   这一格的产物（扁平字符串表，给界面画徽章）；<b>没有就是空表，不是 null</b>
+ * @param actions 这一格有哪些按钮（{@link Actions} 那一份声明，<b>界面按它渲染</b>）；
+ *                形状是 {@code {id,label,tip,primary,danger,menu,onlyWhileRunning}}
  */
-public record NodeView(Node node, State state, String blockedReason, Map<String, String> facts) {
+public record NodeView(Node node, State state, String blockedReason, Map<String, String> facts,
+                       java.util.List<Actions.ActionSpec> actions) {
 
     public NodeView {
         blockedReason = blockedReason == null ? "" : blockedReason;
         facts = facts == null ? Map.of() : Map.copyOf(facts);
+        actions = actions == null ? java.util.List.of() : java.util.List.copyOf(actions);
+    }
+
+    /** 老的四参构造（兼容：只关心状态与产物的地方用它，动作表由 {@link #actions()} 单给）。 */
+    public NodeView(Node node, State state, String blockedReason, Map<String, String> facts) {
+        this(node, state, blockedReason, facts, Actions.of(node));
     }
 
     public String key() {

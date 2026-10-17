@@ -6,6 +6,7 @@ import { store, act, runAction, say, freezeNode } from '../store.js';
 import NodeShell from '../components/NodeShell.vue';
 import Fail from '../components/Fail.vue';
 import Empty from '../components/Empty.vue';
+import { head, menu as menuOf } from '../lib/actions.js';
 
 const node = 'env';
 const envYaml = ref('');
@@ -105,24 +106,24 @@ async function freeze() {
   }
 }
 
-const actions = computed(() => [
-  {
-    id: 'agent', label: '探测环境', primary: true, tip: '只读地读一遍项目，交回 env.yaml 草稿',
-    disabled: Boolean(store.flow) === false, on: agent,
-  },
-  { id: 'up', label: '起环境', tip: '拉镜像 + init + reset，长任务', on: up },
-  { id: 'freeze', label: '冻结', tip: '做完了，冻住：冻住之后 ② 才可动', on: freeze },
-]);
-const menu = computed(() => [
-  { id: 'compile', label: '编译', tip: '跑一次编译命令，秒级', on: compile },
-  { id: 'clear', label: '清空输出', tip: '只清屏幕上的输出，不动文件', on: () => { output.value = ''; } },
-  {
-    id: 'timeout', label: '改超时', tip: '拉镜像的超时（分钟）',
-    on: async () => { minutesOpen.value = true; },
-  },
-  { id: 'skip', label: '跳过这步', danger: true, tip: '声明这个项目不需要容器环境', on: skip },
-  { id: 'cancel', label: '叫停', danger: true, tip: '让它停下来', hidden: !running.value, on: stop },
-]);
+/** 清屏：只清屏幕上的输出，不动任何文件。 */
+function clearOutput() {
+  output.value = '';
+}
+
+/** 打开「改超时」那一栏。 */
+function openTimeout() {
+  minutesOpen.value = true;
+}
+
+// 动作的名字/顺序/进哪个按钮组，全由后端 flow/Actions.java 声明；
+// 这里只提供"按 id 绑处理函数"与这一页自己的禁用条件。
+const handlers = {
+  agent, up, compile, skip, freeze, cancel: stop, clear: clearOutput, timeout: openTimeout,
+};
+const options = { disabled: { agent: Boolean(store.flow) === false } };
+const actions = head(node, handlers, options);
+const menu = menuOf(node, handlers, options);
 </script>
 
 <template>

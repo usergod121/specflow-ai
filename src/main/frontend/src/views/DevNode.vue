@@ -6,6 +6,7 @@ import { store, act, runAction, say, freezeNode } from '../store.js';
 import NodeShell from '../components/NodeShell.vue';
 import Fail from '../components/Fail.vue';
 import Empty from '../components/Empty.vue';
+import { head, menu as menuOf } from '../lib/actions.js';
 
 const node = 'dev';
 const view = ref({ whitelist: [], readable: [], prompt: '', feedback: '', compileCommand: '', compilePassed: false });
@@ -54,13 +55,10 @@ async function freeze() {
   }
 }
 
-const actions = [
-  { id: 'run', label: '跑开发', primary: true, tip: '只在白名单里改真项目，每次交差编译一次', on: run },
-  { id: 'freeze', label: '冻结', tip: '改完了，冻住：冻住之后 ⑤ 才可动', on: freeze },
-];
-const menu = [
-  { id: 'rollback', label: '回滚改动', danger: true, tip: '按快照把真项目退回原文', on: rollback },
-];
+// 名字/顺序/进哪个按钮组由后端 flow/Actions.java 声明，这里只绑处理函数
+const handlers = { run, freeze, rollback };
+const actions = head(node, handlers);
+const menu = menuOf(node, handlers);
 </script>
 
 <template>

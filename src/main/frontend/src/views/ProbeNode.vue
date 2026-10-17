@@ -6,6 +6,7 @@ import { store, act, runAction, freezeNode, say } from '../store.js';
 import NodeShell from '../components/NodeShell.vue';
 import Fail from '../components/Fail.vue';
 import Empty from '../components/Empty.vue';
+import { head, menu as menuOf } from '../lib/actions.js';
 
 const node = 'probe';
 const requirement = ref('');
@@ -85,15 +86,11 @@ function readBack(text) {
   return String(text || '').split('\n').map(one => one.trim()).filter(Boolean);
 }
 
-const actions = computed(() => [
-  { id: 'agent', label: '跑探针', primary: true, tip: '让它只读地读项目，交出四样产物', on: run },
-  { id: 'freeze', label: '冻结', tip: '冻结之后 ③ 才可动', on: freeze },
-]);
-const menu = computed(() => [
-  { id: 'brief', label: '存需求', tip: '把需求与设计写回项目文件', disabled: !dirty.value, on: brief },
-  { id: 'save', label: '保存产物', tip: '人改过的四样产物存回去', on: saveArt },
-  { id: 'cancel', label: '叫停', danger: true, tip: '让它停下来', hidden: !running.value, on: stop },
-]);
+// 名字/顺序/进哪个按钮组由后端 flow/Actions.java 声明，这里只绑处理函数与局部禁用条件
+const handlers = { agent: run, freeze, brief, save: saveArt, cancel: stop };
+const options = { disabled: { brief: !dirty.value } };
+const actions = head(node, handlers, options);
+const menu = menuOf(node, handlers, options);
 </script>
 
 <template>

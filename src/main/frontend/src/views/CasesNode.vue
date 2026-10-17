@@ -6,6 +6,7 @@ import { store, act, freezeNode, say, nodeView } from '../store.js';
 import { isFrozen } from '../lib/facts.js';
 import NodeShell from '../components/NodeShell.vue';
 import Fail from '../components/Fail.vue';
+import { head, menu as menuOf } from '../lib/actions.js';
 
 const node = 'cases';
 const rows = ref([]);
@@ -97,16 +98,11 @@ function drop(id) {
   rows.value = rows.value.filter(one => one.id !== id);
 }
 
-const actions = computed(() => [
-  {
-    id: 'save', label: '保存', primary: true, tip: '整份清单存回项目文件',
-    disabled: !rows.value.length, on: save,
-  },
-]);
-const menu = computed(() => [
-  { id: 'agent', label: '生成用例', tip: 'AI 出一版草稿，交回给你改（不落盘）', on: generate },
-  { id: 'freeze', label: '冻结', tip: '冻住之后 ④ 才可动', on: freeze },
-]);
+// 名字/顺序/进哪个按钮组由后端 flow/Actions.java 声明，这里只绑处理函数与局部禁用条件
+const handlers = { save, agent: generate, freeze };
+const options = { disabled: { save: !rows.value.length } };
+const actions = head(node, handlers, options);
+const menu = menuOf(node, handlers, options);
 </script>
 
 <template>

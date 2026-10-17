@@ -31,6 +31,7 @@
 
 | 方案 | 谁提的 / 为什么诱人 | 否掉的**证据** |
 |---|---|---|
+| ~~把节点动作散在 6 处~~ **已收敛（v3 收尾）**：`flow/Actions.java` 一份声明 → `GET /api/flow` 下发 → 视图只按 id 绑处理函数；视图里写按钮文案会让 `wiring.spec.js` 变红 | 触发事件：①④ 页面根本没有「冻结」按钮 | toonflow 的证据：节点动作只有一份定义、后端没有副本。**这条做了**，而"把流程做成 YAML"仍不做 |
 | `.specflow/flow.yaml` 驱动执行（流程 DSL） | 用户原话想要"顶层抽象与约束" | 评审 B：它会是**第四份真相**（`FlowState`/`Node`/前端页面之外多一份），而硬约束"前端尽量少改"让 yaml↔Vue 永远对不上，恰恰防不住它想防的那次事故（页面没冻结按钮）。**改法**：那一轮把统一封装落在 `Facts`/`Gates`/`CaseList` 三处既有抽象上，不新造一层。 |
 | `flow.Action` + 统一 `POST /api/flow/action` | 让路由变薄 | 评审 A(M3)：10 条带请求体的路由（`envSave`/`testApprove`/`testSubmit`…）根本装不进"一个动作一个 `Step`"，硬套就要为它们各开例外。收益抵不过复杂度。 |
 | `AgentRuntime` 替换 `Loop` | 预算/压缩/卡死集中一处 | 评审 A(M4)：`Loop` 的时序被 13 条测试钉着（每次调用推两条事件、`callId` 成对）。**改成装饰器**（`CaseBudget`、`StuckCheck`）效果一样、风险为零。 |
