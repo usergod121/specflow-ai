@@ -93,7 +93,7 @@ public final class Capabilities {
         }
 
         long started = System.currentTimeMillis();
-        Cmd.Result built = env.inApp(compile, timeoutSeconds, progress);
+        Cmd.Result built = env.inApp(inCopy(compile), timeoutSeconds, progress);
         long seconds = Math.max(0, (System.currentTimeMillis() - started) / 1000);
         if (!built.ok()) {
             // 自我修复一次：同一条命令要在宿主机和 Linux 容器两处都能跑，
@@ -104,13 +104,44 @@ public final class Capabilities {
                 return repaired;
             }
             return new Report(tool, true, false, seconds,
-                    "容器里有 `" + tool + "`，但构建没过（" + built.summary() + "）。"
-                            + "这是环境或项目本身的问题，⑤ 也一定会撞上——先在 ① 把它修好："
-                            + "看下面的原始输出，多半是缺系统依赖、网络拉不到依赖，或者编译命令要改成容器里那套。",
+                    "容器里有 `" + tool + "`，但它没编过（" + built.summary() + "）。"
+                            + "原始输出就在下面，最常见的两种："
+                            + "① 你的 target/ 是宿主机编出来的，容器里改不动（这时清掉 target 再来一次，"
+                            + "本版已经改成在容器内的副本里构建，不该再出现）；"
+                            + "② 真的缺东西或拉不到依赖（看下面第一条 ERROR）。",
                     tail(built.output(), 40), "");
         }
         return new Report(tool, true, true, seconds,
-                "容器里能构建（`" + tool + "`，" + seconds + " 秒）", "", "");
+                "容器里能构建（`" + tool + "`，" + seconds + " 秒，在容器内的副本里编的：不写你的 target/）",
+                "", "");
+    }
+
+    /**
+     * 容器里的构建命令：**在容器内的一份副本里跑**，绝不写项目目录。
+     *
+     * <h2>为什么不能直接在 /work 里编（用户实报的一次）</h2>
+     * ① 的容器把项目挂进 {@code /work}，而 {@code target/} 是**宿主机**（Windows）编出来的：
+     * 容器里的 uid 1000 去覆盖那些文件，得到的是
+     * {@code FileSystemException: /work/target/classes/application.yml: Operation not permitted}，
+     * mvn 退出码 1 —— 看起来像"镜像有问题"，其实是**写权限**：两边共享同一个输出目录。
+     *
+     * <p>所以容器侧的构建改成"复制到 /tmp 再编"：
+     * <ol>
+     *   <li>与工具无关（mvn / gradle / npm / javac 都适用，不用给每条命令加特殊的 -D 参数）；</li>
+     *   <li>宿主机侧的 {@code target/} 一个字节都不动（④ 的编译仍然直接产出在项目里，它要看得见）；</li>
+     *   <li>副本里先把 {@code target/} 删掉：那本来就是宿主机编出来的产物，带进容器只会添乱。</li>
+     * </ol>
+     * 依赖不用重下：{@code ~/.m2} 之类在外部缓存卷上（{@code /specflow-home}），与这份副本无关。
+     */
+    static String inCopy(String compile) {
+        String source = "/work";
+        String copy = "/tmp/specflow-build";
+        return "rm -rf " + copy
+                + " && mkdir -p " + copy
+                + " && cp -a " + source + "/. " + copy + "/"
+                + " && rm -rf " + copy + "/target"
+                + " && cd " + copy
+                + " && ( " + compile + " )";
     }
 
     /**
@@ -126,7 +157,7 @@ public final class Capabilities {
         }
         progress.line("容器里构建没过，先按 Linux 的写法再试一次：" + fixed);
         long started = System.currentTimeMillis();
-        Cmd.Result again = env.inApp(fixed, timeoutSeconds, progress);
+        Cmd.Result again = env.inApp(inCopy(fixed), timeoutSeconds, progress);
         long seconds = Math.max(0, (System.currentTimeMillis() - started) / 1000);
         if (!again.ok()) {
             return null;
