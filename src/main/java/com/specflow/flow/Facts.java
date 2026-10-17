@@ -31,7 +31,8 @@ package com.specflow.flow;
  */
 public record Facts(String compile, boolean envReady, boolean envNotNeeded, boolean envDeclared,
                     boolean probeFiles, boolean probePrompt, int caseCount, int casePending,
-                    boolean testRun, boolean submitted, boolean compilePassed) {
+                    boolean testRun, boolean submitted, boolean compilePassed,
+                    boolean containerBuild, String containerDetail) {
 
     // ---------- 事实的名字：写它的与读它的都用这里那一个（不变量 2） ----------
 
@@ -56,8 +57,23 @@ public record Facts(String compile, boolean envReady, boolean envNotNeeded, bool
     /** ⑤ 「清单里还有几条没到终态」。 */
     public static final String CASE_PENDING = "casePending";
 
-    /** ④ 「最近一次编译过没过」。 */
+    /** ④ 「最近一次编译过没过」（在**宿主机**上跑出来的结论）。 */
     public static final String COMPILE_PASSED = "compilePassed";
+
+    /**
+     * ① 「<b>容器里</b>真能构建」（{@code env.Capabilities} 验的）。
+     *
+     * <p>它和 {@link #COMPILE_PASSED} 是两件事，缺一就会出那个事故：宿主机有 Maven、容器里没有，
+     * 于是「编译通过」亮着绿灯，而下游 ⑤ 连构建都做不了（实测烧掉 30 分钟）。
+     * ① 的闸要的是<b>这一个</b>。
+     */
+    public static final String CONTAINER_BUILD = "containerBuild";
+
+    /** ① 能力校验的一句话（通过或没通过都说清是什么、该怎么改）。 */
+    public static final String CONTAINER_DETAIL = "containerDetail";
+
+    /** ① 能力校验认出来的构建工具（界面上那枚徽章）。 */
+    public static final String CONTAINER_TOOL = "containerTool";
 
     /** ⑤ 「这一轮测试真跑过」。 */
     public static final String TEST_RUN = "testRun";
@@ -88,6 +104,7 @@ public record Facts(String compile, boolean envReady, boolean envNotNeeded, bool
 
     public Facts {
         compile = compile == null ? "" : compile.strip();
+        containerDetail = containerDetail == null ? "" : containerDetail.strip();
     }
 
     /** 一条编译命令都没配（① 的闸两个条件里的第一个）。 */
@@ -97,6 +114,6 @@ public record Facts(String compile, boolean envReady, boolean envNotNeeded, bool
 
     /** 什么都还不知道的一份（刚开一条流程、以及单元测试用）。 */
     public static Facts empty() {
-        return new Facts("", false, false, false, false, false, 0, 0, false, false, false);
+        return new Facts("", false, false, false, false, false, 0, 0, false, false, false, false, "");
     }
 }

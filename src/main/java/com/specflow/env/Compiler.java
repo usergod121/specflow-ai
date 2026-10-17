@@ -40,6 +40,19 @@ public final class Compiler {
             }
             return new Result(false, "NONE", "", message, 0);
         }
+        // 这条命令是**在宿主机上、以当前用户身份**跑的（不像 ⑤ 的 bash 那样进容器），
+        // 所以它必须过同一套「一律不许」判据：`--privileged`、`-v /:/host`、`docker.sock`
+        // 这类写法不管出现在哪儿都不执行——模型起草的编译命令也算。
+        String forbidden = CommandGuard.forbidden(command);
+        if (forbidden != null) {
+            String message = "这条编译命令被拒绝执行：" + forbidden
+                    + "\n命令：" + command
+                    + "\n改成一条普通的构建命令（比如 mvn / gradle 的编译目标）再试。";
+            if (progress != null) {
+                progress.fail("编译命令被拒绝（高危写法）", message);
+            }
+            return new Result(false, "REJECTED", command, message, 0);
+        }
         Path root = project.root();
         long started = System.currentTimeMillis();
         if (progress != null) {

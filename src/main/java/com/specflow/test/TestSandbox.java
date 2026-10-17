@@ -78,6 +78,9 @@ public final class TestSandbox implements AutoCloseable {
         String projectName = Compose.projectName(project.root()) + "-sandbox";
         Path composeFile = copy.resolve("compose.yaml");
         Atomic.write(composeFile, Compose.render(config, copy, projectName));
+        // 沙箱也有自己的依赖缓存卷（与主环境那一个分开：⑤ 里装的东西不该污染 ①，反之亦然）
+        com.specflow.env.Environment.ensureHomeVolume(Compose.homeVolume(projectName),
+                config.image(), project.root());
 
         if (progress != null) {
             progress.step("起测试容器（挂副本）：docker compose up -d --wait", "", 600);

@@ -27,16 +27,27 @@ import java.util.Map;
  */
 public final class BashTool implements Tool {
 
+    /** 单条命令的默认时限：15 分钟。**这个数必须可配**——写死 300 秒的那一版把长构建掐了两次。 */
+    public static final long DEFAULT_TIMEOUT_SECONDS = 15 * 60;
+
     private final Shell shell;
     private final Path sandboxRoot;
     private final Approval approval;
     private final Progress progress;
+    private final long timeoutSeconds;
 
     public BashTool(Shell shell, Path sandboxRoot, Approval approval, Progress progress) {
+        this(shell, sandboxRoot, approval, progress, DEFAULT_TIMEOUT_SECONDS);
+    }
+
+    /** @param timeoutSeconds 单条命令最多等多久（由调用方按"这一步我愿意等多久"给） */
+    public BashTool(Shell shell, Path sandboxRoot, Approval approval, Progress progress,
+                    long timeoutSeconds) {
         this.shell = shell;
         this.sandboxRoot = sandboxRoot.toAbsolutePath().normalize();
         this.approval = approval == null ? Approval.allowAll() : approval;
         this.progress = progress == null ? Progress.quiet() : progress;
+        this.timeoutSeconds = timeoutSeconds <= 0 ? DEFAULT_TIMEOUT_SECONDS : timeoutSeconds;
     }
 
     @Override
@@ -68,6 +79,18 @@ public final class BashTool implements Tool {
         if (forbidden != null) {
             return ToolResult.failure(forbidden);
         }
+        // 提权：容器里不可能成功（uid 1000 + cap_drop ALL + 没有 sudo），所以**不问**，直接拒。
+        // 那一版问过：用户等了 187 秒回答"允许"，然后 `sudo: not found`。
+        String privilege = CommandGuard.privilege(command);
+        if (privilege != null) {
+            return ToolResult.failure(privilege);
+        }
+        // 给自己装工具链：那是 env.yaml 的事。拒掉并指名去 ① 改环境——
+        // 不拦的话它会花 20 轮下载 Maven，而容器是一次性的，下一轮全白干（实测）
+        String bootstrap = CommandGuard.bootstrap(command);
+        if (bootstrap != null) {
+            return ToolResult.failure(bootstrap);
+        }
         String risk = CommandGuard.highRisk(command);
         if (risk != null && !approval.ask(command, risk)) {
             return ToolResult.failure("这条命令被用户拒绝了，没有执行：`" + command + "`。"
@@ -77,7 +100,7 @@ public final class BashTool implements Tool {
         String inside = workdir.isEmpty() ? null : workdir;
         progress.step("bash：" + command, command, 0);
         List<String> tail = new ArrayList<>();
-        Shell.Result result = shell.run(command, inside, 300, line -> {
+        Shell.Result result = shell.run(command, inside, timeoutSeconds, line -> {
             progress.line(line);
             if (tail.size() < 40) {
                 tail.add(line);

@@ -32,11 +32,17 @@ public final class CaseList {
 
     /** 一条用例的终态归属。<b>{@code ERROR} 也是终态</b>：没测成也是结论，只是它不是「通过」。 */
     public enum Status {
-        PENDING, PASS, FAIL, ERROR;
+        PENDING, PASS, FAIL, ERROR,
+        /**
+         * <b>被跳过</b>（⑤ 的每用例预算用尽时自动打的）：它是终态，但<b>不是结论</b>——
+         * 所以 {@link Case#decided()} 不认它，界面上要显眼地说「这条没验成」，
+         * 用户可以在 ⑤ 页面对它点「重试这一条」。
+         */
+        SKIPPED;
 
         /**
          * 认大小写与前后空格：这文件是人手改的，写 {@code pass} 不该算错。
-         * 认不出来时给一句人话（合法的四个词都在里面），而不是一句 Jackson 的英文。
+         * 认不出来时给一句人话（合法的几个词都在里面），而不是一句 Jackson 的英文。
          */
         @JsonCreator
         public static Status from(String raw) {
@@ -47,7 +53,7 @@ public final class CaseList {
                 }
             }
             throw new IllegalArgumentException("用例状态认不出来：" + raw
-                    + "（只能是 PENDING / PASS / FAIL / ERROR）");
+                    + "（只能是 PENDING / PASS / FAIL / ERROR / SKIPPED）");
         }
     }
 
@@ -204,6 +210,21 @@ public final class CaseList {
 
     // ---------- 事实（读的都是同一份，不重算第二遍） ----------
 
+    /**
+     * 把一条标成<b>跳过</b>（⑤ 的每用例预算用尽时由 {@link CaseBudget} 调）。
+     *
+     * <p>不写成 {@code settle(..., SKIPPED, ...)} 而是单开一个方法：调用点读起来就该是
+     * "跳过这一条"，而不是"写一个 SKIPPED 结论"。
+     */
+    public void skip(String id, String why) {
+        settle(id, Status.SKIPPED, "", why == null || why.isBlank() ? "被跳过（没写原因）" : why);
+    }
+
+    /** 用户点「重试这一条」：把一条改回 {@code PENDING}，并按条预算从零开始。 */
+    public void reopen(String id) {
+        settle(id, Status.PENDING, "", "");
+    }
+
     public int count() {
         return cases().size();
     }
@@ -285,6 +306,14 @@ public final class CaseList {
                                 + (one.status() == Status.FAIL
                                 ? "哪里不符合预期（实际是什么、期望是什么）"
                                 : "为什么没测成（哪一步卡住了）"));
+                    }
+                }
+                case SKIPPED -> {
+                    // 跳过是终态，但**不是结论**：所以要求写清"为什么跳"，
+                    // 而且它不会让 decided 那一栏变多（见下面那条"没有一条真结论"）
+                    if (one.note().isBlank()) {
+                        problems.add(spot + "被跳过了但没写原因：写清卡在哪一步"
+                                + "（比如「每用例预算用尽」），或者回去点「重试这一条」");
                     }
                 }
             }

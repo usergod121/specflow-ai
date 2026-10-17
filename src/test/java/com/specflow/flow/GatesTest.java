@@ -51,10 +51,10 @@ class GatesTest {
     void probeNeedsFilesAndPrompt() {
         assertThat(Gates.blocked(Node.PROBE, facts("mvn compile", true, false, false))).isEmpty();
         assertThat(Gates.blocked(Node.PROBE,
-                new Facts("mvn compile", true, false, false, false, true, 3, 0, true, true, true)))
+                new Facts("mvn compile", true, false, false, false, true, 3, 0, true, true, true, true, "")))
                 .contains("能读的文件");
         assertThat(Gates.blocked(Node.PROBE,
-                new Facts("mvn compile", true, false, false, true, false, 3, 0, true, true, true)))
+                new Facts("mvn compile", true, false, false, true, false, 3, 0, true, true, true, true, "")))
                 .contains("prompt");
     }
 
@@ -63,7 +63,7 @@ class GatesTest {
     void casesNeedAtLeastOne() {
         assertThat(Gates.blocked(Node.CASES, facts("mvn compile", true, false, false))).isEmpty();
         assertThat(Gates.blocked(Node.CASES,
-                new Facts("mvn compile", true, false, false, true, true, 0, 0, false, false, true)))
+                new Facts("mvn compile", true, false, false, true, true, 0, 0, false, false, true, true, "")))
                 .contains("一条用例都没有");
     }
 
@@ -72,7 +72,7 @@ class GatesTest {
     void devNeedsCompilePassed() {
         assertThat(Gates.blocked(Node.DEV, facts("mvn compile", true, false, false))).isEmpty();
         assertThat(Gates.blocked(Node.DEV,
-                new Facts("mvn compile", true, false, false, true, true, 3, 0, true, true, false)))
+                new Facts("mvn compile", true, false, false, true, true, 3, 0, true, true, false, true, "")))
                 .contains("编译");
     }
 
@@ -81,10 +81,10 @@ class GatesTest {
     void testNeedsNoPendingAndSubmitted() {
         assertThat(Gates.blocked(Node.TEST, facts("mvn compile", true, false, false))).isEmpty();
         assertThat(Gates.blocked(Node.TEST,
-                new Facts("mvn compile", true, false, false, true, true, 3, 2, true, true, true)))
+                new Facts("mvn compile", true, false, false, true, true, 3, 2, true, true, true, true, "")))
                 .contains("2 条").contains("PENDING");
         assertThat(Gates.blocked(Node.TEST,
-                new Facts("mvn compile", true, false, false, true, true, 3, 0, true, false, true)))
+                new Facts("mvn compile", true, false, false, true, true, 3, 0, true, false, true, true, "")))
                 .contains("提交");
     }
 
@@ -120,11 +120,48 @@ class GatesTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    @DisplayName("① 环境起来了但**容器里构建不起来** → 拒，并且把「缺什么、怎么改」说清楚")
+    void envBlockedWhenContainerCannotBuild() {
+        Facts started = new Facts("mvn -q -DskipTests compile", true, false, false,
+                true, true, 0, 0, false, false, false, false,
+                "容器里没有 `mvn`，而项目配的编译命令是 `mvn -q -DskipTests compile`。"
+                        + "这不是测试该自己补的：改 .specflow/env.yaml 的 image");
+
+        String blocked = Gates.blocked(Node.ENV, started);
+
+        assertThat(blocked)
+                .as("这一条是实测事故的钉子：宿主机有 Maven、容器里没有，① 却亮着绿灯")
+                .contains("容器里构建不起来")
+                .contains("mvn")
+                .contains("image");
+    }
+
+    @Test
+    @DisplayName("① 声明了「不需要环境」→ 不要求容器能力（那时压根没有容器）")
+    void envNotNeededSkipsContainerBuild() {
+        Facts skipped = new Facts("mvn compile", false, true, false,
+                true, true, 0, 0, false, false, false, false, "");
+
+        assertThat(Gates.blocked(Node.ENV, skipped)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("① 能力校验还没跑过（detail 为空）→ 拒，但话术不唬人")
+    void envBlockedWhenCapabilityNeverChecked() {
+        Facts unchecked = new Facts("mvn compile", true, false, false,
+                true, true, 0, 0, false, false, false, false, "");
+
+        assertThat(Gates.blocked(Node.ENV, unchecked))
+                .contains("容器里构建不起来")
+                .contains("自动验一次");
+    }
+
     /** 五档门槛全过的一份事实（只改要点名的那几栏时用完整构造，读起来更直白）。 */
     private static Facts facts(String compile, boolean envReady, boolean envNotNeeded,
                                boolean envDeclared) {
         return new Facts(compile, envReady, envNotNeeded, envDeclared,
-                true, true, 3, 0, true, true, true);
+                true, true, 3, 0, true, true, true, true, "");
     }
 
     /** 一份状态表：只把点名的那一格设成给定状态，其余当「前置都做完了」（其余与本条无关）。 */

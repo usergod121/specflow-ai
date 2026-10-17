@@ -92,6 +92,13 @@ public final class Compose {
         for (Map.Entry<String, EnvConfig.Dependency> entry : config.dependencies().entrySet()) {
             dependency(out, entry.getKey(), entry.getValue());
         }
+        // 依赖缓存卷声明成 external：它**不属于这次 up/down 的生命周期**。
+        // 不这么写的话 `down -v` 会把缓存一起删掉——那等于每轮都从零下依赖（实测烧掉 17 分钟）。
+        // 「数据每轮重置、依赖跨轮复用」就是靠这一条分出来的。
+        out.append("volumes:\n")
+                .append("  ").append(quote(homeVolume(projectName))).append(":\n")
+                .append("    external: true\n")
+                .append("    name: ").append(quote(homeVolume(projectName))).append('\n');
         return out.toString();
     }
 

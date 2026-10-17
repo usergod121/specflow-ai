@@ -308,6 +308,7 @@ public final class FlowService {
     }
 
     private Facts facts(FlowState state) {
+        Map<String, String> envBag = state.facts().getOrDefault(Node.ENV, Map.of());
         return new Facts(
                 project.compile(),
                 state.flag(Node.ENV, Facts.ENV_READY),
@@ -321,7 +322,9 @@ public final class FlowService {
                 (int) Math.min(Integer.MAX_VALUE, state.number(Node.CASES, Facts.CASE_PENDING)),
                 state.flag(Node.TEST, Facts.TEST_RUN),
                 state.flag(Node.TEST, Facts.SUBMITTED),
-                state.flag(Node.DEV, Facts.COMPILE_PASSED));
+                state.flag(Node.DEV, Facts.COMPILE_PASSED),
+                state.flag(Node.ENV, Facts.CONTAINER_BUILD),
+                envBag.getOrDefault(Facts.CONTAINER_DETAIL, ""));
     }
 
     /**

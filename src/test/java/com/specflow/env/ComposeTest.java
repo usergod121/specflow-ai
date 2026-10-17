@@ -49,8 +49,24 @@ class ComposeTest {
         assertThat(yaml).containsOnlyOnce("type: bind");
         assertThat(yaml).contains("source: \"" + Compose.hostPath(root) + "\"");
         assertThat(yaml).contains("target: \"/work\"");
-        // 挂载点只此一处：db / cache 那两个服务里没有 volumes
-        assertThat(yaml).containsOnlyOnce("volumes:");
+        // app 的挂载块是**一处 bind（项目树）+ 一处 volume（依赖缓存）**；
+        // db / cache 那两个服务里没有 volumes，但顶层会为缓存卷写一段声明——
+        // 所以这里数的是 `type:` 而不是 "volumes:"（后者正确出现两次）
+        assertThat(yaml).containsOnlyOnce("type: bind");
+        assertThat(yaml).containsOnlyOnce("type: volume");
+    }
+
+    @Test
+    void 依赖缓存卷跨轮保留_而数据每轮重置(@TempDir Path root) {
+        String yaml = render(root);
+
+        // 这些写在卷上的东西（Maven 的 ~/.m2 之类）不该跟着 down -v 一起没：
+        // 不这么写的话每轮都得从零下依赖——实测就是 7 轮 sleep、17 分钟白等
+        assertThat(yaml).contains("external: true");
+        assertThat(yaml).contains("-home");
+        // HOME 由引擎定：缓存位置必须我们说了算，不能跟着"镜像里 uid 1000 恰好叫 ubuntu"走
+        assertThat(yaml).contains("target: \"" + Compose.HOME_IN_CONTAINER + "\"");
+        assertThat(yaml).contains("\"HOME\": \"" + Compose.HOME_IN_CONTAINER + "\"");
     }
 
     @Test

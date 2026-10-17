@@ -178,10 +178,14 @@ public class Api {
     }
 
     /**
-     * 起环境：拉镜像 + init + reset。
+     * 起环境：拉镜像 + init + <b>在容器里构建一次</b>。
      *
      * <p><b>同步</b>（与别的动作不同）：它的语义就是"点一下，等它好"，而过程会一边跑
      * 一边进事件流——用户看得到它在拉哪个镜像，所以挂着等不是"卡住"。
+     *
+     * <p>最后那一步是这一版的针对性修复：<b>"起来了"不等于"能用"</b>。原先起完就记
+     * {@code envReady}，而"能不能构建"没人验——容器里没有 Maven 也照样绿灯，⑤ 一进去就撞墙
+     * （实测烧掉 20 轮 / 30 分钟）。现在起完立刻问容器一句：这个项目在你里面构建得起来吗。
      */
     @PostMapping("/api/node/env/up")
     public Map<String, Object> envUp() {
@@ -189,13 +193,38 @@ public class Api {
         session.flow().requireReachable(Node.ENV, "起环境");
         com.specflow.core.EventProgress progress = new com.specflow.core.EventProgress(session.events(), Node.ENV.key());
         try (AutoCloseable ignored = com.specflow.core.Jobs.register(progress)) {
-            Environment.Registration registration = new Environment(project).up(progress);
-            session.flow().note(Node.ENV, Map.of("envReady", "true", "envState", registration.state()));
+            Environment environment = new Environment(project);
+            Environment.Registration registration = environment.up(progress);
+            session.flow().note(Node.ENV, Map.of(Facts.ENV_READY, "true", "envState", registration.state()));
+
+            Capabilities.Report capability = Capabilities.verify(environment, project, 30 * 60, progress);
+            Map<String, String> learned = new LinkedHashMap<>();
+            learned.put(Facts.CONTAINER_BUILD, String.valueOf(capability.ok()));
+            learned.put(Facts.CONTAINER_DETAIL, capability.detail());
+            learned.put("containerBuildSeconds", String.valueOf(capability.buildSeconds()));
+            if (!capability.tool().isBlank()) {
+                learned.put(Facts.CONTAINER_TOOL, capability.tool());
+            }
+            session.flow().note(Node.ENV, learned);
+            if (!capability.ok()) {
+                // 常驻一条 error：这句话最容易被忽略，而下游一定撞上它
+                session.events().error(Node.ENV.key(), "能力校验没过：" + capability.detail()
+                        + (capability.raw().isBlank() ? "" : "\n" + capability.raw()));
+            }
+
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("ok", true);
             body.put("seconds", progress.elapsedSeconds());
             body.put("containers", registration.containers());
             body.put("composeFile", registration.composeFile());
+            Map<String, Object> cap = new LinkedHashMap<>();
+            cap.put("ok", capability.ok());
+            cap.put("tool", capability.tool());
+            cap.put("toolOk", capability.toolOk());
+            cap.put("buildOk", capability.buildOk());
+            cap.put("seconds", capability.buildSeconds());
+            cap.put("detail", capability.detail());
+            body.put("capability", cap);
             return body;
         } catch (RuntimeException e) {
             // 失败**常驻**：error 事件已经由 progress 写进流里了，这里只把它交回响应

@@ -100,12 +100,69 @@ public final class Environment {
 
     // ---------- 起 ----------
 
+    /**
+     * 备好 app 的依赖缓存卷（{@code <项目名>-home}，compose 里声明成 external）。
+     *
+     * <p>为什么引擎自己动手建：命名卷第一次创建时属主是 root，而 app 以 {@code 1000:1000} 跑——
+     * 不 chown 的话构建工具会在自己的缓存目录上报 Permission denied，而那看起来像"代码的问题"。
+     *
+     * <p>chown 只在<b>新建</b>时做：缓存里动辄几万个文件，每次 up 都 chown 一遍纯属浪费。
+     */
+    public static void ensureHomeVolume(String volume, String image, Path workdir) {
+        boolean exists = Cmd.run(List.of("docker", "volume", "inspect", volume), workdir, null,
+                QUERY_TIMEOUT_SECONDS, null).ok();
+        if (exists) {
+            return;
+        }
+        Cmd.run(List.of("docker", "volume", "create", volume), workdir, null, QUERY_TIMEOUT_SECONDS, null);
+        Cmd.Result owned = Cmd.run(List.of("docker", "run", "--rm", "-u", "0", "-v",
+                        volume + ":/cache", image, "chown", "-R", Compose.SANDBOX_USER, "/cache"),
+                workdir, null, QUERY_TIMEOUT_SECONDS, null);
+        if (!owned.ok()) {
+            throw new SpecException("依赖缓存卷 " + volume + " 建好了，但改不了属主（" + owned.summary()
+                    + "）。按理这不该发生；原始输出：\n" + owned.output());
+        }
+    }
+
+    /**
+     * <b>在 app 容器里</b>跑一条命令——① 的能力校验、⑤ 的预检都走这里。
+     *
+     * <p>它与 {@link Compiler} 的分工，正是这一版吃过亏的那件事：{@code Compiler} 在<b>宿主</b>上跑
+     * （"这台机器怎么构建这个项目"），这一条跑在<b>容器</b>里（"下游真要用的时候能不能用"）。
+     * ① 的闸问的必须是后一个问题——不然容器里连 mvn 都没有，① 照样亮绿灯（实测踩过）。
+     *
+     * <p>命令原文走 stdin 交给容器里的 {@code sh -s}，与 ⑤ 的 bash 是同一条通道。
+     */
+    public Cmd.Result inApp(String command, long timeoutSeconds, Progress progress) {
+        Path file = activeCompose();
+        if (file == null) {
+            return new Cmd.Result(125, "环境还没起过：找不到引擎渲染出来的 " + COMPOSE_FILE
+                    + "，先在 ① 点「起环境」", false, 0);
+        }
+        Run run = new Run(progress == null ? Progress.quiet() : progress, file.getParent());
+        try {
+            return run.step("在容器里跑：" + commandSummary(command),
+                    run.argv("exec", "-T", Compose.APP_SERVICE, "sh", "-s"), command, timeoutSeconds);
+        } finally {
+            run.flush();
+        }
+    }
+
+    /** 一句话的命令摘要（进事件流那一栏用；长命令只留第一行前 60 字）。 */
+    private static String commandSummary(String command) {
+        String first = command == null ? "" : command.lines().findFirst().orElse("").strip();
+        return first.length() <= 60 ? first : first.substring(0, 60) + "…";
+    }
+
     /** 起环境：渲染 compose → {@code up -d --wait} → 逐条 init（失败即 {@code down -v} 并抛）。 */
     public Registration up(Progress progress) {
         EnvConfig config = declared();
         Run run = new Run(progress, runDir(stamp()));
         try {
             run.writeCompose(config);
+            // 缓存卷先备好：compose 里声明成了 external，不存在的话 up 会直接报错
+            ensureHomeVolume(Compose.homeVolume(Compose.projectName(project.root())), config.image(),
+                    project.root());
             Cmd.Result up = run.step("起容器（拉镜像 + 等健康检查）", run.argv("up", "-d", "--wait"),
                     null, upTimeoutSeconds);
             stopIfCancelled(progress, run);
