@@ -52,12 +52,12 @@ java -jar target\specflow.jar env down    -p <项目>  # 收干净（主环境 +
 
 | 套件 | 数量 | 命令 |
 |---|---|---|
-| 后端 | **162 条全绿** | `mvn -o test -Dfrontend.skip=true` |
+| 后端 | **163 条全绿** | `mvn -o test -Dfrontend.skip=true` |
 | 前端 | **105 条全绿**（7 个文件） | `cd src/main/frontend; npx vitest run` |
 | 前端构建 | 过（143 kB js / 14 kB css） | `npx vite build` |
 
 这一轮**新加**的钉子：`EventLogTest` 6 条（id≡行号 / 重启接着数 / 外部改动可见 / 坏行变 warn /
-回退先留副本 / 文件不在不抛）、`CaseBudgetTest` 5 条（超预算跳过 / 写结论换账 / 无待验不拦 /
+回退先留副本 / 文件不在不抛）、`CaseBudgetTest` 6 条（准备宽限 / 超预算跳过 / 写结论换账 / 无待验不拦 /
 SKIPPED 是终态不是结论 / reopen 可重跑）、`CommandGuardTest` 6 条（`$HOME` 放行 / `sudo` 直接拒 /
 装工具链拒 / 脚手架放行 / 老两档还在 / 认出构建工具）、`BudgetsTest` 4 条、
 `StuckCheckTest` 3 条，外加 `GatesTest` 里 3 条（容器能力校验）与前端 `wiring.spec.js` 10 条。
@@ -91,7 +91,7 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 |---|---|---|
 | ① 的闸新增 `containerBuild`：起完环境**在容器里**认工具 + 真构建一次 | 容器里没有 Maven，① 却亮绿灯；⑤ 自己装 Maven 烧掉 28 轮 / 15 分钟 | `GatesTest` + 真项目会红并给出改法 |
 | `Preflight`：⑤ 开工前 `command -v`，缺工具立刻失败并指名 ① | 同上（最划算的一条：几百毫秒换掉 28 轮） | 端到端 + 单测 |
-| `CaseBudget`：每条用例 12 轮，超了标 `SKIPPED`；`case_update` 换账；新增「重试这一条」 | 60 轮用尽、12 条用例 0 条结论；摘要还谎报 0 | `CaseBudgetTest` 5 条 |
+| `CaseBudget`：每条用例 12 轮，超了标 `SKIPPED`；`case_update` 换账；新增「重试这一条」 | 60 轮用尽、12 条用例 0 条结论；摘要还谎报 0 | `CaseBudgetTest` 6 条 |
 | `CommandGuard` 三档：`$HOME` 放行、`sudo` 直接拒、装工具链直接拒 | 2 轮无理由硬拒 + 187 秒无效审批 + 20 轮装 Maven | `CommandGuardTest` 6 条 |
 | `Budgets`：超时收成一个来源 | 界面「改超时」只回显不生效（Javadoc 说共用、方法体却写死 30 分钟） | `BudgetsTest` 4 条 |
 | 依赖缓存卷（external，跨轮保留） | 每轮重下依赖：7 轮 `sleep`、17 分钟白等 | `ComposeTest` 断言 `external: true` 与 `HOME` |
@@ -126,12 +126,12 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 ```
 cd E:\specflow-v2
 mvn -o test -Dfrontend.skip=true
-→ [INFO] Tests run: 162, Failures: 0, Errors: 0, Skipped: 0
+→ [INFO] Tests run: 163, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 
 逐类（节选，全绿共 21 个测试类）：`agent.LoopTest` 13、`test.CaseListTest` 18、`flow.GatesTest` 14、
-`test.SandboxTest` 7、`core.EventLogTest` 6、`env.CommandGuardTest` 6、`test.CaseBudgetTest` 5、
+`test.SandboxTest` 7、`core.EventLogTest` 6、`env.CommandGuardTest` 6、`test.CaseBudgetTest` 6、
 `env.BudgetsTest` 4、`agent.StuckCheckTest` 3、`core.JsonTest` 5、`test.ApprovalsTest` 5。
 
 ### 2. 前端
