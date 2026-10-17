@@ -410,12 +410,21 @@ kept.addAll(tail);                                             // 最近 keepTai
     Map&lt;Param, …&gt; params();                // 参数声明（缺必填就拒，不看值是不是空串）
     ToolResult run(Map&lt;String, Object&gt; args);
 }</code></pre>
-<pre><code>// StuckCheck：连续 3 次完全相同的调用之后拦下来
-String key = name() + " " + String.valueOf(args);
-if (key.equals(last)) same++; else { last = key; same = 1; }
-if (same &gt; REPEATS) return ToolResult.failure("同一条调用你已经连着做了 " + same + " 次…");</code></pre>
-<div class="why">这一条对应"连着 7 轮 <code>sleep 240</code> 看日志"：每轮都成功、每轮都毫无进展。
-轮次预算拦不住它（它没失败）。<span class="cite">参考 OpenHands 的 stuck detector（我们只做了一条判据，注释里写明）</span></div>
+<pre><code>// StuckCheck：两级处置 —— 第 4 次只提醒，第 6 次才判死
+if (same &gt;= HARD_AT)  return ToolResult.failure("…这是卡死，不是推进。该收场了：把这条用例标 ERROR…");
+if (same &gt;= NUDGE_AT) return ToolResult.failure("…这是原地打转。换一种做法…（再连着来 2 次我就让你收场）");
+return inner.run(args);</code></pre>
+<div class="why">这一条对应"连着 7 轮 <code>sleep 240</code> 看日志"：每轮都成功、每轮都毫无进展，轮次预算拦不住它。
+<b>为什么是两级</b>：深读 OpenHands 的 <code>openhands/controller/stuck.py</code> 发现它是 3 次提醒、4 次判死——
+那份研究里有句话很扎：<b>我们原来是在最有救的那一刻把用例判死</b>。
+<span class="cite">参考 OpenHands stuck detector（我们只做了"同一条调用重复"这一条判据，注释里写明）</span></div>
+
+<h3>8.4 <code>Loop.grounding()</code>：每条结果钉一行"你在哪"</h3>
+<pre><code>messages.add(Llm.Msg.user(where.isBlank() ? body : body + "\n（当前位置：" + where + "）"));</code></pre>
+<div class="why">实测里模型在 <code>bash</code>（容器路径 <code>/work</code>）与文件工具（相对路径）之间来回猜，
+白烧 5 轮。提示词里解释过"两个世界"，它还是猜错——<b>解释一次不如每条结果都报一次</b>。
+<span class="cite">参考 SWE-agent：给每条 observation 钉 <code>(Current directory: …) (Open file: …)</code>
+（<code>config/sweagent_0_7/07.yaml:68-72</code>）——不解释差异，只报当前位置</span></div>
 
 <h2 id="ch9">9 · <code>test</code>：容器里逐条验</h2>
 <h3>9.1 <code>CaseBudget</code>：预算的粒度是"一条用例"</h3>
@@ -616,7 +625,9 @@ function ingest(view) {                        // 两条路共用这一个口子
   <tr><td>轮询慢半拍</td><td>SSE（后端 <code>/stream</code> + 前端 EventSource + 轮询兜底）</td><td>curl 看帧 + 七页各订一条</td></tr>
   <tr><td>崩溃恢复只写在文档里（<code>Journal.sweep</code> 没有调用点）</td><td>接上 <code>sweep()</code> 与 <code>FlowService.close()</code></td><td>打开有残留运行的项目会在事件流看到"被中断"</td></tr>
   <tr><td>长对话会爆</td><td><code>Compact</code>（确定性锚点）</td><td><code>CompactTest</code> 4 条</td></tr>
-  <tr><td>崩了/被预算挡住之后不知道从哪继续</td><td><code>Checkpoint</code> + <code>GET …/checkpoint</code> + <code>POST …/resume</code></td><td><code>CheckpointTest</code> 4 条</td></tr>
+  <tr><td>模型在容器路径与相对路径之间猜，5 轮白烧</td><td><code>Loop.grounding()</code>：每条工具结果钉一行「当前位置」</td><td>端到端 + 提示词</td></tr>
+<tr><td>「上周那几轮通过率」查不到</td><td><code>flow/FlowIndex</code> + <code>GET /api/flows</code>（扫目录汇总，不建索引）</td><td><code>FlowIndexTest</code> 4 条</td></tr>
+<tr><td>卡死检测在最有救的时候判死</td><td><code>StuckCheck</code> 改两级：4 次提醒、6 次判死</td><td><code>StuckCheckTest</code> 3 条</td></tr><tr><td>崩了/被预算挡住之后不知道从哪继续</td><td><code>Checkpoint</code> + <code>GET …/checkpoint</code> + <code>POST …/resume</code></td><td><code>CheckpointTest</code> 4 条</td></tr>
 </table>
 
 <h2 id="ch15">15 · 明确没做的</h2>
@@ -628,7 +639,7 @@ function ingest(view) {                        // 两条路共用这一个口子
   不是正确性所需；我们的三个装饰器已等价覆盖。要做的只是"装饰器返回值从 boolean 升级成四值枚举"（待办）。</li>
   <li><b>跨重启的可恢复中断（把对话历史落盘再接着跑）没做</b>——上面 §13.1 已说明为什么：它要求把两万字符一条的工具结果也落盘，
   那是第二份真相。我们选了"用例粒度的续跑"，覆盖 90% 的真实场景。</li>
-  <li><b>跨流程查询没做</b>：要统计"上周那几轮的通过率"只能遍历各 <code>events.jsonl</code>。</li>
+  
   <li><b><code>Api</code> 层没有单元测试</b>：项目没引 <code>spring-boot-starter-test</code>；覆盖靠浏览器冒烟 + SSE curl + 端到端。</li>
   <li><b>审批的超时分支没实测</b>：问→答→执行→写回已在真跑里走通（最后一次端到端 `替你点了 1 条审批`），但"人不在、等满 2 分钟按拒"只有单测覆盖。</li>
   <li><b>界面没有逐页视觉走查</b>：我看不到图（模型不接图像输入）。</li>
@@ -642,7 +653,7 @@ function ingest(view) {                        // 两条路共用这一个口子
 双击 dev.bat          ← 只有改前端时才用（Vite 热更新）
 
 :: 验
-mvn -o test -Dfrontend.skip=true                 后端（171 条）
+mvn -o test -Dfrontend.skip=true                 后端（175 条）
 cd src/main/frontend; npx vitest run             前端（105 条）
 node tests/smoke.mjs &lt;jar&gt;                       七个路由零控制台错误（真浏览器）
 node E:\sf-e2e\run2.mjs --jar target\specflow.jar  五节点端到端（真模型 + 真 Docker）</code></pre>

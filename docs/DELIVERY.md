@@ -52,7 +52,7 @@ java -jar target\specflow.jar env down    -p <项目>  # 收干净（主环境 +
 
 | 套件 | 数量 | 命令 |
 |---|---|---|
-| 后端 | **171 条全绿** | `mvn -o test -Dfrontend.skip=true` |
+| 后端 | **175 条全绿** | `mvn -o test -Dfrontend.skip=true` |
 | 前端 | **105 条全绿**（7 个文件） | `cd src/main/frontend; npx vitest run` |
 | 前端构建 | 过（143 kB js / 14 kB css） | `npx vite build` |
 
@@ -126,7 +126,7 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 ```
 cd E:\specflow-v2
 mvn -o test -Dfrontend.skip=true
-→ [INFO] Tests run: 171, Failures: 0, Errors: 0, Skipped: 0
+→ [INFO] Tests run: 175, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 

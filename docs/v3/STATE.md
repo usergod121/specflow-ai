@@ -13,12 +13,12 @@ M4 闸拆表）→ 再把用户实测出来的 8 条缺陷修掉（C1）→ 全�
 
 ## 现在到哪一步（全部完成，逐条见 `PLAN.md` 的勾）
 
-- [x] A 研究（13 个 subagent 因会话中断只留下半页 → 改为我直接写架构，标注【实测】/【常识】）
+- [x] A 研究：**第一轮 13 个 subagent 因会话中断全丢**（只剩半页）；**第二轮 8 个深读全部落盘**（约 390KB，逐条带 `文件:行`）：langgraph / temporal / argo / dify / openhands / aci(SWE-agent+Aider) / claude-code / toonflow
 - [x] B 架构文档 + 两份评审 + 取舍记录（`ARCH-V3.md` / `DECISIONS.md`）
 - [x] C1 缺陷修复 11 条（容器能力校验、每用例预算/跳过/重试、Preflight、守卫三档、依赖缓存卷…）
-- [x] M1–M4 + 事件流行快照（后端测试 162→163 条）
+- [x] M1–M4 + 事件流行快照 + 压缩 + 断点 + 三态审批 + 位置提示 + 跨流程一览（后端测试 149 → **175 条**）
 - [x] C3 SSE（后端 + 前端 + 真浏览器验证）
-- [x] D 端到端（真模型 + 真 Docker）：**98 秒通过**，`reports-v2\v3-e2e-3.log`
+- [x] D 端到端（真模型 + 真 Docker）：**连着三次通过**（98s / 91s / 227s；PASS 8–10 条，模型每次即兴写法不同）；`reports-v2\v3-e2e-*.log`
 - [x] E 交付：`docs/BOOK.html`（类书）、`docs/DELIVERY.md`、三个 bat
 
 ## 端到端里又抓到的两条（都修了，值得记住）
