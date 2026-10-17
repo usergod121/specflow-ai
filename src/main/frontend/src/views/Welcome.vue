@@ -5,13 +5,17 @@
  * 最近列表里的**每一项都是按钮**（不再是"看起来能点但其实是文本"）；
  * 不存在的条目直接标出来——它们是"被移动/删掉的项目"，不该假装还在。
  */
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { store, openProject, loadRecent } from '../store.js';
+import { store, openProject, loadRecent, dismiss } from '../store.js';
 
 const router = useRouter();
 const path = ref('');
 const picked = ref('');
+
+/** 打开项目的失败也要显示出来（`act()` 用的 scope 是 `project:open`）。 */
+const mine = computed(() => store.failures.filter((one) =>
+  String(one.scope || '').startsWith('project')));
 
 async function enter(where) {
   const done = await openProject(where);
@@ -37,6 +41,11 @@ async function forget(where) {
       <span class="grow" />
       <span class="dim">所有状态都存在项目目录里的 <code class="mono">.specflow/</code></span>
     </header>
+
+    <div v-for="one in mine" :key="one.id" class="banner" data-failure>
+      <span class="text">{{ one.text }}</span>
+      <button type="button" class="x" title="关掉这条" @click="dismiss(one.id)">×</button>
+    </div>
 
     <section class="sec">
       <div class="sec-head"><h2>最近打开</h2></div>

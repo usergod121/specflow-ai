@@ -9,7 +9,7 @@
  *   3. `disabled` 是**每次渲染重算的**（读 busy / 局部条件），绝不在挂载时算一次就冻住。
  */
 import { computed } from 'vue';
-import { store, node, actionsOf, busy, failuresOf, dismiss } from '../store.js';
+import { store, node, actionsOf, busy, dismiss } from '../store.js';
 import { statusWord, pillTone } from '../lib/status.js';
 
 const props = defineProps({
@@ -64,7 +64,13 @@ const word = computed(() => statusWord(view.value.state, store.running && store.
 const tone = computed(() => pillTone(view.value.state, store.running && store.node === props.nodeKey,
   String(view.value.facts && view.value.facts.failed) === 'true'));
 const gate = computed(() => String(view.value.blockedReason || ''));
-const mine = computed(() => failuresOf(props.nodeKey || 'page'));
+/**
+ * 这一页的失败条：`act()` 用的 key 是 `env:up` / `probe:agent` 这种「节点:动作」，
+ * 所以按**前缀**取。原来这里只比 `nodeKey`，于是后端明明回了 400/409，页面上一片安静——
+ * 用户的原话就是「点了跑探针没有反应」。
+ */
+const mine = computed(() => store.failures.filter((one) =>
+  one.scope === props.nodeKey || String(one.scope || '').startsWith(props.nodeKey + ':')));
 
 function run(one) {
   one.on();

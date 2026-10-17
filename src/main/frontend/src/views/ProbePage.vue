@@ -57,7 +57,17 @@ async function saveArtifacts() {
 }
 
 const handlers = {
+  // 跑探针之前**先把需求写进去**：后端读的是已保存的需求，而用户刚打的字还在框里。
+  // 不这么做，点「跑探针」只会得到一句「需求还是空的」——用户看到的就是"点了没反应"。
   agent: async () => {
+    if (!requirement.value.trim()) {
+      return;
+    }
+    const saved = await act(`${key}:brief`, () => api.probeBrief(requirement.value, design.value));
+    if (!saved.ok) {
+      return;
+    }
+    dirty.value = false;
     const done = await act(`${key}:agent`, () => api.probeAgent());
     if (done.ok) {
       setTimeout(load, 800);
@@ -74,7 +84,20 @@ const handlers = {
   cancel: () => act(`${key}:cancel`, () => api.cancel()),
 };
 
-const local = (id) => (id === 'brief' && !dirty.value ? { disabled: true, tip: '没有改动' } : {});
+/**
+ * 局部禁用：**每次渲染重算**。
+ * 「跑探针」在需求为空时直接灰掉并说明——探针照需求去读项目，没有需求它没法开工
+ * （后端也会 400，但让人先看见原因，比让他点一下再读红字好）。
+ */
+const local = (id) => {
+  if (id === 'agent' && !requirement.value.trim()) {
+    return { disabled: true, tip: '先在下面「需求」框里写一句：探针照它去读项目' };
+  }
+  if (id === 'brief' && !dirty.value) {
+    return { disabled: true, tip: '没有改动' };
+  }
+  return {};
+};
 const bump = () => {
   dirty.value = true;
 };
