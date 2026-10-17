@@ -98,9 +98,11 @@ function drop(id) {
   rows.value = rows.value.filter(one => one.id !== id);
 }
 
-// 名字/顺序/进哪个按钮组由后端 flow/Actions.java 声明，这里只绑处理函数与局部禁用条件
+// 名字/顺序/进哪个按钮组由后端 flow/Actions.java 声明，这里只绑处理函数与局部禁用条件。
+// **禁用条件必须是函数**：写成字面量会被冻在组件挂载那一刻（挂载时清单还是空的），
+// 于是「保存」永远是灰的——加了用例也点不动，而且不报任何错。
 const handlers = { save, agent: generate, freeze };
-const options = { disabled: { save: !rows.value.length } };
+const options = () => ({ disabled: { save: !rows.value.length } });
 const actions = head(node, handlers, options);
 const menu = menuOf(node, handlers, options);
 </script>

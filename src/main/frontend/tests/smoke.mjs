@@ -73,6 +73,21 @@ try {
   page.on('pageerror', error => errors.push('pageerror: ' + error.message));
 
   const report = [];
+  // 后端声明了哪些"页头按钮"（`GET /api/flow` 的 actions）：界面上必须真的画出来。
+  // 这一条是补的：动作表曾经在 NodeView 里、也在 Actions.TABLE 里，可路由没往外掏 ——
+  // 于是五个页面全都"只有状态、没有按钮"，而且不报任何错。光听控制台发现不了，得拿声明去对账。
+  // 先落到站点上再问接口：about:blank 是不透明来源，fetch 会被 CORS 挡掉
+  await page.goto(BASE + '/', { waitUntil: 'networkidle' });
+  const declared = await page.evaluate(async (url) => {
+    const flow = await (await fetch(url)).json();
+    const out = {};
+    for (const node of flow.nodes || []) {
+      out[node.key] = (node.actions || [])
+        .filter(one => one.menu !== true && one.onlyWhileRunning !== true)
+        .map(one => String(one.label || ''));
+    }
+    return out;
+  }, BASE + '/api/flow');
   for (const route of ROUTES) {
     errors.length = 0;
     await page.goto(BASE + route, { waitUntil: 'networkidle' });
@@ -90,6 +105,9 @@ try {
       folds: document.querySelectorAll('details.fold').length,
       chips: document.querySelectorAll('.chips').length,
       log: document.querySelectorAll('.log > li').length,
+      headButtons: Array.from(document.querySelectorAll('.page-head button.btn'))
+        .map(one => (one.textContent || '').replace(/\s+/g, ' ').trim())
+        .filter(one => one && one !== '\u22ef'),
     }));
     report.push({ route, errors: [...errors], shown, seen });
     if (errors.length || shown.length) {
@@ -97,6 +115,15 @@ try {
     }
     if (!seen.shell) {
       problems.push(route + '：外壳没渲染出来（#app 是空的？）');
+    }
+    // 五个节点页：声明里有几个页头动作，就得看见几个按钮
+    const key = route.replace('/', '');
+    if (declared[key] && declared[key].length) {
+      const missing = declared[key].filter(label => !seen.headButtons.includes(label));
+      if (missing.length) {
+        problems.push(route + '：后端声明了页头动作「' + declared[key].join('、')
+          + '」，界面上缺「' + missing.join('、') + '」');
+      }
     }
   }
 
@@ -124,7 +151,8 @@ try {
       one.shown.length ? '✗ 页面有失败信息: ' + one.shown.join(' / ') : '✓ 无失败面板',
     ];
     console.log(`${one.route.padEnd(11)} h1「${String(one.seen.title).trim()}」 `
-      + `侧栏 ${one.seen.rail} 格 · 分区 ${one.seen.panels} 块 · 折叠 ${one.seen.folds} 个 · chip 区 ${one.seen.chips} 个 `
+      + `侧栏 ${one.seen.rail} 格 · 分区 ${one.seen.panels} 块 · 折叠 ${one.seen.folds} 个 · chip 区 ${one.seen.chips} 个 · `
+      + `页头按钮 ${one.seen.headButtons.length} 个${one.seen.headButtons.length ? '「' + one.seen.headButtons.join('」「') + '」' : ''} `
       + `状态「${String(one.seen.status).replace(/\s+/g, ' ').trim().slice(0, 20)}」 ${marks.join(' ')}`);
   }
   console.log(ordered

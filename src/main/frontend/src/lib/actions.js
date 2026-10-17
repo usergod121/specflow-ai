@@ -24,11 +24,19 @@ export function declared(key) {
  *
  * @param key      节点 key
  * @param handlers id → 处理函数（视图提供）
- * @param options  { disabled: {id: boolean} }（视图提供的局部禁用条件）
+ * @param options  `{ disabled: {id: boolean} }`，**也可以是返回它的函数**（视图提供的局部禁用条件）
+ *
+ * <h2>为什么允许传函数（一条真 bug）</h2>
+ * 这里是在 <b>computed 里每次求值</b>的，可如果视图传的是一个在 setup 时就求好的字面量
+ * （`{ disabled: { agent: Boolean(store.flow) === false } }`），那个值就被冻在"组件挂载那一刻"了：
+ * 直接打开 `/env` 时 `/api/flow` 还没回来 → `store.flow` 是空的 → 「探测环境」按钮被
+ * <b>永久禁用</b>，而页面其它地方都是响应式的（状态、徽章都正常），只有这一个按钮点不动、
+ * 还不报任何错。传函数就没有这个问题：每次重算都会重新读一遍 store。
  */
 export function bind(key, handlers, options = {}) {
+  const resolved = typeof options === 'function' ? options() : options;
   const running = store.running === true;
-  const disabled = options.disabled || {};
+  const disabled = (resolved && resolved.disabled) || {};
   return declared(key)
     .filter(one => !one.onlyWhileRunning || running)
     .map(one => {

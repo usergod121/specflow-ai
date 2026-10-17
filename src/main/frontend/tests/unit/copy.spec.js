@@ -72,7 +72,7 @@ describe('界面文案预算（UI.md §5）', () => {
   });
 
   it('状态条那一句 ≤6 个汉字', () => {
-    for (const word of ['未开始', '进行中', '已完成', '失败', '未保存', '已就绪']) {
+    for (const word of ['未开始', '进行中', '已完成', '失败', '未保存', '待完成']) {
       expect(countHan(word)).toBeLessThanOrEqual(6);
     }
     const shell = read('src/components/NodeShell.vue');

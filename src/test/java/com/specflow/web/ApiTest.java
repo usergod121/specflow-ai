@@ -148,6 +148,35 @@ class ApiTest {
     }
 
     @Test
+    @DisplayName("/api/flow：每一格都带 actions（漏了这一行 = 五个页面全都没有按钮）")
+    @SuppressWarnings("unchecked")
+    void flowViewShipsActions(@TempDir Path root) throws IOException {
+        Api api = new Api(opened(project(root)));
+
+        Map<String, Object> view = api.flow();
+        List<Map<String, Object>> nodes = (List<Map<String, Object>>) view.get("nodes");
+
+        for (Map<String, Object> node : nodes) {
+            // 这里拿到的是 Actions.ActionSpec（进程内），serialize 成 JSON 后就是前端 lib/actions.js
+            // 认的那几栏：id 用来绑处理函数、label 显示、menu 决定进页头还是「⋯」
+            List<com.specflow.flow.Actions.ActionSpec> actions =
+                    (List<com.specflow.flow.Actions.ActionSpec>) node.get("actions");
+            assertThat(actions)
+                    .as("「%s」这一格的动作表", node.get("key"))
+                    .isNotNull()
+                    .hasSizeGreaterThanOrEqualTo(2);
+            assertThat(actions.get(0).id()).as("id 不能是空的：前端按它绑处理函数").isNotBlank();
+            assertThat(actions.get(0).label()).as("label 不能是空的：界面上要显示它").isNotBlank();
+        }
+
+        // ① 的两个关键入口必须在（起环境是它唯一能往下走的路；冻结是解锁下游的唯一入口）
+        List<com.specflow.flow.Actions.ActionSpec> env =
+                (List<com.specflow.flow.Actions.ActionSpec>) nodes.get(0).get("actions");
+        assertThat(env.stream().map(com.specflow.flow.Actions.ActionSpec::id).toList())
+                .contains("up", "freeze");
+    }
+
+    @Test
     @DisplayName("路由上不认识的节点名：抛 ApiException（由 Errors 翻成 400），不是 500")
     void unknownNodeIsBadRequest(@TempDir Path root) throws IOException {
         Api api = new Api(opened(project(root)));

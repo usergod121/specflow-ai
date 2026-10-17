@@ -103,7 +103,7 @@
   <a href="#p6">第 6 部分 · 参考与借鉴 ★</a><br />
   <a href="#p7">第 7 部分 · 质量：测试与已知缺口</a><br />
   <a href="#p8">第 8 部分 · 怎么跑、怎么修</a><br />
-  <a href="#p9">第 9 部分 · 这次核查抓到什么（九条接线缺口）</a><br />
+  <a href="#p9">第 9 部分 · 这次核查抓到什么（十条接线缺口）</a><br />
   <a href="#p10">第 10 部分 · 工程细节十二条</a>
 </div>
 
@@ -1163,8 +1163,8 @@ curl.exe -s "http://127.0.0.1:8780/api/actuator/metrics/specflow.runs"   <span c
 
 <!-- ============================================================ -->
 <p class="part">第 9 部分</p>
-<h2 id="p9">这次核查抓到什么（九条接线缺口）</h2>
-<p>交付前做了一遍系统核查，判据<b>不是"跑通没跑通"，而是"每一处接了吗"</b>。抓到九条，
+<h2 id="p9">这次核查抓到什么（十条接线缺口）</h2>
+<p>交付前做了一遍系统核查，判据<b>不是"跑通没跑通"，而是"每一处接了吗"</b>。抓到十条，
 它们有同一个形状：<b>东西都在、跑起来不报错、测试全绿，只是中间某一段没接上。</b>
 逻辑错会红、会抛、会留痕；接线错什么都不留，只有<b>人去点一下</b>才发现。</p>
 <table>
@@ -1178,17 +1178,34 @@ curl.exe -s "http://127.0.0.1:8780/api/actuator/metrics/specflow.runs"   <span c
   <tr><td>7</td><td><code>Snapshot</code>（把真项目退回原文）<b>零测试</b>、<code>accept()</code> 从没被调用</td><td>核查"哪些类是零测试"</td><td>回滚写坏项目 = 二次伤害；每跑一次开发就在盘上留一份没人处置的原文副本</td><td>补 6 条测试；④ 冻结时 <code>accept()</code> 掉那一份</td><td><code>SnapshotTest</code> 6 条</td></tr>
   <tr><td>8</td><td><code>Metrics</code> 写完了但<b>一个调用点都没有</b></td><td>核查"文档说的事在代码里存在吗"</td><td><code>/api/actuator/metrics</code> 里永远只有框架指标，"是个例还是每次都这样"答不了</td><td><code>App</code> 里装上 registry，5 处调用（跑 / 收场 / 模型 / 审批 / 闸）</td><td>真引擎上 5 个指标出现（§7.1.5）</td></tr>
   <tr><td>9</td><td><code>StuckCheck</code> 只包了 ⑤ 的工具</td><td>核查"装饰器装了哪几处"</td><td>④ 反复 <code>read_file</code> 同一个文件、② 反复列同一个目录，照样能把轮次烧光</td><td>五格都包（<code>subject</code> 决定话术：用例 / 这一轮）</td><td><code>StuckCheckTest</code> 加 1 条</td></tr>
+  <tr><td><b>10</b></td><td><b><code>Api.flowView()</code> 没把 <code>actions</code> 拼进响应</b>（<code>NodeView</code> 有、<code>Actions.TABLE</code> 也写了，就是没往外掏）</td><td><b>用户报的</b>：「点新开流程，/env 显示个环境已就绪的灰色，也没有起环境的按钮」</td><td><b>五个页面全都只有状态、没有按钮</b>，而且不报任何错——用户连第一步都点不了</td><td>把它加回响应；同时把 READY 的词从「已就绪」改成「待完成」（见下）</td><td><code>ApiTest</code> 断言每格都带 actions；<code>smoke.mjs</code> 拿声明和真实渲染的页头按钮对账</td></tr>
+  <tr><td><b>11</b></td><td><b>视图把禁用条件写成了字面量</b>（<code>{ disabled: { agent: store.flow === null } }</code>），它只在挂载那一刻求一次值</td><td>用户报的「探测环境点不动」：我用真浏览器复现，按钮 <code>disabled:true</code>，点击<b>一个请求都没发</b></td><td>直接打开 <code>/env</code> 时 <code>/api/flow</code> 还没回来 → 按钮<b>永久禁用</b>；状态与徽章都正常（它们是响应式的），只有这一个按钮死着、还不报错。③ 的「保存」、② 的「存需求」同一个坑</td><td><code>lib/actions.js</code> 允许 <code>options</code> 传函数（每次重算重新读 store）；三个视图改成 <code>() => ({...})</code></td><td><code>actions.spec.js</code> 4 条（字面量冻住 / 传函数能解禁 / 缺处理函数不可点并说明 / head 过滤）</td></tr>
 </table>
 
-<h4>这张表的用法（比这九条本身更值钱）</h4>
+<h4>第 10、11 条为什么能活到用户手上（值得单独记）</h4>
+<table>
+  <tr><th>本该拦住它的闸</th><th>为什么没拦住</th></tr>
+  <tr><td><code>GatesTest</code>（14 条）</td><td>它测闸的判据，不测"响应里有哪几栏"</td></tr>
+  <tr><td><code>wiring.spec.js</code>（跨端对齐）</td><td>它比的是<b>源码</b>：`Actions.java` 里每个 id 在视图里有没有处理函数——两处都写了，所以它是绿的。它没有、也没法证明<b>这份声明有被送到浏览器</b></td></tr>
+  <tr><td>七页浏览器冒烟</td><td>它只查"有没有 JS 报错 / 有没有失败面板 / 外壳渲染没有"。<b>没有按钮不是报错</b>，所以七页全过。<br>现在它会拿声明和真实渲染的页头按钮对账（拦住第 10 条）；但"按钮在、只是 disabled"它对不出来——第 11 条是靠<b>点一下、看有没有请求发出</b>才抓到的</td></tr>
+  <tr><td>端到端（四次全过）</td><td>脚本<b>直接打接口</b>（<code>POST /api/flow/freeze</code>），它根本不需要按钮</td></tr>
+</table>
+<div class="why"><b>教训</b>：一条链上有"N 个声明、N 个消费点"时，只对账"源码里有没有"是不够的——
+必须对账<b>线上跑起来那一刻的真实数据</b>。所以补的两条闸都长在"运行时"这一侧：
+`ApiTest` 盯响应载荷，冒烟测试盯"声明 → 渲染"这一段。<br>
+顺带改了一个词：`READY` 原来在界面上叫「已就绪」，在 ① 上会被读成"环境已经起好了"，
+可它其实只是"轮到了、等你点"。现在是「待完成」，三态一眼分得开（未开始 / 待完成 / 已完成）。</div>
+
+<h4>这张表的用法（比这十条本身更值钱）</h4>
 <pre><code>核查一个"看起来做完了"的功能，只问三句：
 
 1. 它的<b>输入</b>有谁提供？        → <span class="c">没人提供 = 永远走默认值（#5）</span>
-2. 它的<b>输出</b>有谁消费？        → 没消费者 = 白算（#8）
-3. 它的<b>调用点</b>有几个？        → 只有测试在用的口子 = 生产没接（曾经那个 <code>onToolResult</code> 钩子就被删了）</code></pre>
-<div class="why">这九条里有 <b>七条</b>是"用 grep 数调用点"就能发现的（<code>Loop.anchors</code> 1 个、
-<code>Metrics</code> 0 个、<code>Snapshot.accept</code> 0 个、<code>StuckCheck.wrap</code> 只在 1 个文件里）。
-所以这类核查不需要懂业务，只需要<b>问一句"谁在用它"</b>——
+2. 它的<b>输出</b>有谁消费？        → 没消费者 = 白算（#8）；声明没送到消费端 = 界面空着（#10）
+3. 它的<b>调用点</b>有几个？        → 只有测试在用的口子 = 生产没接（那个 <code>onToolResult</code> 钩子就被删了）</code></pre>
+<div class="why">这十条里有 <b>七条</b>是"用 grep 数调用点"就能发现的（<code>Loop.anchors</code> 1 个、
+<code>Metrics</code> 0 个、<code>Snapshot.accept</code> 0 个、<code>StuckCheck.wrap</code> 只在 1 个文件里）；
+第 10 条更隐蔽——<b>两端都写了，中间那段路由没往外掏</b>，只能靠"运行时对账"抓。
+所以这类核查不需要懂业务，只需要<b>问一句"谁在用它、它真的到了吗"</b>——
 而"跑通了"永远回答不了这个问题：默认值也能让流程走完，只是走的是它自己想象的那条路。</div>
 
 <!-- ============================================================ -->

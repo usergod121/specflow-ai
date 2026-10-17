@@ -53,6 +53,11 @@ GET  /api/flows?limit=            → {flows:[{id,project,stage,createdAt,done}]
 「页头还是 ⋯ 菜单」「主按钮还是危险按钮」也读这里。声明了而界面没绑，那一枚就渲染成
 **不可点 + 一句说明**——不会静默消失（`wiring.spec.js` 会红）。
 
+> **这一栏必须真的出现在响应里**（曾经漏过：`NodeView` 有 `actions`、`Actions.TABLE` 也写了，
+> 但 `Api.flowView()` 往外拼 `Map` 时没带上它 → 五个页面全都"只有状态、没有按钮"，且不报任何错）。
+> 现在两头都有闸：`ApiTest` 断言每一格都带 actions（且 ① 含 `up`/`freeze`），
+> `smoke.mjs` 拿这份声明去和真实渲染出来的页头按钮对账。
+
 ## 3. ① 环境
 
 ```

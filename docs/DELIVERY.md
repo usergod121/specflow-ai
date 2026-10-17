@@ -131,6 +131,10 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 | **`Metrics` 接上 registry（5 处调用）** | `Metrics` 写完一个调用点都没有，而文档一直写着"actuator 能看到我们自己的计数器" | 真引擎上 `specflow.runs` 等 5 个指标出现（见 §五.6） |
 | **`StuckCheck` 五格都包** | 只有 ⑤ 装了打转检测；④ 反复 `read_file` 同一个文件照样能烧光轮次 | `StuckCheckTest` 加 1 条（话术按"用例/这一轮"分） |
 | **删掉 `Loop.onToolResult`（只有一个测试在用的钩子）** | 生产代码零调用点——按"只有测试在用的口子 = 生产没接"这条判据，它该走；`INJECT` 一起删 | `LoopTest` 13 → 11（删掉那两条） |
+| **`Api.flowView()` 补上 `actions`**（用户报的 bug） | `NodeView` 有 actions、`Actions.TABLE` 也写了，可路由往外拼响应时漏了那一栏 → **五个页面全都只有状态、没有按钮**，零报错；用户点「新开流程」后连第一步都点不了 | `ApiTest` 断言每格都带 actions（① 含 `up`/`freeze`）+ `smoke.mjs` 拿声明和真实渲染的页头按钮对账 |
+| **`READY` 的界面词：已就绪 → 待完成** | 「已就绪」在 ① 上会被读成"环境已经起好了"，可用户还得去点「起环境」（用户就是这么误会的） | `facts.spec.js` / `copy.spec.js` 两处词表 + `UI.md` |
+| **禁用条件不许写成字面量**（用户报的"探测环境点不动"） | `{ disabled: { agent: Boolean(store.flow) === false } }` 是**挂载那一刻**求的值：直接打开 `/env` 时 `/api/flow` 还没回来 → 按钮**永久 disabled**，点了不发请求、也不报错。③ 的「保存」、② 的「存需求」同一个坑 | `lib/actions.js` 允许 `options` 传函数；三个视图改成 `() => ({…})`；`actions.spec.js` 4 条 |
+| **① 增加「宿主机过了 · 容器里没过」一行** | "编译过了"与"容器里没有 mvn"读着像自相矛盾（两条编译本来就不同），用户会以为闸坏了 | `EnvNode.vue`：`compilePassed && !containerBuild` 时提示一句（判据没动） |
 
 ## 四、没做的 / 已知的（**不许当成做了**）
 

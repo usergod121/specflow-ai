@@ -1001,6 +1001,10 @@ public class Api {
             node.put("state", one.state().name());
             node.put("blockedReason", one.blockedReason());
             node.put("facts", one.facts());
+            // 这一格的按钮（`flow/Actions` 那一份声明）：**必须随 view 下发**，否则界面一个按钮都没有。
+            // 原来这里漏了这一行：`NodeView` 里有 actions、`Actions.TABLE` 也写了，可路由没往外掏——
+            // 现象是五个页面全都"只有状态、没有按钮"，而且不报任何错。
+            node.put("actions", one.actions());
             nodes.add(node);
         }
         Map<String, Object> body = new LinkedHashMap<>();

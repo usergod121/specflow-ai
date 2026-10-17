@@ -16,6 +16,19 @@ const output = ref('');
 const minutes = ref(30);
 const minutesOpen = ref(false);
 
+/**
+ * 「宿主机过了 · 容器里没过」：两条编译的结论不一致时要说一句。
+ *
+ * <p>① 的冻结条件是<b>容器里也能构建</b>（下游 ⑤ 就在容器里跑）；而「编译」那枚按钮跑在
+ * <b>宿主机</b>上。宿主机有 mvn、镜像里没有时，用户会看到"编译过了"却又"容器里没有 mvn"，
+ * 看起来像自相矛盾——这条提示把两件事摆在一起。
+ */
+const halfCompiled = computed(() => {
+  const one = ((store.flow && store.flow.nodes) || []).find(it => it && it.key === node) || {};
+  const facts = one.facts || {};
+  return facts.compilePassed === 'true' && facts.containerBuild === 'false';
+});
+
 async function loadView() {
   const found = await act(node, 'view', () => api.envView());
   if (!found.ok) {
@@ -121,7 +134,9 @@ function openTimeout() {
 const handlers = {
   agent, up, compile, skip, freeze, cancel: stop, clear: clearOutput, timeout: openTimeout,
 };
-const options = { disabled: { agent: Boolean(store.flow) === false } };
+// **必须是函数**（`lib/actions.js` 每次重算时会调用它）：写成字面量会被冻在「组件挂载那一刻」，
+// 而直接打开 /env 时 `/api/flow` 往往还没回来 → 「探测环境」被永久禁用、点了没反应也不报错。
+const options = () => ({ disabled: { agent: store.booted !== true } });
 const actions = head(node, handlers, options);
 const menu = menuOf(node, handlers, options);
 </script>
@@ -150,6 +165,11 @@ const menu = menuOf(node, handlers, options);
       <h2>编译命令</h2>
       <textarea v-model="compileCommand" class="code" rows="3" spellcheck="false"
                 placeholder="mvn -q -DskipTests package" title="一次编译要跑的那条命令"></textarea>
+  <!-- 两条编译不是一回事：这条命令在**宿主机**上跑（那枚「编译」按钮），而 ① 的冻结还要求**容器里**也能构建。
+       不同时说清楚，否则「编译过了」与「容器里没有 mvn」看起来像自相矛盾（用户真问过）。 -->
+      <p v-if="halfCompiled" class="lbl warn" title="宿主机有 mvn、容器镜像里没有：改 image 或在 init 里装一次，再点「起环境」">
+        宿主机过了 · 容器里没过
+      </p>
       <Fail scope="env" action="view" :retry="loadView" />
       <div v-if="minutesOpen" class="row">
         <label class="lbl" for="timeout">超时分钟</label>

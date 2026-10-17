@@ -75,7 +75,9 @@ describe('下一步的徽章读 facts，不读历史', () => {
 
 describe('状态一行（≤6 个汉字，六个词）', () => {
   it('后端状态映射成人话', () => {
-    expect(statusTextOf('READY')).toBe('已就绪');
+    // READY 是"可以做、还没做"——**不能**说成「已就绪」（在 ① 上会被读成"环境已经好了"，
+    // 用户看到的就是"亮着已就绪却还得去点起环境"）。
+    expect(statusTextOf('READY')).toBe('待完成');
     expect(statusTextOf('DONE')).toBe('已完成');
     expect(statusTextOf('LOCKED')).toBe('未开始');
     expect(statusTextOf('')).toBe('未开始');
@@ -93,7 +95,7 @@ describe('状态一行（≤6 个汉字，六个词）', () => {
   });
 
   it('六个词都在 6 个汉字以内', () => {
-    for (const word of ['未开始', '进行中', '已完成', '失败', '未保存', '已就绪']) {
+    for (const word of ['未开始', '进行中', '已完成', '失败', '未保存', '待完成']) {
       expect(word.length).toBeLessThanOrEqual(6);
     }
   });

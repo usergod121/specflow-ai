@@ -86,9 +86,11 @@ function readBack(text) {
   return String(text || '').split('\n').map(one => one.trim()).filter(Boolean);
 }
 
-// 名字/顺序/进哪个按钮组由后端 flow/Actions.java 声明，这里只绑处理函数与局部禁用条件
+// 名字/顺序/进哪个按钮组由后端 flow/Actions.java 声明，这里只绑处理函数与局部禁用条件。
+// **禁用条件必须是函数**：写成字面量会被冻在组件挂载那一刻——挂载时还没改动，
+// 于是「存需求」永远是灰的，改了需求也点不动（同一个坑在 ③ 的「保存」上也踩过）。
 const handlers = { agent: run, freeze, brief, save: saveArt, cancel: stop };
-const options = { disabled: { brief: !dirty.value } };
+const options = () => ({ disabled: { brief: !dirty.value } });
 const actions = head(node, handlers, options);
 const menu = menuOf(node, handlers, options);
 </script>
