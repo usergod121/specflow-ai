@@ -52,7 +52,7 @@ java -jar target\specflow.jar env down    -p <项目>  # 收干净（主环境 +
 
 | 套件 | 数量 | 命令 |
 |---|---|---|
-| 后端 | **163 条全绿** | `mvn -o test -Dfrontend.skip=true` |
+| 后端 | **171 条全绿** | `mvn -o test -Dfrontend.skip=true` |
 | 前端 | **105 条全绿**（7 个文件） | `cd src/main/frontend; npx vitest run` |
 | 前端构建 | 过（143 kB js / 14 kB css） | `npx vite build` |
 
@@ -112,8 +112,8 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 5. **工具中间件链（`ToolHook`）没做**：仍然是装饰器（`Frozen` / `CaseBudget` / `StuckCheck` 各包一层）。
 6. **`Api` 这一层仍没有单元测试**：项目没引 `spring-boot-starter-test`，MockMvc 要动 pom。
    现在的覆盖是「浏览器冒烟 + SSE curl + 端到端 HTTP 全链路」——**更弱但够用**，如实写在这里。
-7. **审批（y/n）在真链路上仍没被触发过**：逻辑有五条单测（`ApprovalsTest`），但"真停下来等人点"没实测；
-   这一轮端到端同样没触发（`替你点了 0 条`）。
+7. **审批（y/n）已在真链路上触发过一次**（最后一次端到端：`替你点了 1 条审批`，问→答→执行→写回走通）。
+   但"人不在、等满 2 分钟按拒"这条分支**仍只有单测覆盖**，没在真跑里等待过。
 8. **`TestSandbox` 被硬杀时容器会留着**（下一次同名 `up`/`down` 会收掉）——没做实时验证。
 9. **界面只做过浏览器冒烟**（七路由零控制台错误），**没有逐页视觉走查**：我看不到图（模型不接图像输入）。
 10. **宿主机命令的守卫是"文本级"**：`project.yaml` 的 `build.compile` 现在过 `CommandGuard.forbidden`，
@@ -126,7 +126,7 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 ```
 cd E:\specflow-v2
 mvn -o test -Dfrontend.skip=true
-→ [INFO] Tests run: 163, Failures: 0, Errors: 0, Skipped: 0
+→ [INFO] Tests run: 171, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 
@@ -153,9 +153,30 @@ node src\main\frontend\tests\smoke.mjs E:/specflow-v2/target/specflow.jar 3973
 
 ```
 cd E:\sf-e2e
-node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 3977
-→ 原始输出：E:\sf-e2e\reports-v2\v3-e2e.log
+node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 3987
+
+  ✓ ① 跑环境 Agent（9.3s）   env.yaml 12 行、编译命令「javac -d out\main src\main\java\com\demo\*.java」
+  ✓ ① 起环境（真 docker）（4.9s） 容器 sf-sfv2-3987-1-2a4762-app-1
+  ✓ ① 编译（0.6s） 状态 PASSED    ✓ ① 冻结
+  ✓ ② 探针（8.2s）+ 冻结          ✓ ③ 11 条 + 冻结
+  ✓ ④ 跑开发（6.1s）编译通过
+  ✓ ④ 自己核一遍（javac + java 看行为） 打印 reserve(5)=false、onHand(A)=3
+  ✓ ④ 冻结
+  ✓ ⑤ 跑测试（容器沙箱）（55.1s） 11 条全到终态（PASS 10）；**替你点了 1 条审批**
+  ✓ ⑤ 提交 + 接受（0.1s） 已闭环（done=true）
+  → 通过（91s）
 ```
+
+原始输出：`E:\sf-e2e\reports-v2\v3-e2e-5.log`，报告 `e2e-2026-10-17T05-39-43.json`。
+
+**这一轮最值钱的两行**：
+
+1. **「④ 自己核一遍」**：脚本**不采信 Agent 的自述**，自己 `javac` + `java` 跑一遍目标项目，
+   要求打印出 `reserve(5)=false` 与 `onHand(A)=3`。
+2. **「替你点了 1 条审批」**：审批链路**第一次在真跑里被触发并回答**（此前两次都是 `0 条`，
+   "审批没实测"那条已知缺口因此关掉）。它同时验证了新的三态语义：问出来 → 人回答 → 命令执行 → 结论写回。
+
+（`91s` 比 v2 的 150/157 秒快一半，主要来自「依赖缓存卷」和「Preflight 早失败」。）
 
 **端到端里最值钱的一行**仍然是 ④ 的「自己核一遍」：脚本**不采信 Agent 的自述**，
 自己 `javac` + `java` 跑一遍目标项目，要求打印出 `reserve(5)=false` 与 `onHand(A)=3`。

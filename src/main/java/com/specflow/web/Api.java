@@ -725,8 +725,16 @@ public class Api {
                             return;
                         }
                         com.specflow.flow.Checkpoint.clear(checkpointFile);
-                        progress.done("测试验完了：清单 " + list.count() + " 条全部到终态",
-                                Map.of("verdicts", result.verdicts(), "cases", list.cases(),
+                        // 收场那句话要把「跳过几条」说出来：Dify 的 workflow_finished 把
+                        // 「兜底过/部分成功」单列成一个状态与计数（task_entities.py:233-254），
+                        // 而不是笼统报"完成"——我们照这个口径：全到终态，但跳过 N 条要显眼
+                        String done = skipped == 0
+                                ? "测试验完了：清单 " + list.count() + " 条全部到终态"
+                                : "测试验完了，但**有 " + skipped + " 条被跳过**（每用例预算用尽）："
+                                + "它们不是结论，可以逐条点「重试这一条」";
+                        progress.done(done,
+                                Map.of("verdicts", result.verdicts(), "skipped", skipped,
+                                        "partial", skipped > 0, "cases", list.cases(),
                                         "rounds", result.rounds(), "sandbox", sandbox.root().toString()));
                     }
                 });
