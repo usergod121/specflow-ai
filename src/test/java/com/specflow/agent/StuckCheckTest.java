@@ -43,21 +43,29 @@ class StuckCheckTest {
     }
 
     @Test
-    @DisplayName("同一条命令第 4 次被拦下，而且话里给了三条出路")
-    void stopsTheFourthIdenticalCall() {
+    @DisplayName("分级处置：第 4 次只提醒（拦下这一次），第 6 次才判死并让它收场")
+    void nudgesThenKills() {
         Fake fake = new Fake();
         Tool guarded = StuckCheck.wrap(fake);
         Map<String, Object> same = Map.of("command", "sleep 240; tail -3 build.log");
 
-        assertThat(guarded.run(same).ok()).as("前 3 次照常").isTrue();
-        assertThat(guarded.run(same).ok()).isTrue();
-        assertThat(guarded.run(same).ok()).isTrue();
+        // 前 3 次照常
+        for (int at = 0; at < StuckCheck.NUDGE_AT - 1; at++) {
+            assertThat(guarded.run(same).ok()).isTrue();
+        }
+        // 第 4 次：提醒，且这次不执行
+        ToolResult nudged = guarded.run(same);
+        assertThat(nudged.ok()).isFalse();
+        assertThat(nudged.reason()).contains("原地打转").contains("换一种做法");
+        assertThat(fake.calls).as("被提醒的那一次不该真的执行").isEqualTo(StuckCheck.NUDGE_AT - 1);
 
-        ToolResult stopped = guarded.run(same);
-
-        assertThat(stopped.ok()).isFalse();
-        assertThat(stopped.reason()).contains("原地打转").contains("ERROR").contains("env.yaml");
-        assertThat(fake.calls).as("被拦下的那次不该真的执行").isEqualTo(3);
+        // 继续同一条 → 到 HARD_AT 就判死，话术变成"该收场"
+        ToolResult killed = null;
+        for (int at = StuckCheck.NUDGE_AT; at < StuckCheck.HARD_AT; at++) {
+            killed = guarded.run(same);
+        }
+        assertThat(killed).isNotNull();
+        assertThat(killed.reason()).contains("卡死").contains("ERROR").contains("重试这一条");
     }
 
     @Test
@@ -67,14 +75,14 @@ class StuckCheckTest {
         Map<String, Object> one = Map.of("command", "ls");
         Map<String, Object> two = Map.of("command", "cat pom.xml");
 
-        assertThat(guarded.run(one).ok()).isTrue();
-        assertThat(guarded.run(one).ok()).isTrue();
-        assertThat(guarded.run(one).ok()).isTrue();
+        for (int at = 0; at < StuckCheck.NUDGE_AT - 1; at++) {
+            assertThat(guarded.run(one).ok()).isTrue();
+        }
         // 换一条 → 计数归零
-        assertThat(guarded.run(two).ok()).isTrue();
-        assertThat(guarded.run(two).ok()).isTrue();
-        assertThat(guarded.run(two).ok()).isTrue();
-        assertThat(guarded.run(two).ok()).as("新命令第 4 次才拦").isFalse();
+        for (int at = 0; at < StuckCheck.NUDGE_AT - 1; at++) {
+            assertThat(guarded.run(two).ok()).isTrue();
+        }
+        assertThat(guarded.run(two).ok()).as("新命令攒到 NUDGE_AT 才提醒").isFalse();
     }
 
     @Test

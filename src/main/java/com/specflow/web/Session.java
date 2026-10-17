@@ -123,7 +123,36 @@ public class Session implements org.springframework.boot.ApplicationRunner {
         this.flow = new FlowService(opened);
         this.runs = new Runs(flow);
         remember(target);
+        sweepInterrupted();
         return state();
+    }
+
+    /**
+     * <b>崩溃恢复那一遍</b>：把"有 BEGIN 没 END"的运行按中断收场，并如实报出来。
+     *
+     * <h2>为什么现在才接上（这一条是审计发现的）</h2>
+     * {@code flow.Journal.sweep()} 从 v2 就写着、文档的不变量 7 也写着，
+     * 但<b>从来没有任何地方调用过它</b>——也就是说"崩溃恢复"这件事在代码里其实没发生。
+     * 深读 Argo 那份研究里有一句话点破了这类问题的形状：<b>"我们真正缺的不是重试，是收尾"</b>。
+     *
+     * <p>现在：每次打开项目扫一遍，把被杀过的运行标成中断，并往事件流写一条 warn
+     * （用户下次翻留档时看得到"那一次是怎么没的"）。它本身不许抛——打不开项目比
+     * 少一条恢复记录糟得多。
+     */
+    private void sweepInterrupted() {
+        try {
+            List<String> notes = new com.specflow.flow.Journal(project).sweep();
+            for (String note : notes) {
+                flow.events().warn("", note);
+            }
+        } catch (RuntimeException e) {
+            // 恢复扫描坏了不该拦着打开项目：它只是"补记一笔账"
+            try {
+                flow.events().warn("", "崩溃恢复扫描没跑成：" + e.getMessage());
+            } catch (RuntimeException ignored) {
+                // 连日志都写不进去就真的没什么可做的了
+            }
+        }
     }
 
     /** 界面上那一份「现在什么状态」（欢迎页与顶栏都问它）。 */
@@ -218,6 +247,15 @@ public class Session implements org.springframework.boot.ApplicationRunner {
     private void closeQuietly() {
         if (runs != null) {
             runs.close();
+        }
+        // 流程服务自己也要收（它手里握着"正在跑的那一条"）：
+        // 不关的话换项目之后旧的运行对象还挂着，下一次 flush/events 会写到旧项目的路径上
+        if (flow != null) {
+            try {
+                flow.close();
+            } catch (RuntimeException e) {
+                // 收尾失败不该拦住"换项目"这件用户主动要做的事
+            }
         }
         // 还等着人回答的审批先答掉（按拒）：那条线程正阻塞在它上面，
         // 不收的话它会挂满十分钟，而这期间项目已经换了

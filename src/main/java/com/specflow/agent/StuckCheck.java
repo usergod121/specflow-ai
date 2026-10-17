@@ -22,8 +22,22 @@ import java.util.Map;
  */
 public final class StuckCheck implements Tool {
 
-    /** 连续几次之后打断。3 次是折中：一次重复可能是重试，两次可能是碰巧，三次就是转了。 */
-    public static final int REPEATS = 3;
+    /**
+     * 连续第几次开始<b>提醒</b>。
+     *
+     * <p>为什么不是"第 3 次直接判死"（我们原来就是）：深读 OpenHands 的
+     * <code>openhands/controller/stuck.py</code> 发现它是<b>分级处置</b>——第 3 次只注入一条纠正消息、
+     * 第 4 次才判死。那一份研究里有句话很扎：<b>我们现在是在最有救的那一刻把用例判死</b>——
+     * 模型第 3 次重复往往正是它快摸到原因的时候。
+     *
+     * <p>所以这里也分两级：第 4 次<b>提醒</b>（拦下这一次、把话说明白），
+     * 第 6 次<b>判死</b>（告诉它该收场了，把轮次留给别的用例）。
+     * 数字比 OpenHands 宽松，因为我们的度量单位是"一次工具调用"而不是"一个完整步骤"。
+     */
+    public static final int NUDGE_AT = 4;
+
+    /** 连续第几次算"真的卡死了"。 */
+    public static final int HARD_AT = 6;
 
     private final Tool inner;
     private String last;
@@ -62,12 +76,16 @@ public final class StuckCheck implements Tool {
             last = key;
             same = 1;
         }
-        if (same > REPEATS) {
-            // 把这一条也算进去，所以从第 REPEATS+1 次开始拦
-            return ToolResult.failure("同一条调用你已经连着做了 " + same + " 次，每次的结果都一样："
-                    + "这是原地打转，不是推进。换一种做法——"
-                    + "（1）换一种命令或换一个方向；（2）如果确实卡住了，就把这条用例标 ERROR 说清卡在哪，"
-                    + "把轮次留给别的用例；（3）如果是环境缺东西，那不是你该修的，回 ① 改 env.yaml。");
+        if (same >= HARD_AT) {
+            return ToolResult.failure("同一条调用你已经连着做了 " + same + " 次，每次结果都一样——"
+                    + "这是卡死，不是推进。现在该收场了：把这条用例标 ERROR 说清「卡在哪一步」"
+                    + "（比如「构建到这里就没动静」），把剩下的轮次留给别的用例。"
+                    + "用户看到结论后可以用「重试这一条」再试。");
+        }
+        if (same >= NUDGE_AT) {
+            return ToolResult.failure("同一条调用你已经连着做了 " + same + " 次，结果都一样："
+                    + "这是原地打转。换一种做法——换命令、换方向，或者直接读输出/日志找出真正的原因。"
+                    + "（再连着来 " + (HARD_AT - same) + " 次我就当这条卡死、让你标 ERROR 收场。）");
         }
         return inner.run(args);
     }
