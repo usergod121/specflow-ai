@@ -34,8 +34,21 @@ import java.util.Map;
 @Component
 public class Session implements org.springframework.boot.ApplicationRunner {
 
-    /** 最近打开的项目（放在用户目录下，不进项目、不进版本库）。 */
-    private static final Path RECENT = Path.of(System.getProperty("user.home"), ".specflow", "recent.json");
+    /**
+     * 最近打开的项目（放在用户目录下，不进项目、不进版本库）。
+     *
+     * <p><b>可以用 {@code -Dspecflow.recent=<路径>} 换掉</b>：单元测试会调 {@link #open(Path)}，
+     * 而它顺手就 remember 一次——不换掉的话，每跑一次测试就往<b>用户真实的那份</b>最近列表里
+     * 塞一堆 {@code junit-…} 临时目录（真发生过：用户欢迎页上九个点了没用的死条目）。
+     */
+    private static final String RECENT_PROP = "specflow.recent";
+
+    private static Path recentFile() {
+        String custom = System.getProperty(RECENT_PROP, "");
+        return custom == null || custom.isBlank()
+                ? Path.of(System.getProperty("user.home"), ".specflow", "recent.json")
+                : Path.of(custom);
+    }
 
     private Project project;
     private FlowService flow;
@@ -174,12 +187,19 @@ public class Session implements org.springframework.boot.ApplicationRunner {
 
     public List<Map<String, Object>> recent() {
         List<Map<String, Object>> found = new ArrayList<>();
-        for (String row : Atomic.read(RECENT, "").split("\r?\n")) {
+        for (String row : Atomic.read(recentFile(), "").split("\r?\n")) {
             String path = row.strip();
             if (path.isEmpty()) {
                 continue;
             }
-            Path one = Path.of(path);
+            Path one;
+            try {
+                one = Path.of(path);
+            } catch (RuntimeException e) {
+                // 这一行不是合法路径（手改坏了、混进了控制字符、BOM 之类）：
+                // **跳过它，别让欢迎页整页 500**。一份"最近打开"不该有这个权力。
+                continue;
+            }
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("path", path);
             item.put("name", one.getFileName() == null ? path : one.getFileName().toString());
@@ -191,13 +211,13 @@ public class Session implements org.springframework.boot.ApplicationRunner {
 
     public synchronized List<Map<String, Object>> forget(String path) {
         List<String> kept = new ArrayList<>();
-        for (String row : Atomic.read(RECENT, "").split("\r?\n")) {
+        for (String row : Atomic.read(recentFile(), "").split("\r?\n")) {
             String one = row.strip();
             if (!one.isEmpty() && !one.equals(path)) {
                 kept.add(one);
             }
         }
-        Atomic.write(RECENT, kept.isEmpty() ? "" : String.join("\n", kept) + "\n");
+        Atomic.write(recentFile(), kept.isEmpty() ? "" : String.join("\n", kept) + "\n");
         return recent();
     }
 
@@ -241,7 +261,7 @@ public class Session implements org.springframework.boot.ApplicationRunner {
                 all.add(path);
             }
         }
-        Atomic.write(RECENT, String.join("\n", all) + "\n");
+        Atomic.write(recentFile(), String.join("\n", all) + "\n");
     }
 
     private void closeQuietly() {

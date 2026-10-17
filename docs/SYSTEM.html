@@ -1196,8 +1196,23 @@ curl.exe -s "http://127.0.0.1:8780/api/actuator/metrics/specflow.runs"   <span c
 顺带改了一个词：`READY` 原来在界面上叫「已就绪」，在 ① 上会被读成"环境已经起好了"，
 可它其实只是"轮到了、等你点"。现在是「待完成」，三态一眼分得开（未开始 / 待完成 / 已完成）。</div>
 
-<h4>这张表的用法（比这十条本身更值钱）</h4>
-<pre><code>核查一个"看起来做完了"的功能，只问三句：
+<h3>9.5 用户连报的另外五条（同一个形状：界面在骗人）</h3>
+<p>上面十条是"我核查出来的"，这一组是<b>用户一晚上连报的</b>——它们都不是逻辑算错，
+而是<b>界面与盘上的真相脱节</b>，或者一条唯一退路被藏起来了。</p>
+<table>
+  <tr><th>#</th><th>用户看到什么</th><th>根因</th><th>修法</th><th>判据</th></tr>
+  <tr><td>1</td><td>在 A 项目冻了两格，<b>换到 B 项目还是那两格</b>（"不同流程之间没有隔离"）</td><td>前端 <code>openAt()</code> 只更新了外壳（项目名/路径），<b>没重新拉 <code>/api/flow</code>、也没停旧项目的流</b> —— 后端其实一直是按项目隔离的（<code>flow/current</code> 在各自项目里）</td><td><code>openAt()</code> 里 <code>resetStream()</code> + 清空 flow/failures/cursor + <code>await loadFlow()</code></td><td>真浏览器：切到 fixture → flowId 变（…221018 → …202717），五格状态来自 fixture 自己那条流程；切回来恢复原流程</td></tr>
+  <tr><td>2</td><td>提示写着「先等它跑完，或者点<b>叫停</b>」，<b>可页面上没有叫停按钮</b>（流程被锁死）</td><td>① 叫停声明成「⋯」里的菜单项，被挤进折叠里；② <code>store.running</code> 只在事件流里更新，流没连上时它一直是 <code>false</code> → 叫停连渲染都不渲染</td><td>① <code>lib/actions.js</code> 把 <code>onlyWhileRunning</code> 的动作<b>提升到页头</b>，<code>MoreMenu</code> 再把它排最前；② <code>loadFlow()</code> 同步 <code>running</code>，且任何 <b>409</b> 都重新拉一次 flow</td><td>真浏览器：跑起来后页头 = 「叫停」「探测环境」，叫停是危险色；点它 → <code>running: true → false</code></td></tr>
+  <tr><td>3</td><td>界面上「✓ 环境 true / ✓ 编译 true」，而 <code>.specflow/env.yaml</code> <b>根本不存在</b></td><td><code>facts</code> 里 <code>envReady</code>/<code>containerBuild</code> 只读 flow.json 的历史标记，<b>不看盘</b>——人把声明删了，它还挂着"已就绪"</td><td><code>FlowService.facts()</code> 以「env.yaml 真在盘上」为前提算这两条；不在就降级，并给出「没有 .specflow/env.yaml：先点探测环境…」</td><td>删掉 env.yaml → <code>环境=false</code>、闸话说"先去探测环境"（<code>Facts</code> 单测 + 手动验证）</td></tr>
+  <tr><td>4</td><td>点「探测环境」，<b>env.yaml 还是空的</b></td><td>Agent 只把草稿塞回界面，<b>不落盘</b>；而用户对"探测环境"的预期就是"读一遍并写下声明"</td><td>探测完直接写 <code>env.yaml</code> + 编译命令，事件里报「已写回 …」；文本框仍可改、改完点保存覆盖</td><td>点一次 → 盘上出现 env.yaml、facts 里 <code>envDeclared=true</code></td></tr>
+  <tr><td>5</td><td>同一条红字<b>叠两片</b>；欢迎页被九个点了没用的 <code>junit-…</code> 条目塞满</td><td><code>fail()</code> 不去重；<code>Session.open()</code> 顺手 remember，而单测用的是 <code>@TempDir</code> → 测试把临时目录写进了<b>用户真实</b>的 <code>recent.json</code>；另外 <code>Set-Content -Encoding utf8</code> 的 BOM 会让 <code>Path.of</code> 直接抛</td><td>失败去重；<code>Session</code> 的最近列表可用 <code>-Dspecflow.recent=…</code> 换掉，<code>ApiTest</code> 已隔离；<code>Atomic.read</code> 统一剥 BOM；<code>recent()</code> 跳过非法行（不让欢迎页 500）</td><td>同一条失败只出现一次；测试跑完 <code>recent.json</code> 不变；BOM 文件读出来正常</td></tr>
+</table>
+<div class="why"><b>这五条的共同点，比逐条根因更值得记</b>：后端大多是对的（流程隔离本来就按项目做、facts 也有依据、
+叫停路由一直好好的），<b>错的是"界面把后端的话转述错了"</b>——少拉一次接口、藏一枚按钮、
+把历史标记当成现状。所以这一类只有<b>真浏览器里点一遍</b>才抓得到：
+<code>ApiTest</code> 看载荷形状、单测看纯函数、端到端直接打接口，三样都碰不到"点了之后页面变成什么样"。</div>
+
+<h4>这张表的用法（比这十条本身更值钱）</h4><pre><code>核查一个"看起来做完了"的功能，只问三句：
 
 1. 它的<b>输入</b>有谁提供？        → <span class="c">没人提供 = 永远走默认值（#5）</span>
 2. 它的<b>输出</b>有谁消费？        → 没消费者 = 白算（#8）；声明没送到消费端 = 界面空着（#10）

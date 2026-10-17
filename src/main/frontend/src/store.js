@@ -59,12 +59,17 @@ export function runningNow() {
 export function fail(scope, action, error) {
   failureSeq += 1;
   const said = String((error && error.message) || error || '').trim();
-  store.failures = [...store.failures, {
-    id: 'f' + failureSeq,
-    where: owner(scope, action),
-    text: said || '没成，后端没说原因。',
-    status: Number((error && error.status) || 0),
-  }];
+  const text = said || '没成，后端没说原因。';
+  const where = owner(scope, action);
+  // 同一条话、同一个位置：只留一份（用户实报过「两片红字叠在一起」）
+  if (!store.failures.some(one => one.where === where && one.text === text)) {
+    store.failures = [...store.failures, {
+      id: 'f' + failureSeq,
+      where,
+      text,
+      status: Number((error && error.status) || 0),
+    }];
+  }
   return said;
 }
 
@@ -82,7 +87,7 @@ export function say(text) {
   toastTimer = setTimeout(() => { store.toast = ''; }, 2600);
 }
 
-/** 一次性调用：转圈 → 失败就地留下（**不抛**，抛了只会在控制台多一条没人看的红字）。 */
+/** 一次性命调用：转圈 → 失败就地留下（**不抛**，抛了只会在控制台多一条没人看的红字）。 */
 export async function act(scope, action, work) {
   const key = owner(scope, action);
   if (store.busy[key]) {
@@ -93,6 +98,11 @@ export async function act(scope, action, work) {
     return { ok: true, value: await work() };
   } catch (e) {
     fail(scope, action, e);
+    // 409 基本只有两种意思：闸没过（要看最新的 blockedReason）／还有一段在跑（要露出「叫停」）。
+    // 两种都得**重新问一遍后端**——否则界面会精神分裂：它说在跑，我却看不到叫停按钮。
+    if (Number((e && e.status) || 0) === 409) {
+      await loadFlow().catch(() => {});
+    }
     return { ok: false, error: e };
   } finally {
     delete store.busy[key];
@@ -134,7 +144,15 @@ export async function openAt(path) {
     return done;
   }
   applyState(done.value);
+  // **换项目 = 换一条流程**：这里原来只更新了外壳，没重新拉 flow —— 于是界面继续画上一个项目的
+  // 五格状态（实报：在 A 项目冻了两格，切到 B 项目还是那两格）。顺带把旧项目的流也停掉，
+  // 否则它还往这条页面推 A 项目的事件。
+  resetStream();
+  store.flow = null;
+  store.failures = [];
+  store.cursor = 0;
   await loadRecent();
+  await loadFlow().catch(() => {});
   return done;
 }
 
@@ -144,6 +162,13 @@ export async function loadFlow() {
     resetStream();
   }
   store.flow = view;
+  // **`running` 也必须跟着刷新**：它决定「叫停」露不露面。只靠事件流更新的话，
+  // 一旦流没连上（换项目、刚刷新、流断了），后端说"还有一段在跑"而界面没有叫停按钮——
+  // 用户就被锁死了（他就是这么撞的：提示叫他点「叫停」，可那一枚按钮根本没渲染）。
+  store.running = view.running === true;
+  if (typeof view.stage === 'string' && view.stage) {
+    store.stage = view.stage;
+  }
   return view;
 }
 

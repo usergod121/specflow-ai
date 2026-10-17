@@ -58,7 +58,14 @@ public final class Atomic {
     /** 读一个文件；不在或读不出来时给默认值（界面初值那一类用，不该因此报错）。 */
     public static String read(Path file, String fallback) {
         try {
-            return Files.isRegularFile(file) ? Files.readString(file, StandardCharsets.UTF_8) : fallback;
+            if (!Files.isRegularFile(file)) {
+                return fallback;
+            }
+            String text = Files.readString(file, StandardCharsets.UTF_8);
+            // 记事本 / PowerShell 的 `Set-Content -Encoding utf8` 会写一个 BOM（U+FEFF）。
+            // 它是文件里第 0 个字符，会让 `Path.of(第一行)`、YAML 解析、路径比较全部莫名其妙地失败——
+            // 用户手改一下配置就炸掉欢迎页，报错还只说「Illegal char」。读的时候就剥掉，只在这一处。
+            return text.startsWith("\uFEFF") ? text.substring(1) : text;
         } catch (IOException e) {
             return fallback;
         }

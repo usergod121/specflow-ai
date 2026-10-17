@@ -58,7 +58,15 @@ public final class Actions {
             return new ActionSpec(id, label, tip, false, true, true, false);
         }
 
-        /** 叫停：只在真跑着的时候出现在「⋯」里。 */
+        /**
+         * 叫停：平时在「⋯」里，**跑着的时候被提到页头**（`lib/actions.js` 的 `head()` 会把它捞出来，
+         * `MoreMenu` 再把它排到最前面）。
+         *
+         * <p>用户实报过：出错提示写着「先等它跑完，或者点『叫停』」，可他在页面上找不到那一枚——
+         * 因为它一直待在「⋯」里，而那不是"退路"该待的地方。<b>唯一能解开死锁的那一枚必须在明面上。</b>
+         * 声明里仍按 `menu=true`（这样"页头最多 2 枚"的额度不被它占掉），由前端在
+         * `onlyWhileRunning` 为真时提升到页头。
+         */
         static ActionSpec cancel() {
             return new ActionSpec("cancel", "叫停", "让它停下来（立标记 + 杀整棵进程树）",
                     false, true, true, true);

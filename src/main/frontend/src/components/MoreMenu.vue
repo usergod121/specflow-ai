@@ -9,10 +9,20 @@ const props = defineProps({
   menu: { type: Array, default: () => [] },
 });
 
-const head = computed(() => (props.actions || []).slice(0, 2));
+/**
+ * 页头最多 2 枚，但**唯一能解开死锁的那一枚**（只在跑着时出现的那类，比如叫停）插队到最前面。
+ *
+ * <p>用户实报：提示写着「点『叫停』」，可它被挤进了「⋯」，页面上看不到——那一枚必须在明面上。
+ */
+const head = computed(() => {
+  const list = props.actions || [];
+  const urgent = list.filter(one => one.onlyWhileRunning === true);
+  const normal = list.filter(one => one.onlyWhileRunning !== true);
+  return urgent.concat(normal).slice(0, 2);
+});
 const more = computed(() => {
   const inHead = new Set(head.value.map(one => one.id));
-  const rest = (props.actions || []).slice(2).concat(props.menu || []);
+  const rest = (props.actions || []).concat(props.menu || []);
   const seen = new Set();
   return rest.filter(one => !one.hidden && !inHead.has(one.id) && (seen.has(one.id) ? false : seen.add(one.id)));
 });

@@ -312,13 +312,16 @@ public final class FlowService {
 
     private Facts facts(FlowState state) {
         Map<String, String> envBag = state.facts().getOrDefault(Node.ENV, Map.of());
+        // 声明在不在盘上：**这是 ① 的地基**。人把 env.yaml 删了，就不能还挂着"环境已就绪"——
+        // 用户真撞过：界面上两个 ✓（环境 true / 编译 true），可 .specflow/env.yaml 根本不存在。
+        boolean declared = Files.isRegularFile(layout().envYaml());
         return new Facts(
                 project.compile(),
-                state.flag(Node.ENV, Facts.ENV_READY),
+                // 「起过环境」这一条以"声明还在"为前提：声明没了，那次成功就不再代表现在
+                state.flag(Node.ENV, Facts.ENV_READY) && declared,
                 state.flag(Node.ENV, Facts.ENV_NOT_NEEDED),
                 // 两条来源取或：盘上真有 env.yaml，或者有人（环境 AI / 人）已经记过这一栏
-                state.flag(Node.ENV, Facts.ENV_DECLARED)
-                        || Files.isRegularFile(layout().envYaml()),
+                state.flag(Node.ENV, Facts.ENV_DECLARED) || declared,
                 state.flag(Node.PROBE, Facts.PROBE_FILES),
                 state.flag(Node.PROBE, Facts.PROBE_PROMPT),
                 (int) Math.min(Integer.MAX_VALUE, state.number(Node.CASES, Facts.CASE_COUNT)),
@@ -326,8 +329,10 @@ public final class FlowService {
                 state.flag(Node.TEST, Facts.TEST_RUN),
                 state.flag(Node.TEST, Facts.SUBMITTED),
                 state.flag(Node.DEV, Facts.COMPILE_PASSED),
-                state.flag(Node.ENV, Facts.CONTAINER_BUILD),
-                envBag.getOrDefault(Facts.CONTAINER_DETAIL, ""));
+                // 容器里能构建同样以"声明还在"为前提（否则镜像/init 从哪来）
+                state.flag(Node.ENV, Facts.CONTAINER_BUILD) && declared,
+                declared ? envBag.getOrDefault(Facts.CONTAINER_DETAIL, "")
+                        : "没有 .specflow/env.yaml：先点「探测环境」让它读一遍项目并写下来，或者自己写一份");
     }
 
     /**

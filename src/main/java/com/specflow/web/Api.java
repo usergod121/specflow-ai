@@ -509,8 +509,24 @@ public class Api {
             draft.put("envYaml", result.draft().envYaml());
             draft.put("compileCommand", result.draft().compileCommand());
             draft.put("notes", result.draft().notes());
-            progress.done("探测完成：env.yaml " + result.draft().envYaml().split("\n").length
-                            + " 行、编译命令「" + result.draft().compileCommand() + "」",
+            // **探测完就写下来**（原来只把草稿丢回界面，用户以为"探测环境"会生成 env.yaml，
+            // 结果盘上什么都没有，界面上却挂着"环境已就绪"）。文本框仍然可改，改完点「保存」覆盖。
+            StringBuilder wrote = new StringBuilder();
+            if (!result.draft().envYaml().isBlank()) {
+                com.specflow.core.Atomic.write(session.project().layout().envYaml(),
+                        result.draft().envYaml());
+                wrote.append("env.yaml ").append(result.draft().envYaml().split("\n").length).append(" 行");
+            }
+            if (!result.draft().compileCommand().isBlank()) {
+                writeCompile(session.project(), result.draft().compileCommand());
+                wrote.append(wrote.isEmpty() ? "" : "、").append("编译命令「")
+                        .append(result.draft().compileCommand()).append("」");
+            }
+            flow.note(Node.ENV, Map.of(
+                    com.specflow.flow.Facts.ENV_DECLARED, "true",
+                    "compileDeclared", String.valueOf(!result.draft().compileCommand().isBlank()),
+                    "compileCommand", result.draft().compileCommand()));
+            progress.done("探测完成，已写回 " + wrote + "（接下来点「起环境」）",
                     Map.of("draft", draft,
                             "rounds", result.loop() == null ? 0 : result.loop().rounds(),
                             "modelCalls", result.loop() == null ? 0 : result.loop().modelCalls()));

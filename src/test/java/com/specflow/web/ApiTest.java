@@ -26,6 +26,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ApiTest {
 
+    /**
+     * 别碰用户真实的那份「最近打开」列表：`Session.open()` 会顺手 remember，
+     * 而这里开的是 @TempDir——不隔离的话每跑一次测试就往用户欢迎页里塞一堆
+     * {@code junit-…} 死条目（真发生过：九个点了没用的条目把真项目挤出了前十）。
+     */
+    @org.junit.jupiter.api.BeforeAll
+    static void pinRecent(@TempDir Path temp) throws IOException {
+        System.setProperty("specflow.recent", temp.resolve("recent.json").toString());
+    }
+
     /** 造一个"能打开"的项目：有 .specflow + 一条流程的骨架。 */
     private static Path project(Path root) throws IOException {
         Path specflow = root.resolve(".specflow");

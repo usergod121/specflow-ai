@@ -49,6 +49,8 @@ export function bind(key, handlers, options = {}) {
         primary: one.primary === true,
         danger: one.danger === true,
         menu: one.menu === true,
+        // 这一栏要透出去：`MoreMenu` 靠它把「叫停」插队到页头最前面（有活在跑时它是唯一退路）
+        onlyWhileRunning: one.onlyWhileRunning === true,
         disabled: missing || disabled[one.id] === true,
         // 缺处理函数时点它不会有反应，所以干脆给一个空实现，别让它抛
         on: missing ? () => {} : on,
@@ -56,12 +58,16 @@ export function bind(key, handlers, options = {}) {
     });
 }
 
-/** 页头那几个（最多 1 主 + 1 次；多余的由 MoreMenu 收进「⋯」）。 */
+/** "只在有活在跑时才有意义"的那一枚（叫停）：平时收着，跑着的时候必须露面。 */
+const urgent = (one) => one.onlyWhileRunning === true;
+
+/** 页头那几个（最多 1 主 + 1 次；多余的由 MoreMenu 收进「⋯」）。
+ *  **`onlyWhileRunning` 的动作即使声明成菜单项，也要提到页头**：它是唯一能解开死锁的退路。 */
 export function head(key, handlers, options = {}) {
-  return computed(() => bind(key, handlers, options).filter(one => !one.menu));
+  return computed(() => bind(key, handlers, options).filter(one => !one.menu || urgent(one)));
 }
 
-/** 「⋯」里那几个。 */
+/** 「⋯」里那几个。已经被提到页头的（叫停）不在这里重复出现。 */
 export function menu(key, handlers, options = {}) {
-  return computed(() => bind(key, handlers, options).filter(one => one.menu));
+  return computed(() => bind(key, handlers, options).filter(one => one.menu && !urgent(one)));
 }

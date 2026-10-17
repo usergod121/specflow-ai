@@ -136,11 +136,14 @@ describe('页面结构', () => {
     }
   });
 
-  it('页头最多 1 主 + 1 次，其余进「⋯」', () => {
+  it('页头最多 1 主 + 1 次，其余进「⋯」（但"只在跑着时出现"的那一枚插队到最前）', () => {
     const shell = read('src/components/NodeShell.vue');
     expect(shell).toContain('MoreMenu');
     const menu = read('src/components/MoreMenu.vue');
-    expect(menu).toContain('(props.actions || []).slice(0, 2)');
+    // 页头仍然是 2 枚封顶；只是"唯一退路"（叫停那类）排在最前面——它被挤进「⋯」时，
+    // 用户看着"点叫停"的提示却找不到按钮，整条流程就锁死了。
+    expect(menu).toMatch(/\.slice\(0, 2\)/);
+    expect(menu).toContain('onlyWhileRunning');
     expect(menu).toContain('!inHead.has(one.id)');
   });
 
