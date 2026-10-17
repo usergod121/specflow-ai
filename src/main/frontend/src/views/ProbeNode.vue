@@ -12,7 +12,7 @@ const node = 'probe';
 const requirement = ref('');
 const design = ref('');
 const saved = ref({ requirement: '', design: '' });
-const art = ref({ files: [], changes: [], context: '', prompt: '' });
+const art = ref({ files: [], changes: [], context: [], prompt: '' });
 const loaded = ref(false);
 
 async function loadView() {
@@ -27,7 +27,7 @@ async function loadView() {
   art.value = {
     files: view.files || [],
     changes: view.changes || [],
-    context: String(view.context || ''),
+    context: view.context || [],
     prompt: String(view.prompt || ''),
   };
   loaded.value = true;
@@ -129,7 +129,8 @@ const menu = menuOf(node, handlers, options);
       </div>
       <label class="field">
         <span class="lbl">上下文</span>
-        <textarea v-model="art.context" class="code" rows="5" spellcheck="false"></textarea>
+        <textarea :value="lines(art.context)" class="code" rows="5" spellcheck="false"
+              @input="art.context = readBack($event.target.value)"></textarea>
       </label>
       <label class="field">
         <span class="lbl">prompt</span>

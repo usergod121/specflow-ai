@@ -57,16 +57,52 @@ public final class Project {
     }
 
     private final Layout layout;
-    private final Raw raw;
 
-    private Project(Layout layout, Raw raw) {
+    /** 上一次读到的配置，以及读它那一刻文件的 (size, mtime)——用来判断"还用不用再读"。 */
+    private Raw raw;
+    private long seenSize = -1;
+    private long seenMtime = -1;
+
+    private Project(Layout layout) {
         this.layout = layout;
-        this.raw = raw == null ? new Raw(null, null) : raw;
     }
 
     public static Project open(Path root) {
-        Layout layout = new Layout(root);
-        return new Project(layout, Json.readYaml(layout.projectYaml(), Raw.class));
+        return new Project(new Layout(root));
+    }
+
+    /**
+     * {@code project.yaml} 的形状，<b>每次都问盘</b>（同一个 (size, mtime) 就复用上一次读到的那份）。
+     *
+     * <h2>为什么不能只在 open 的时候读一次（这一条是实测撞出来的）</h2>
+     * 界面上「保存编译命令」是把 {@code build.compile} 写进 {@code project.yaml}，
+     * 而"编译命令配了没有"是 ① 的闸的第一条。原来配置只在 {@link #open(Path)} 那一刻读一遍，
+     * 于是：<b>填完编译命令 → 点冻结 → 闸说"编译命令还是空的"</b>，用户唯一的办法是重开这个项目
+     * （而界面上根本没有"重开"这个按钮）。这类"我改了它没反应"的 bug 在盘上完全看不出来——
+     * 文件是对的，只是没人去读第二遍。
+     *
+     * <p>用 (size, mtime) 当"变没变"的判据，与 {@link EventLog} 同一套口径：
+     * <b>盘是真相，内存只是它的缓存</b>。文件读不出来（还没建、刚被删）时保留上一次的值，
+     * 不把一份好好的配置变成空配置。
+     */
+    private synchronized Raw raw() {
+        Path file = layout.projectYaml();
+        try {
+            long size = Files.size(file);
+            long mtime = Files.getLastModifiedTime(file).toMillis();
+            if (raw != null && size == seenSize && mtime == seenMtime) {
+                return raw;
+            }
+            Raw fresh = Json.readYaml(file, Raw.class);
+            raw = fresh == null ? new Raw(null, null) : fresh;
+            seenSize = size;
+            seenMtime = mtime;
+        } catch (java.io.IOException e) {
+            if (raw == null) {
+                raw = new Raw(null, null);
+            }
+        }
+        return raw;
     }
 
     public Layout layout() {
@@ -79,13 +115,14 @@ public final class Project {
 
     /** ① 与 ④ 用的那条编译命令；没配时是空串（闸会因此拦住 ①）。 */
     public String compile() {
-        String command = raw.build() == null ? null : raw.build().compile();
+        Raw.Build build = raw().build();
+        String command = build == null ? null : build.compile();
         return command == null ? "" : command.strip();
     }
 
     /** 模型配置（没写就用默认值：默认 base-url 与 model 是这一版认可的可用组合）。 */
     public LlmConfig llm() {
-        Raw.Llm llm = raw.llm();
+        Raw.Llm llm = raw().llm();
         if (llm == null) {
             return LlmConfig.defaults();
         }

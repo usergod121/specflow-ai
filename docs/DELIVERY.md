@@ -52,20 +52,27 @@ java -jar target\specflow.jar env down    -p <项目>  # 收干净（主环境 +
 
 | 套件 | 数量 | 命令 |
 |---|---|---|
-| 后端 | **189 条全绿** | `mvn -o test -Dfrontend.skip=true` |
+| 后端 | **201 条全绿**（28 个测试类） | `mvn -o test -Dfrontend.skip=true` |
 | 前端 | **102 条全绿**（7 个文件） | `cd src/main/frontend; npx vitest run` |
-| 前端构建 | 过（143 kB js / 14 kB css） | `npx vite build` |
+| 前端构建 | 过（143 kB js / 14.4 kB css） | `npx vite build` |
 
-这一轮**新加**的钉子：`EventLogTest` 6 条（id≡行号 / 重启接着数 / 外部改动可见 / 坏行变 warn /
-回退先留副本 / 文件不在不抛）、`CaseBudgetTest` 6 条（准备宽限 / 超预算跳过 / 写结论换账 / 无待验不拦 /
-SKIPPED 是终态不是结论 / reopen 可重跑）、`CommandGuardTest` 6 条（`$HOME` 放行 / `sudo` 直接拒 /
-装工具链拒 / 脚手架放行 / 老两档还在 / 认出构建工具）、`BudgetsTest` 4 条、
-`StuckCheckTest` 3 条，外加 `GatesTest` 里 3 条（容器能力校验）与前端 `wiring.spec.js` 10 条。
+这一轮**新加**的钉子（都是"某一处没接上、跑起来不报错"那一类）：`DevMessageTest` 4 条（② 的
+`prompt`/`files`/`context` 三样真的进了 ④ 的提示词、顺序固定、空的不炸、空 prompt 当场拒）、
+`ApiTest` 里 1 条（`context` 以**字符串**提交时不会被悄悄清空）、`ProjectTest` 3 条（改盘之后再读
+必须是新值 / 文件没了保留上一次 / 从没读到过给默认值）、`LinuxSafeTest` 4 条（编译命令里的反斜杠
+换成正斜杠的判据，以及"带正则的命令一律不动"）。
+
+更早那批：`EventLogTest` 6 条（id≡行号 / 重启接着数 / 外部改动可见 / 坏行变 warn / 回退先留副本 /
+文件不在不抛）、`CaseBudgetTest` 6 条（准备宽限 / 超预算跳过 / 写结论换账 / 无待验不拦 / SKIPPED 是
+终态不是结论 / reopen 可重跑）、`CommandGuardTest` 6 条、`BudgetsTest` 4 条、`StuckCheckTest` 3 条、
+`CompactTest` 4 条、`CheckpointTest` 4 条、`FlowIndexTest` 4 条、`ActionsTest` 6 条、`ApiTest` 7 条、
+`ApprovalsTest` 7 条，外加 `GatesTest` 里 3 条（容器能力校验）与前端 `wiring.spec.js` 7 条
+（跨端对齐：`Actions.java` 里声明的每个 id，对应视图里都必须有处理函数）。
 
 ### 2. 浏览器冒烟（七个路由，真浏览器）
 
 ```
-node src\main\frontend\tests\smoke.mjs target\specflow.jar 3973
+node src\main\frontend\tests\smoke.mjs target\specflow.jar 4121
 → / /workbench /env /probe /cases /dev /test 各页：✓ 无 JS 报错 ✓ 无失败面板
   ✓ 7 页全过
 ```
@@ -81,7 +88,11 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
   event:done     data:{…}     ← 没有在跑的活就主动收场（不关的话浏览器会自动重连）
 ```
 
-### 4. 五节点端到端（真模型 deepseek-chat + 真 Docker）
+### 4. ② 的产物存不存得住（真 HTTP + 真盘上）
+
+13 项全过，明细见第五节第 4 小节。
+
+### 5. 五节点端到端（真模型 deepseek-chat + 真 Docker）
 
 见第五节。
 
@@ -99,25 +110,37 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 | `StuckCheck`：连续 3 次相同调用就打断 | 连着 7 轮 `sleep 240`：每轮成功、每轮没进展 | `StuckCheckTest` 3 条 |
 | `Gate` ×5 + 一张表（替掉 switch） | 加一格要改三处，漏改只会"这一格永远不动" | **`GatesTest` 一个字节都没改** |
 | `EventLog` 行快照（校验和失效） | SSE 每 250ms 读一次全文件；这个类此前零测试 | `EventLogTest` 6 条 |
-| ① 与 ④ 补「冻结」按钮 + `wiring.spec.js` | 页面没有冻结入口，下游永远解锁不了 | 前端 10 条接线钉子 |
+| ① 与 ④ 补「冻结」按钮 + `wiring.spec.js` | 页面没有冻结入口，下游永远解锁不了 | 前端接线钉子（7 条） |
+| **② 的 `files`/`context` 真的进了 ④ 的提示词**（`Dev.userMessage` 四段） | 在 ② 里改「上下文」对 ④ 毫无影响，想让它生效只能自己去改 prompt | `DevMessageTest` 4 条钉提示词原文 |
+| **`Api.lines` 两种形状都认**（字符串按行拆） | 前端把 `context` 当一段多行文本提交，后端只认数组 → 保存像成功、刷新后是空的 | `ApiTest` 用 String 存一次再读回来断言 |
+| **`Project.raw()` 按 (size, mtime) 每次问盘** | 填了编译命令 → 点冻结 → 闸说"编译命令还是空的"（界面上没有"重开项目"按钮） | `ProjectTest` 3 条 |
+| **编译命令要"两处都能跑"**：提示词要求正斜杠 + `Capabilities` 兜一次自动改写 | ① 的 Agent 交出 `javac -d out\main …`，宿主机过、容器里退出码 2，① 冻结被闸拦下 | `LinuxSafeTest` 4 条 + 端到端 |
 
 ## 四、没做的 / 已知的（**不许当成做了**）
 
 1. **流程 DSL 没做，但"节点定义散在 6 处"这个真问题已经收敛**：动作表只有 `flow/Actions.java` 一份，随 `GET /api/flow` 下发，视图只按 id 绑处理函数（且视图里不许再出现按钮文案，由 `wiring.spec.js` 机器检查）。把"流程"本身做成 YAML 仍然判断为不值：
    这一轮的"统一封装"落在既有的 `Facts` / `Gates` / `CaseList` 上。理由见 `docs/v3/DECISIONS.md` 第三节。
-2. **上下文压缩（compact）没做**：长对话仍可能爆。`Loop` 有轮次上限兜底，但没有摘要与锚点。
-3. **可恢复中断没做**：审批仍是"阻塞线程 + 10 分钟超时按拒"。这一轮只把 `sudo` 从审批里拿掉了
-   （那是 187 秒的真正来源），没有改中断模型。
-4. **运行级 checkpoint / 崩溃后接着跑没做**：仍然只有「没写 END = 中断」+ 快照回滚。
+2. ~~上下文压缩没做~~ ——**已做**（`agent.Compact`，确定性锚点 + 任务书 + 尾巴，**不调模型**；
+   触发线 6 万字符；`CompactTest` 4 条）。剩余的真缺口只有一条：压缩点由"字符数"判，
+   没有按"这一轮是不是刚失败"来调。
+3. **审批仍是"阻塞线程 + 2 分钟超时按拒"**：三态（`ALLOW` / `DENY` / `TIMEOUT`）与两种措辞
+   都有单测（1 秒时限验 TIMEOUT、DENY 与 ALLOW 分开），**"人不在、等满 2 分钟"这条分支没在真跑里等过**。
+4. ~~运行级 checkpoint / 崩溃后接着跑没做~~ ——**已做**：`flow.Checkpoint`（只存"哪几条硬了、
+   下一步干什么、花了几轮"，**不存对话历史**）+ `POST /api/node/test/resume`；`Journal.sweep()` 接进了
+   `Session.open()`（此前这个方法**没有任何调用点**）。
 5. **工具中间件链（`ToolHook`）没做**：仍然是装饰器（`Frozen` / `CaseBudget` / `StuckCheck` 各包一层）。
-6. ~~`Api` 这一层没有单元测试~~ ——**已补**：`Api` 的构造是包内可见，测试直接 `new Api(session)` 调方法（不启 Spring、不动 pom），6 条钉住响应形状与增量语义。
-   现在的覆盖是「浏览器冒烟 + SSE curl + 端到端 HTTP 全链路」——**更弱但够用**，如实写在这里。
-7. **审批（y/n）已在真链路上触发过一次**（最后一次端到端：`替你点了 1 条审批`，问→答→执行→写回走通）。
-   但"人不在、等满 2 分钟按拒"这条分支**仍只有单测覆盖**，没在真跑里等待过。
+   评审结论：三个装饰器已等价覆盖，只差"返回值升级成四值枚举拿 `updatedInput`"。
+6. **`Api` 这一层有测试了**（7 条，包内构造、不启 Spring），但覆盖的是**响应形状与增量语义**，
+   不是每条路由都走一遍；真链路由浏览器冒烟 + 端到端补。
+7. **审批（y/n）在真链路上触发过**（某一轮端到端 `替你点了 1 条审批`；最近这一轮是 `0 条`——
+   模型没撞高危命令）。三态语义已验证：问出来 → 人回答 → 命令执行 → 结论写回。
 8. **`TestSandbox` 被硬杀时容器会留着**（下一次同名 `up`/`down` 会收掉）——没做实时验证。
 9. **界面只做过浏览器冒烟**（七路由零控制台错误），**没有逐页视觉走查**：我看不到图（模型不接图像输入）。
 10. **宿主机命令的守卫是"文本级"**：`project.yaml` 的 `build.compile` 现在过 `CommandGuard.forbidden`，
     但它终究是在你机器上以你的身份执行的（这是它的语义），只是危险写法会被拒。
+11. **"两处都能跑"这条只治了斜杠**：编译命令如果在宿主机用 `cmd.exe` 语法（如 `gradlew.bat`），
+    进了 Linux 容器照样跑不通——那种情况的正确答案是改 `env.yaml` 的 image / init，
+    闸会如实说"容器里构建不起来"，不会假装通过。
 
 ## 五、实测记录
 
@@ -126,64 +149,83 @@ curl.exe -s -N --max-time 6 "http://127.0.0.1:3971/api/node/env/stream?from=0"
 ```
 cd E:\specflow-v2
 mvn -o test -Dfrontend.skip=true
-→ [INFO] Tests run: 189, Failures: 0, Errors: 0, Skipped: 0
+→ [INFO] Tests run: 201, Failures: 0, Errors: 0, Skipped: 0
   [INFO] BUILD SUCCESS
 ```
 
-逐类（节选，全绿共 21 个测试类）：`agent.LoopTest` 13、`test.CaseListTest` 18、`flow.GatesTest` 14、
-`test.SandboxTest` 7、`core.EventLogTest` 6、`env.CommandGuardTest` 6、`test.CaseBudgetTest` 6、
-`env.BudgetsTest` 4、`agent.StuckCheckTest` 3、`core.JsonTest` 5、`test.ApprovalsTest` 5。
+分布（全绿共 28 个测试类）：`agent` 68（`LoopTest` 13 · `ToolsTest` 12 · `ToolRegistryTest` 9 ·
+`ProtocolTest` 8 · `ApplyPatchTest` 8 · `ReadFileTest` 7 · `CompactTest` 4 · `DevMessageTest` 4 ·
+`StuckCheckTest` 3）、`env` 46（`EnvironmentTest` 9 · `EnvCliTest` 9 · `EnvConfigLoaderTest` 8 ·
+`CommandGuardTest` 6 · `ComposeTest` 6 · `BudgetsTest` 4 · `LinuxSafeTest` 4）、
+`test` 38（`CaseListTest` 18 · `SandboxTest` 7 · `ApprovalsTest` 7 · `CaseBudgetTest` 6）、
+`flow` 28（`GatesTest` 14 · `ActionsTest` 6 · `CheckpointTest` 4 · `FlowIndexTest` 4）、
+`core` 14（`EventLogTest` 6 · `JsonTest` 5 · `ProjectTest` 3）、`web` 7（`ApiTest`）。
 
 ### 2. 前端
 
 ```
 cd E:\specflow-v2\src\main\frontend
-npx vitest run  → Test Files 7 passed (7) / Tests 105 passed (105)
-npx vite build  → dist/index.html 0.93 kB · assets 143 kB js / 14 kB css
+npx vitest run  → Test Files 7 passed (7) / Tests 102 passed (102)
+npx vite build  → dist/index.html 0.93 kB · assets 143 kB js / 14.4 kB css
 ```
 
 ### 3. 浏览器冒烟（七个路由）
 
 ```
-node src\main\frontend\tests\smoke.mjs E:/specflow-v2/target/specflow.jar 3973
-→ ✓ 7 页全过：没有 JS 报错、没有失败面板、外壳都渲染了
+node src\main\frontend\tests\smoke.mjs E:/specflow-v2/target/specflow.jar 4121
+→ / /workbench /env /probe /cases /dev /test 各页 ✓ 无 JS 报错 ✓ 无失败面板
+  ✓ 7 页全过：没有 JS 报错、没有失败面板、外壳都渲染了
 ```
 
-### 4. 五节点端到端（真模型 + 真 Docker）
+### 4. ② 的产物存不存得住（真 HTTP + 真盘上）
+
+这一条是专门为"改了没反应"那个 bug 写的，13 项全过：
+
+```
+node E:\sf-e2e\probe-context.mjs 4122 E:/specflow-v2/fixture
+→ 打开项目 ✓ ① 保存编译命令 ✓ ① 声明不需要环境 ✓ ① 冻结 → ② 解锁 ✓
+  ② 保存探针产物 ✓ context 落盘成两条 ✓ files 落盘成两条 ✓ changes 也认字符串 ✓
+  prompt 原样保留 ✓ 数组形状也走得通 ✓ 数组形状存下来的还是两条 ✓
+  ② 的闸看见了「有文件」与「有 prompt」✓ ② 能冻结 → ③ 解锁 ✓
+```
+
+### 5. 五节点端到端（真模型 + 真 Docker）
 
 ```
 cd E:\sf-e2e
-node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 3987
+node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 4001
 
-  ✓ ① 跑环境 Agent（9.3s）   env.yaml 12 行、编译命令「javac -d out\main src\main\java\com\demo\*.java」
-  ✓ ① 起环境（真 docker）（4.9s） 容器 sf-sfv2-3987-1-2a4762-app-1
-  ✓ ① 编译（0.6s） 状态 PASSED    ✓ ① 冻结
-  ✓ ② 探针（8.2s）+ 冻结          ✓ ③ 11 条 + 冻结
-  ✓ ④ 跑开发（6.1s）编译通过
-  ✓ ④ 自己核一遍（javac + java 看行为） 打印 reserve(5)=false、onHand(A)=3
-  ✓ ④ 冻结
-  ✓ ⑤ 跑测试（容器沙箱）（55.1s） 11 条全到终态（PASS 10）；**替你点了 1 条审批**
-  ✓ ⑤ 提交 + 接受（0.1s） 已闭环（done=true）
-  → 通过（91s）
+  ✓ ① 跑环境 Agent（10.3s）编译命令「javac -d out/main src/main/java/com/demo/*.java」
+  ✓ ① 保存声明（0.1s）  ✓ ① 起环境（真 docker）（3.0s）容器 sf-sfv2-4001-1-822c18-app-1
+  ✓ ① 编译（0.6s）状态 PASSED  ✓ ① 冻结（状态 DONE）
+  ✓ ② 需求 + 跑探针（9.2s）要改 1 个、可读 2 个   ✓ ② 保存 + 冻结
+  ✓ ③ 生成 + 保存 + 冻结（2.7s）10 条            ✓ ④ 跑开发（7.1s）编译通过
+  ✓ ④ 自己核一遍（javac + java 看行为）打印 reserve(5)=false、onHand(A)=3   ✓ ④ 冻结
+  ✓ ⑤ 跑测试（容器沙箱）（158.7s）10 条全到终态（PASS 9）；替你点了 0 条审批
+  ✓ ⑤ 提交 + 接受（0.1s）已闭环（done=true）
+  → 通过（196s）
 ```
 
-原始输出：`E:\sf-e2e\reports-v2\v3-e2e-5.log`，报告 `e2e-2026-10-17T05-39-43.json`。
+原始输出在 `E:\sf-e2e\reports-v2\`（`e2e-2026-10-17T09-44-47.json`）。
 
 **这一轮最值钱的两行**：
 
 1. **「④ 自己核一遍」**：脚本**不采信 Agent 的自述**，自己 `javac` + `java` 跑一遍目标项目，
    要求打印出 `reserve(5)=false` 与 `onHand(A)=3`。
-2. **「替你点了 1 条审批」**：审批链路**第一次在真跑里被触发并回答**（此前两次都是 `0 条`，
-   "审批没实测"那条已知缺口因此关掉）。它同时验证了新的三态语义：问出来 → 人回答 → 命令执行 → 结论写回。
+2. **① 那行的编译命令变成了 `javac -d out/main …`**：同一次修好**之前**它是 `out\main`，
+   宿主机过、容器里退出码 2，① 冻结被闸拦下（那次端到端就是在这里断的）。提示词改成
+   "路径一律正斜杠"之后，两处都能跑通——**这条修复是被一次真失败逼出来的，不是想出来的**。
 
-（`91s` 比 v2 的 150/157 秒快一半，主要来自「依赖缓存卷」和「Preflight 早失败」。）
+（`196s` 里 158 秒是 ⑤ 的容器沙箱——10 条用例逐条真跑；① 到 ④ 加一起只有 30 秒。
+比 v2 的 150/157 秒快，主要来自「依赖缓存卷」和「Preflight 早失败」。）
 
-**端到端里最值钱的一行**仍然是 ④ 的「自己核一遍」：脚本**不采信 Agent 的自述**，
-自己 `javac` + `java` 跑一遍目标项目，要求打印出 `reserve(5)=false` 与 `onHand(A)=3`。
-
-### 5. 这一轮的两次事故（记下来，别犯第二次）
+### 6. 这一轮的三次事故（记下来，别犯第二次）
 
 1. 用 `pwsh` 的 `.Replace()` 往 Java 文件里塞**新中文**会因编码边界把文件弄成乱码；
    靠 `git checkout` 回滚 + 改用编辑工具重做救回来。教训：**带中文的文件改动一律用编辑工具**。
 2. `git commit -m` 的消息里带 `"` 会把 shell 引号搞坏，提交静默失败而 tag 已打上。
    教训：提交信息里只用 `「」`。
+3. **`start.bat` 里 `& start.ps1` 会让 `exit` 杀掉整个会话**：改成 `Start-Engine` 函数、
+   `.bat` 只留 ASCII、`.ps1` 存成 UTF-8 with BOM。教训：批处理里的中文是雷区。
+4. **一次编译命令毁掉一次端到端**：`out\main` 在容器里是错的写法（见上）。教训：
+   「跑在哪几处」是写命令时的一部分，不是事后排查时才想的事。

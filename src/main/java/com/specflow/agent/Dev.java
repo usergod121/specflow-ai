@@ -66,6 +66,24 @@ public final class Dev {
      * @param feedback  上一轮 ⑤ 留下的总结（可以空）
      */
     public Result run(String prompt, List<String> whitelist, String feedback) {
+        return run(prompt, whitelist, List.of(), List.of(), feedback);
+    }
+
+    /**
+     * 跑一轮开发（带 ② 的另外两样产物）。
+     *
+     * <h2>为什么要有这个重载（一条断掉的链路）</h2>
+     * ② 的探针产出四样东西：{@code files}（要读的）、{@code changes}（要改的）、
+     * {@code context}（<b>几段要喂给开发的文本，一条一句"为什么相关"</b>）、{@code prompt}。
+     * 而原来的 {@code run} 只把 {@code changes}（当白名单）与 {@code prompt} 给了开发，
+     * <b>另外两样只存不用</b>——于是用户在 ② 里改「上下文」对 ④ 一点影响都没有，
+     * 想让它生效只能自己去改那段 prompt。这就是"文本替换"那条链路断在最后一步。
+     *
+     * @param readable 要读的文件（② 的 {@code files}）：告诉它"先读这几处"
+     * @param context  上下文（② 的 {@code context}）：一条一句"为什么相关"
+     */
+    public Result run(String prompt, List<String> whitelist, List<String> readable,
+                      List<String> context, String feedback) {
         if (prompt == null || prompt.isBlank()) {
             throw new IllegalArgumentException("给开发的 prompt 是空的：它照这段干活，空 prompt 等于让它自己发明需求");
         }
@@ -80,7 +98,7 @@ public final class Dev {
 
         Loop loop = new Loop("开发", llm, new LoopLimits(rounds, 200, 300, 1), tools, watcher, progress);
         String system = systemPrompt(whitelist);
-        String message = userMessage(prompt, feedback);
+        String message = userMessage(prompt, readable, context, feedback);
 
         int submits = 0;
         int totalRounds = 0;
@@ -161,8 +179,42 @@ public final class Dev {
     }
 
     private String userMessage(String prompt, String feedback) {
+        return userMessage(prompt, List.of(), List.of(), feedback);
+    }
+
+    /**
+     * 给开发的那段话：<b>② 的四样产物按"先读什么、为什么、要改哪儿"排好</b>。
+     *
+     * <p>顺序是有意的：先给"这一轮要做什么"（prompt），再给"先读这几处"（readable），
+     * 再给"为什么相关"（context），最后才是"要改的"（system 里的白名单）与反馈。
+     * 让它在动手之前先看清、而不是直接去改。
+     *
+     * <p><b>可测性</b>：这个方法所以是包内可见的静态风格，就是为了单元测试能直接断言
+     * "context 真的进了提示词"——否则这条链路断没断只能靠真跑一次模型才知道（那正是它断掉时没人发现的原因）。
+     */
+    String userMessage(String prompt, List<String> readable, List<String> context, String feedback) {
         StringBuilder out = new StringBuilder();
         out.append("## 这一轮要做的事（② 组装好的 prompt）\n\n").append(prompt.strip()).append('\n');
+
+        List<String> reads = readable == null ? List.of() : readable;
+        if (!reads.isEmpty()) {
+            out.append("\n## 先读这几处（② 挑出来的入口）\n\n");
+            for (String one : reads) {
+                out.append("- ").append(one).append('\n');
+            }
+            out.append("\n它们只是入口：改之前先把里面与你这次改动相关的部分读完。\n");
+        }
+
+        List<String> notes = context == null ? List.of() : context;
+        if (!notes.isEmpty()) {
+            out.append("\n## 上下文（为什么这些地方相关——② 的交代）\n\n");
+            for (String one : notes) {
+                out.append("- ").append(one).append('\n');
+            }
+            out.append("\n这是别人替你摸过的底：拿它省时间，但**别把它当结论**——"
+                    + "它说的地方要自己看一眼再动。\n");
+        }
+
         if (feedback != null && !feedback.isBlank()) {
             out.append("""
 

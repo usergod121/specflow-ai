@@ -9,7 +9,7 @@ import Empty from '../components/Empty.vue';
 import { head, menu as menuOf } from '../lib/actions.js';
 
 const node = 'dev';
-const view = ref({ whitelist: [], readable: [], prompt: '', feedback: '', compileCommand: '', compilePassed: false });
+const view = ref({ whitelist: [], readable: [], context: [], prompt: '', feedback: '', compileCommand: '', compilePassed: false });
 const loaded = ref(false);
 
 async function load() {
@@ -21,6 +21,7 @@ async function load() {
   view.value = {
     whitelist: one.whitelist || [],
     readable: one.readable || [],
+    context: one.context || [],
     prompt: String(one.prompt || ''),
     feedback: String(one.feedback || ''),
     compileCommand: String(one.compileCommand || ''),
@@ -72,6 +73,22 @@ const menu = menuOf(node, handlers);
       </ul>
       <Empty v-else text="还没白名单" tip="② 探针里挑的「要改的文件」会变成这里白名单。" />
       <Fail scope="dev" action="view" :retry="load" />
+    </section>
+
+    <section class="sec">
+      <h2>先读的<span class="grow"></span><span class="dim num">{{ view.readable.length }} 个文件</span></h2>
+      <ul v-if="view.readable.length" class="list dense mono">
+        <li v-for="one in view.readable" :key="one"><span class="wrap">{{ one }}</span></li>
+      </ul>
+      <Empty v-else text="还没可读文件" tip="② 探针里挑的「开发能读的文件」会进到 prompt 的「先读这几处」。" />
+    </section>
+
+    <section class="sec">
+      <h2>上下文</h2>
+      <ul v-if="view.context.length" class="list dense">
+        <li v-for="one in view.context" :key="one"><span class="wrap">{{ one }}</span></li>
+      </ul>
+      <Empty v-else text="还没上下文" tip="② 探针里写的「为什么这些地方相关」，原样进开发那一段话。" />
     </section>
 
     <section class="sec">

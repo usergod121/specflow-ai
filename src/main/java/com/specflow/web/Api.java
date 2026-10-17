@@ -300,6 +300,13 @@ public class Api {
                 learned.put(Facts.CONTAINER_TOOL, capability.tool());
             }
             session.flow().note(Node.ENV, learned);
+            if (!capability.fixedCommand().isBlank()) {
+                // 引擎在容器里试出来的写法就是唯一真相：写回盘上，④ 与 ⑤ 才不会又撞一次
+                String where = writeCompile(project, capability.fixedCommand());
+                session.events().warn(Node.ENV.key(), "编译命令里 Windows 风格的反斜杠在容器里跑不通，"
+                        + "已替你改成 `" + capability.fixedCommand() + "`（写进了 " + where + "）。"
+                        + "同一条命令要在宿主机和 Linux 容器里都跑，`\\` 在容器里是转义字符。");
+            }
             if (!capability.ok()) {
                 // 常驻一条 error：这句话最容易被忽略，而下游一定撞上它
                 session.events().error(Node.ENV.key(), "能力校验没过：" + capability.detail()
@@ -578,6 +585,9 @@ public class Api {
                     + "空名单等于让它对着整个项目猜该动哪儿");
         }
         String prompt = String.valueOf(probe.getOrDefault("prompt", ""));
+        // ② 的另外两样产物也要真的喂给 ④：files 告诉它先读哪儿、context 告诉它为什么相关
+        List<String> files = lines(probe.get("files"));
+        List<String> context = lines(probe.get("context"));
         String feedback = flow.state().fact(Node.DEV, "feedback");
         String runId = session.runs().start(Node.DEV, "dev-run", Map.of(), progress -> {
             com.specflow.flow.Snapshot snapshot = com.specflow.flow.Snapshot.capture(
@@ -590,7 +600,7 @@ public class Api {
             com.specflow.agent.Dev dev = new com.specflow.agent.Dev(session.project(),
                     com.specflow.core.Llm.from(session.project()), progress,
                     new com.specflow.agent.EventWatcher(session.events(), Node.DEV.key()), 40);
-            com.specflow.agent.Dev.Result result = dev.run(prompt, changes, feedback);
+            com.specflow.agent.Dev.Result result = dev.run(prompt, changes, files, context, feedback);
             flow.note(Node.DEV, Map.of(
                     "compilePassed", String.valueOf(result.compilePassed()),
                     "compileStatus", result.compilePassed() ? "PASSED" : "FAILED",
@@ -878,6 +888,9 @@ public class Api {
                 ApiException.badRequest("② 的产物没有了：这一轮回到 ④ 重跑，白名单来自 ②"));
         List<String> changes = lines(probe.get("changes"));
         String prompt = String.valueOf(probe.getOrDefault("prompt", ""));
+        // ② 的另外两样产物也要真的喂给 ④：files 告诉它先读哪儿、context 告诉它为什么相关
+        List<String> files = lines(probe.get("files"));
+        List<String> context = lines(probe.get("context"));
         String goal = feedback;   // lambda 里要用它，而 feedback 上面被重新赋过值（不是 effectively final）
         String runId = session.runs().start(Node.TEST, "optimize", Map.of(), progress -> {
             com.specflow.flow.Snapshot snapshot = com.specflow.flow.Snapshot.capture(
@@ -889,7 +902,7 @@ public class Api {
             com.specflow.agent.Dev dev = new com.specflow.agent.Dev(session.project(),
                     com.specflow.core.Llm.from(session.project()), progress,
                     new com.specflow.agent.EventWatcher(session.events(), Node.TEST.key()), 40);
-            com.specflow.agent.Dev.Result devResult = dev.run(prompt, changes, goal);
+            com.specflow.agent.Dev.Result devResult = dev.run(prompt, changes, files, context, goal);
             if (!devResult.compilePassed()) {
                 progress.fail("优化这一轮开发没过编译：" + devResult.reason(), devResult.compileOutput());
                 return;
@@ -1061,7 +1074,18 @@ public class Api {
         }
     }
 
+    /**
+     * 把"一串"变成若干条：<b>认得 List，也认得字符串</b>。
+     *
+     * <p>为什么必须认得字符串：界面上「上下文」那一栏是 textarea，提交上来的是<b>一整段文本</b>
+     * （一行一条）。原来这里只认 {@code List}，于是字符串直接落成空表 ——
+     * 用户每保存一次，就把上下文<b>静默清空一次</b>。这条是核对"文本替换那条链路"时问出来的真 bug。
+     */
     private static List<String> lines(Object raw) {
+        if (raw instanceof String text) {
+            return java.util.Arrays.stream(text.split("\\R"))
+                    .map(String::strip).filter(one -> !one.isEmpty()).toList();
+        }
         if (!(raw instanceof List<?> items)) {
             return List.of();
         }

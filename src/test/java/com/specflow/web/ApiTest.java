@@ -118,6 +118,36 @@ class ApiTest {
     }
 
     @Test
+    @DisplayName("/api/node/probe/save：context 传一段字符串（界面那个 textarea）不会被悄悄清空")
+    @SuppressWarnings("unchecked")
+    void probeSaveKeepsStringContext(@TempDir Path root) throws IOException {
+        Session session = opened(project(root));
+        Api api = new Api(session);
+        // 把 ① 做完，② 才可动。容器在这里起不来，所以照闸要的那几个事实直接写一笔再冻住
+        session.flow().note(com.specflow.flow.Node.ENV, Map.of(
+                com.specflow.flow.Facts.ENV_NOT_NEEDED, "true",
+                com.specflow.flow.Facts.CONTAINER_BUILD, "true"));
+        session.flow().freeze(com.specflow.flow.Node.ENV);
+
+        // files / context 给的是**多行字符串**（前端 textarea 的原样），changes 给的是数组
+        Map<String, Object> saved = api.probeSave(Map.of(
+                "files", "src/Main.java\nREADME.md",
+                "changes", List.of("src/Main.java"),
+                "context", "Main.java 是唯一入口\nREADME 里写了期望输出",
+                "prompt", "修好 Main"));
+
+        Map<String, Object> probe = (Map<String, Object>) saved.get("probe");
+        // 这两行就是这个 bug 的形状：以前 String 走到 lines() 里被当成「不是 List」→ 清成空
+        assertThat((List<String>) probe.get("context"))
+                .containsExactly("Main.java 是唯一入口", "README 里写了期望输出");
+        assertThat((List<String>) probe.get("files")).containsExactly("src/Main.java", "README.md");
+
+        // 盘上读回来的一模一样（真相在盘上，不在内存里）
+        assertThat((List<String>) api.probeView().get("context"))
+                .containsExactly("Main.java 是唯一入口", "README 里写了期望输出");
+    }
+
+    @Test
     @DisplayName("路由上不认识的节点名：抛 ApiException（由 Errors 翻成 400），不是 500")
     void unknownNodeIsBadRequest(@TempDir Path root) throws IOException {
         Api api = new Api(opened(project(root)));

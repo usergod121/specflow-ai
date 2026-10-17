@@ -98,7 +98,7 @@
   <a href="#p2">第 2 部分 · 系统架构</a><br />
   <a href="#p3">第 3 部分 · 契约与 API</a><br />
   <a href="#p4">第 4 部分 · 逐包逐类</a><br />
-  <a href="#p5">第 5 部分 · 关键机制（10 条）</a><br />
+  <a href="#p5">第 5 部分 · 关键机制（11 条）</a><br />
   <a href="#p6">第 6 部分 · 参考与借鉴 ★</a><br />
   <a href="#p7">第 7 部分 · 质量：测试与已知缺口</a><br />
   <a href="#p8">第 8 部分 · 怎么跑、怎么修</a>
@@ -174,7 +174,7 @@ String blocked(Facts facts);   <span class="c">// 空串 = 能做；否则就是
   <div class="box"><b>cases.json / probe.json / summary.md</b><span class="sub">人能直接改的产物</span></div>
 </div>
 
-<h3>1.3 三条铁律 + 五条不变式</h3>
+<h3>1.3 三条铁律 + 六条不变式</h3>
 <table>
   <tr><th>铁律（<code>EventLog</code>）</th><th>意思</th></tr>
   <tr><td>只有一个写者</td><td>日志、工具调用、闸、收场，全从 <code>append()</code> 出去</td></tr>
@@ -188,6 +188,7 @@ String blocked(Facts facts);   <span class="c">// 空串 = 能做；否则就是
   <tr><td>一个事实只有一个名字（<code>Facts</code> 常量）</td><td>写的人写 <code>envConfirmed</code>、读的人读 <code>envReady</code> → 闸永远看不见</td></tr>
   <tr><td><code>Layout</code> 是唯一路径权威</td><td>四处各拼一遍字符串，必有一处少一层目录</td></tr>
   <tr><td>长任务只从 <code>Progress</code> 一个口说话</td><td>两条进度通道 → 界面读不到（用户原话"只听到风扇转"）</td></tr>
+  <tr><td><b>改完必须读得回来</b>：人能改的东西落在盘上之后，下一处要<b>现读</b>，不许用"启动那一刻的快照"</td><td>改了没反应（② 的上下文白写、编译命令"还是空的"），而且<b>零报错</b>——见 5.11</td></tr>
 </table>
 
 <!-- ============================================================ -->
@@ -208,7 +209,7 @@ String blocked(Facts facts);   <span class="c">// 空串 = 能做；否则就是
 <div class="layer">
   <div class="side">② web</div>
   <div class="body">
-    <div class="box"><b>Api（41 条路由）</b><span class="sub">取参数 → 调下层 → 拼响应</span></div>
+    <div class="box"><b>Api（40 条路由）</b><span class="sub">取参数 → 调下层 → 拼响应</span></div>
     <div class="box"><b>Session</b><span class="sub">当前项目 + 崩溃恢复扫描</span></div>
     <div class="box"><b>Runs</b><span class="sub">正在跑的那一条（可叫停）</span></div>
     <div class="box"><b>TraceFilter / Errors / Spa</b><span class="sub">链路 id / 错误口径 / 前端路由</span></div>
@@ -256,7 +257,7 @@ String blocked(Facts facts);   <span class="c">// 空串 = 能做；否则就是
 
 <h3>2.3 数据流：一次运行读了什么、写了什么</h3>
 <div class="flow h3">
-  <div class="box"><b>读</b><span class="sub">project.yaml（编译命令、模型）· env.yaml（容器）· cases.json（清单）· probe.json（需求）</span></div>
+  <div class="box"><b>读</b><span class="sub">project.yaml（编译命令、模型）· env.yaml（容器）· cases.json（清单）· probe.json（四栏：要读的 / 要改的 / 为什么 / prompt）</span></div>
   <div class="box"><b>写</b><span class="sub">flow.json（状态+产物）· events.jsonl（每条事件）· runs/（BEGIN/END）· checkpoint.json · snapshot/（写前快照）· cases.json（结论）</span></div>
   <div class="box"><b>不进盘的东西</b><span class="sub">模型对话（压缩后仍在内存）· 待回答的审批（进程内）· 计数器</span></div>
 </div>
@@ -315,7 +316,7 @@ DONE    冻结了：下游随之解锁；回退会把下游一起作废</code></
 <div class="why">提交时的五条机器判据：① 清单非空 ② 没有 PENDING ③ PASS 有证据 ④ 非 PASS 有原因
 ⑤ <b>至少一条真结论</b>——全是 ERROR 等于"没验"，把它当通过等于把"没验"说成"没问题"。</div>
 
-<h3>3.3 API 全表（41 条）</h3>
+<h3>3.3 API 全表（业务 40 条 + actuator 3 条）</h3>
 <h4>外壳与项目</h4>
 <table>
   <tr><th>方法</th><th>路径</th><th>做什么</th></tr>
@@ -401,7 +402,7 @@ event: done     data: {…}          <span class="c">没有在跑的活了 → �
 <p class="part">第 4 部分</p>
 <h2 id="p4">逐包逐类</h2>
 
-<h3>4.1 <code>core</code>：地基（9 个类）</h3>
+<h3>4.1 <code>core</code>：地基（14 个类）</h3>
 <table>
   <tr><th>类</th><th>一句话</th><th>关键方法</th></tr>
   <tr><td><code>Layout</code></td><td>每一样东西落在哪，<b>只有这一处定义</b></td><td><code>flowJson</code> <code>events</code> <code>cases</code> <code>runs</code> <code>checkpoint</code> <code>show</code></td></tr>
@@ -412,7 +413,8 @@ event: done     data: {…}          <span class="c">没有在跑的活了 → �
   <tr><td><code>EventProgress</code></td><td>把过程写成事件</td><td><code>markCancelled</code></td></tr>
   <tr><td><code>Cmd</code></td><td>跑一条命令</td><td><code>run(argv,workdir,stdin,timeout,onLine)</code>、<code>killTree</code></td></tr>
   <tr><td><code>Jobs</code></td><td>什么在跑、叫停杀谁</td><td><code>register</code> <code>cancelAll</code></td></tr>
-  <tr><td><code>Json</code> / <code>Project</code> / <code>Llm</code> / <code>Logs</code> / <code>Metrics</code></td><td>序列化 / 项目与密钥 / 模型 / 链路与脱敏 / 计数器</td><td>—</td></tr>
+  <tr><td><code>Project</code></td><td>项目配置与密钥；<b>配置每次问盘</b>（见 5.11）</td><td><code>compile</code> <code>llm</code> <code>apiKey</code> <code>bootstrap</code> <code>topLevel</code></td></tr>
+  <tr><td><code>Json</code> / <code>Llm</code> / <code>Logs</code> / <code>Metrics</code> / <code>SpecException</code></td><td>序列化 / 模型 / 链路与脱敏 / 计数器 / 全线唯一的受检异常</td><td>—</td></tr>
 </table>
 
 <h4>代码：<code>EventLog.append</code>（这是全系统最要紧的 7 行）</h4>
@@ -436,7 +438,7 @@ return fresh;</code></pre>
 <div class="why">缓存的是"盘上内容的副本 + 校验和"，对不上就整份重读——<b>盘上永远是唯一真相</b>。
 必须加它的原因：界面改 SSE 后每 250 毫秒读一次"从第 N 行到末尾"，不缓存等于每秒读几遍全文件。</div>
 
-<h3>4.2 <code>flow</code>：流程（8 个类）</h3>
+<h3>4.2 <code>flow</code>：流程（16 个类）</h3>
 <table>
   <tr><th>类</th><th>职责</th></tr>
   <tr><td><code>Node</code></td><td>五站枚举；<code>ordinal()</code> 就是顺序；<code>previous()</code> 给闸用</td></tr>
@@ -446,6 +448,9 @@ return fresh;</code></pre>
   <tr><td><code>FlowState</code></td><td>五格状态 + 产物袋（<code>flag</code>/<code>number</code>/<code>note</code>）</td></tr>
   <tr><td><code>Store</code></td><td><code>flow/current</code> 指针 + <code>flow.json</code> 原子读写</td></tr>
   <tr><td><code>FlowService</code></td><td>五格动作的唯一住处：<code>requireOpen</code> / <code>requireReachable</code> / <code>freeze</code> / <code>note</code> / <code>gotoNode</code> / <code>view</code></td></tr>
+  <tr><td><code>FlowRejected</code></td><td>闸拒了的时候抛的那个异常（正文就是那句人话，<code>Errors</code> 翻成 409）</td></tr>
+  <tr><td><code>NodeView</code></td><td>一格的对外形状：<code>key/state/blockedReason/facts/actions</code>（前端只读它）</td></tr>
+  <tr><td><code>Runs</code></td><td>「现在有没有活在跑」以及后台任务的生命周期</td></tr>
   <tr><td><code>Snapshot</code> / <code>Journal</code> / <code>Checkpoint</code> / <code>FlowIndex</code></td><td>写前快照与回滚 / 运行账（BEGIN-END）/ 断点 / 跨流程一览</td></tr>
   <tr><td><code>Actions</code></td><td><b>每一格有哪些按钮——只有这一处声明</b>（id/label/tip/primary/danger/进页头还是「⋯」），随 <code>GET /api/flow</code> 下发</td></tr>
 </table>
@@ -477,15 +482,16 @@ FlowService.facts(state):
     … 其余 10 项
     return Facts(...)</code></pre>
 
-<h3>4.3 <code>env</code>：环境（7 个类）</h3>
+<h3>4.3 <code>env</code>：环境（9 个类）</h3>
 <table>
   <tr><th>类</th><th>职责</th><th>关键约束</th></tr>
   <tr><td><code>EnvConfigLoader</code></td><td>读 <code>env.yaml</code>：结构校验带行号、一次报全</td><td>只判结构；"这条命令危不危险"不在这层</td></tr>
   <tr><td><code>EnvConfig</code></td><td>声明模型：image/workdir/dependencies/env/init/reset</td><td><code>Step(command,service,stdin)</code> 三栏</td></tr>
+  <tr><td><code>EnvCli</code></td><td><code>specflow env up/down/status</code> 那一组命令行</td><td>与界面走同一个 <code>Environment</code>，不另写一套</td></tr>
   <tr><td><code>Compose</code></td><td>按声明渲染 compose</td><td>app：uid 1000 + cap_drop ALL + 限额 + 只挂项目树 + external 缓存卷</td></tr>
   <tr><td><code>Environment</code></td><td>up / reset / down / status / <b>inApp</b></td><td>init 走 <code>sh -s</code> 的 stdin；失败即 <code>down -v</code> 不留半成品</td></tr>
   <tr><td><code>Compiler</code></td><td>在<b>宿主机</b>跑项目配的编译命令</td><td>命令过 <code>CommandGuard.forbidden</code></td></tr>
-  <tr><td><code>Capabilities</code></td><td>起完环境<b>在容器里</b>验能力</td><td>先 <code>command -v</code>（便宜）再真构建（贵）</td></tr>
+  <tr><td><code>Capabilities</code></td><td>起完环境<b>在容器里</b>验能力</td><td>先 <code>command -v</code>（便宜）再真构建（贵）；构建不过时按 Linux 写法自动再试一次</td></tr>
   <tr><td><code>Budgets</code> / <code>CommandGuard</code></td><td>超时唯一换算处 / 三档守卫</td><td>1 分钟～4 小时夹紧 / 拒·问·装工具链拒</td></tr>
 </table>
 
@@ -505,17 +511,32 @@ FlowService.facts(state):
     if not env.inApp("command -v " + tool).ok():
         return Report(ok=false, "容器里没有 <b>tool</b> … 改 image 或 init")
     built = env.inApp(project.compile(), timeout)
+    if not built.ok():
+        fixed = linuxSafe(project.compile())    <span class="c">// 只把路径里的 \ 换成正斜杠</span>
+        if fixed and env.inApp(fixed, timeout).ok():
+            return Report(ok=true, fixedCommand=fixed)   <span class="c">// 调用方写回 project.yaml</span>
     return Report(ok=built.ok(), detail=…, raw=tail(built.output))</code></pre>
+<div class="why"><b>那个"再试一次"不是防御性编程，是一次真失败换来的。</b>① 的 Agent 交出
+<code>javac -d out\main …</code>（Windows 写法），宿主机编译过了，进容器构建退出码 2——
+<code>\</code> 在 <code>sh</code> 里是转义，<code>out\main</code> 变成 <code>outmain</code>，
+而报错读起来像"环境坏了"。<b>同一条命令要在两个地方都能跑</b>这件事，提示词里写清楚了（治本），
+这里再兜一次（人自己填了 Windows 写法时治标），且只在"第一次没过 + 命令里真带 <code>\</code> +
+命令里没有 grep/sed/awk 之类带正则的词"时才试——换完还得真跑通才采用，所以判错也不会误伤。</div>
 
-<h3>4.4 <code>agent</code>：ReAct 与工具（11 个类）</h3>
+<h3>4.4 <code>agent</code>：ReAct 与工具（18 个类 + <code>agent/tools</code> 8 个）</h3>
 <table>
   <tr><th>类</th><th>职责</th></tr>
+  <tr><td><code>EnvAgent</code></td><td>① 探测环境：只读读一遍项目 → <code>env.yaml</code> 全文 + 一条编译命令（<b>两处都要能跑</b>，见 4.3）</td></tr>
+  <tr><td><code>Probe</code></td><td>② 上下文探针：交四样产物 <code>files</code>/<code>changes</code>/<code>context</code>/<code>prompt</code></td></tr>
+  <tr><td><code>CasesAgent</code></td><td>③ 依需求与设计生成用例清单（一条一个可验的判据）</td></tr>
+  <tr><td><code>Dev</code></td><td>④ 开发：白名单内改真项目，每次交差编译一次，错误原文回喂（见下面的契约）</td></tr>
   <tr><td><code>Loop</code></td><td>ReAct 本体：问模型 → 解析 → 工具 → 回喂；四道闸（轮次/工具数/输出长度/超时）</td></tr>
   <tr><td><code>Protocol</code></td><td>工具调用与交差的协议（两道围栏：<code>specflow-tool</code> / <code>json</code>）；认不出来时的补问话术</td></tr>
   <tr><td><code>Tool</code> / <code>ToolRegistry</code> / <code>ToolResult</code></td><td>工具接口 / 注册与参数校验（异常翻成 <code>ok=false</code>）/ 结果两态</td></tr>
   <tr><td><code>Compact</code></td><td>上下文压缩：确定性锚点 + 任务书 + 尾巴（<b>不调模型</b>）</td></tr>
   <tr><td><code>StuckCheck</code></td><td>打转检测：<b>第 4 次提醒、第 6 次判死</b></td></tr>
   <tr><td><code>LoopLimits</code> / <code>Outcome</code> / <code>Watcher</code> / <code>EventWatcher</code> / <code>Shell</code> / <code>Whitelist</code> / <code>Signal</code></td><td>上限 / 收场档 / 观察者 → 事件 / 命令出口 / 白名单 / 交差信号</td></tr>
+  <tr><td><code>tools.ReadList</code> / <code>ReadFile</code> / <code>WriteFile</code> / <code>ApplyPatch</code> / <code>Submit</code> / <code>Bash</code> / <code>Roots</code> / <code>Args</code></td><td>五格共用的那套工具；<code>Roots</code> 是唯一的"能不能碰这个路径"判据，<code>Args</code> 是参数取值与校验</td></tr>
 </table>
 
 <h4>代码：<code>Loop.run</code> 的主循环（压缩挂在这里）</h4>
@@ -531,6 +552,26 @@ FlowService.facts(state):
 }</code></pre>
 <div class="why">四条上限各有自己的收场档；工具坏了不崩循环（注册表把异常翻成 <code>ok=false</code> 喂回模型）。
 一轮里"开始时推一条、结束时推一条"是<b>本线程顺序发生</b>的——界面的 chip 就是靠这个成对。</div>
+
+<h4>契约：② 的四样产物怎么进 ④ 的那一段话（<code>Dev.userMessage</code>）</h4>
+<table>
+  <tr><th>② 的产物</th><th>到了 ④ 变成什么</th><th>不给它会怎样</th></tr>
+  <tr><td><code>prompt</code></td><td>「## 这一轮要做的事」</td><td>没有它，开发只能自己发明需求（所以空 prompt 当场拒）</td></tr>
+  <tr><td><code>changes</code></td><td><b>写白名单</b>（进 system，工具层强制）</td><td>它对着整个项目猜该动哪儿</td></tr>
+  <tr><td><code>files</code></td><td>「## 先读这几处」</td><td>它凭印象改，改坏</td></tr>
+  <tr><td><code>context</code></td><td>「## 上下文（为什么这些地方相关）」</td><td>人写的"为什么"白写了</td></tr>
+  <tr><td>⑤ 的总结</td><td>「## 上一轮测试留下的反馈」</td><td>它不知道现在还有什么不对</td></tr>
+</table>
+<pre><code>userMessage(prompt, files, context, feedback):
+    <span class="c">// 顺序是有意的：先说要做什么，再先读哪儿，再为什么，最后才是反馈</span>
+    "## 这一轮要做的事（② 组装好的 prompt）"        prompt
+    "## 先读这几处（② 挑出来的入口）"              files      + "它们只是入口：先把相关的部分读完"
+    "## 上下文（为什么这些地方相关——② 的交代）"    context    + "别把它当结论：它说的地方自己看一眼"
+    "## 上一轮测试留下的反馈（这一轮的目标）"        feedback   + "这不是新需求，原需求不变"</code></pre>
+<div class="why"><b>这四栏原来只用了两栏。</b><code>files</code> 与 <code>context</code> 只存不用：
+人在 ② 里改「上下文」，④ 那边一点反应都没有，想让它生效只能自己去改那段 prompt——
+用户看到的现象就是"我改了，它没变"。断链在最后一步、跑起来不报任何错，所以只有
+<b>钉住提示词原文的单元测试</b>才发现得了（<code>DevMessageTest</code> 就是为此而写）。</div>
 
 <h4>代码：<code>Compact</code> 压出来的形状</h4>
 <pre><code>[system]                     <span class="c">原样保留（协议、规矩）</span>
@@ -566,12 +607,12 @@ cases.skip(当前, "超出每用例预算（12 轮）…");            <span cla
 <h3>4.6 <code>web</code>：路由与装配（7 个类）</h3>
 <table>
   <tr><th>类</th><th>职责</th></tr>
-  <tr><td><code>Api</code></td><td>41 条路由：取参数 → 调下层 → 拼响应（<b>判据一条都不在这里</b>）</td></tr>
+  <tr><td><code>Api</code></td><td>40 条路由：取参数 → 调下层 → 拼响应（<b>判据一条都不在这里</b>）</td></tr>
   <tr><td><code>Session</code></td><td>当前项目 + <code>open()</code> 时跑一遍崩溃恢复扫描 + 最近列表</td></tr>
-  <tr><td><code>Runs</code></td><td>一条运行的登记/叫停/阶段（事件流与 BEGIN-END 账）</td></tr>
   <tr><td><code>TraceFilter</code></td><td>每请求一个 <code>req</code> id，进出各一行（静态资源不打）</td></tr>
   <tr><td><code>Errors</code></td><td>四类错误的唯一翻译处</td></tr>
-  <tr><td><code>Spa</code> / <code>App</code> / <code>Main</code> / <code>ApiException</code></td><td>前端路由回落 / Spring 装配（只绑回环）/ 命令行三子命令 / 业务异常</td></tr>
+  <tr><td><code>Spa</code> / <code>App</code> / <code>ApiException</code></td><td>前端路由回落 / Spring 装配（只绑回环）/ 业务异常</td></tr>
+  <tr><td><code>com.specflow.Main</code></td><td>命令行四个子命令：<code>web</code> / <code>env</code> / <code>flow</code> / <code>probe</code></td></tr>
 </table>
 
 <h4>代码：SSE 端点（40 行里最要紧的部分）</h4>
@@ -600,7 +641,7 @@ cases.skip(当前, "超出每用例预算（12 轮）…");            <span cla
 
 <!-- ============================================================ -->
 <p class="part">第 5 部分</p>
-<h2 id="p5">关键机制（10 条）</h2>
+<h2 id="p5">关键机制（11 条）</h2>
 
 <h3>5.1 两条编译：宿主机 vs 容器</h3>
 <table>
@@ -675,6 +716,23 @@ if (same &gt;= 4) → 提醒："…这是原地打转。换一种做法…（再
   <li>有 <code>SKIPPED</code> 时不说"验完了"，而说"有 N 条被跳过（预算用尽）"。</li>
   <li>超时与失败分开说：命令超时不是"命令失败"，是"它没跑完"。</li>
 </ul>
+
+<h3>5.11 三类"我改了它没反应"的 bug（同一个形状）</h3>
+<p>它们是同一个形状：<b>东西都在，只是中间某一段没接上，而跑起来不报错</b>。
+这一版一次抓出三类，写法上也都来自同一个判据——<b>用户改过的东西，必须能在下一处读到</b>。</p>
+<table>
+  <tr><th>断在哪</th><th>现象（用户看到什么）</th><th>修法</th><th>以后怎么不会再断</th></tr>
+  <tr><td>② 的 <code>context</code>/<code>files</code> 只存不用</td><td>在 ② 改「上下文」，④ 一点反应都没有；想让它生效只能去改 prompt</td><td><code>Dev.userMessage</code> 按「要做的事 → 先读哪儿 → 为什么相关 → 反馈」四段拼</td><td><code>DevMessageTest</code> 直接钉提示词原文</td></tr>
+  <tr><td>前端把 <code>context</code> 当一段多行文本提交，后端只认数组</td><td>保存看起来成功，刷新之后「上下文」是空的</td><td><code>Api.lines</code> 两种形状都认（字符串按行拆）</td><td><code>ApiTest</code> 用 String 形状存一次再读回来断言</td></tr>
+  <tr><td><code>project.yaml</code> 只在打开项目那一刻读一次</td><td>填了编译命令 → 点冻结 → 闸说"编译命令还是空的"；界面上没有"重开项目"这个按钮</td><td><code>Project.raw()</code> 按 <code>(size, mtime)</code> 每次问盘</td><td><code>ProjectTest</code>：改盘 → 立刻读 → 必须是新值</td></tr>
+</table>
+<pre><code><span class="c">// 三处修法的共同形状：把"存下来的"与"读回来的"接上，而不是各写各的</span>
+Api.lines(Object raw):        String → 按行拆；List → 逐项；其它 → 空
+Dev.userMessage(...):         prompt → files → context → feedback（顺序固定，可断言）
+Project.raw():                (size, mtime) 没变就复用；变了整份重读；读不出来保留上一次</code></pre>
+<div class="why"><b>为什么这类 bug 值钱</b>：它不报错、日志干净、测试全绿，只有"人去点一下"才发现。
+所以三条都补了<b>直接盯行为的测试</b>——不是盯实现，是盯"改完之后读回来是不是新的"。
+这也顺手解释了一个原则：<b>缓存可以有，但"要不要用缓存"必须由盘说了算</b>。</div>
 
 <!-- ============================================================ -->
 <p class="part">第 6 部分</p>
@@ -764,25 +822,28 @@ if (same &gt;= 4) → 提醒："…这是原地打转。换一种做法…（再
 <h3>7.1 测试矩阵</h3>
 <table>
   <tr><th>层面</th><th>数量</th><th>钉的是什么</th></tr>
-  <tr><td><code>flow/</code></td><td>18</td><td>闸（14）· 断点（4）</td></tr>
-  <tr><td><code>test/</code></td><td>36</td><td>用例清单（18）· 每用例预算（6）· 沙箱（7）· 审批（7）</td></tr>
-  <tr><td><code>agent/</code></td><td>41</td><td>循环（13）· 协议（8）· 注册表（9）· 工具（27）· 压缩（4）· 打转（3）</td></tr>
-  <tr><td><code>env/</code></td><td>41</td><td>声明加载（8）· compose（6）· 起环境（9）· 守卫（6）· 预算（4）· CLI（9）</td></tr>
-  <tr><td><code>core/</code></td><td>10</td><td>事件流（6）· JSON/YAML 入口（5）</td></tr>
-  <tr><td><code>web/</code></td><td>6</td><td>路由形状与增量语义（v3 补上，此前为零）</td></tr>
-  <tr><td>前端</td><td>105</td><td>纯函数（事件→chip / facts→徽章 / 文案预算）+ 页面接线（10）</td></tr>
-  <tr><td><b>合计</b></td><td><b>189 + 102</b></td><td><code>mvn -o test -Dfrontend.skip=true</code> · <code>npx vitest run</code></td></tr>
+  <tr><td><code>agent/</code></td><td>68</td><td>循环（13）· 协议（8）· 注册表（9）· 工具（27）· 压缩（4）· 打转（3）· <b>②→④ 的提示词契约（4）</b></td></tr>
+  <tr><td><code>env/</code></td><td>46</td><td>声明加载（8）· compose（6）· 起环境（9）· 守卫（6）· 预算（4）· CLI（9）· <b>两处都能跑的编译命令（4）</b></td></tr>
+  <tr><td><code>test/</code></td><td>38</td><td>用例清单（18）· 每用例预算（6）· 沙箱（7）· 审批（7）</td></tr>
+  <tr><td><code>flow/</code></td><td>28</td><td>闸（14）· 断点（4）· 跨流程一览（4）· 动作表（6）</td></tr>
+  <tr><td><code>core/</code></td><td>14</td><td>事件流（6）· JSON/YAML 入口（5）· <b>配置每次问盘（3）</b></td></tr>
+  <tr><td><code>web/</code></td><td>7</td><td>路由形状与增量语义 + <b>探针产物两种形状都存得住</b></td></tr>
+  <tr><td>前端</td><td>102</td><td>纯函数（事件→chip / facts→徽章 / 文案预算）+ 页面接线（7，含跨端对齐）</td></tr>
+  <tr><td><b>合计</b></td><td><b>201 + 102</b></td><td><code>mvn -o test -Dfrontend.skip=true</code> · <code>npx vitest run</code></td></tr>
 </table>
 
 <h3>7.2 端到端（真模型 + 真 Docker）</h3>
-<pre><code>node run2.mjs --jar target/specflow.jar --port 3987      → 通过（91s）
-  ① 环境 Agent 9.3s → 起容器 4.9s → 编译 PASSED → 冻结
-  ② 探针 8.2s → 冻结        ③ 11 条用例 → 冻结
-  ④ 开发 6.1s → <b>脚本自己 javac+java 核出 reserve(5)=false、onHand(A)=3</b> → 冻结
-  ⑤ 测试 55.1s：11 条全到终态（PASS 10）· <b>替你点了 1 条审批</b>
-  ⑤ 提交 + 接受 → 闭环</code></pre>
+<pre><code>node run2.mjs --jar target/specflow.jar --port 4001      → 通过（196s）
+  ① 环境 Agent 10.3s（编译命令 javac -d out/main …）→ 起容器 3.0s → 编译 PASSED → 冻结
+  ② 探针 9.2s（要改 1 个、可读 2 个）→ 冻结        ③ 10 条用例 → 冻结
+  ④ 开发 7.1s → <b>脚本自己 javac+java 核出 reserve(5)=false、onHand(A)=3</b> → 冻结
+  ⑤ 测试 158.7s：10 条全到终态（PASS 9）· 替你点了 0 条审批
+  ⑤ 提交 + 接受 → 闭环（done=true）</code></pre>
 <div class="why">④ 那一行<b>不采信 Agent 自述</b>：脚本自己编译目标项目、自己跑、要求打出指定结果——
-这是整个验证里唯一不依赖模型的地方。</div>
+这是整个验证里唯一不依赖模型的地方。<br>
+<b>这一轮的 ① 还顺手证实了一件事</b>：同一次修好之前，Agent 交出的编译命令是
+<code>javac -d out\main …</code>，宿主机过、容器里挂，① 冻结直接被闸拦下（见 5.11 与 4.3）。
+提示词改成"路径一律正斜杠"之后，同一条命令两处都能跑通了。</div>
 
 <h3>7.3 已知缺口（不许当成做了）</h3>
 <table>

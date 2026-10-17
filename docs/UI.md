@@ -1,4 +1,4 @@
-# specflow v2 · 界面
+# specflow v3 · 界面
 
 > 界面只有**七个页面**：欢迎页 + 工作台 + 五节点。没有多标签、没有抽屉、没有第二层导航。
 > 「UI → API」的顺序：先定界面要什么，后端照着这个表提供——**界面不许自己算闸、不许自己拼状态**。
@@ -52,9 +52,9 @@
 | 欢迎页 | 挑项目：最近列表 + 手输路径 + 选文件夹 | 打开 | — |
 | 工作台 | 当前流程五格速览 + 最近项目 | 新开流程 | — |
 | ① 环境 | env.yaml 与编译命令两个框 | 探测环境 / 起环境 | 编译、清空输出 |
-| ② 探针 | 需求（必填）+ 设计（可选）两个框 → 产物四样 | 跑探针 / 冻结 | 保存产物 |
+| ② 探针 | 需求（必填）+ 设计（可选）两个框 → 产物四样：要读的 / 要改的 / 上下文 / prompt（四栏都可手改） | 跑探针 / 冻结 | 保存产物 |
 | ③ 用例 | 用例表（增删改，带标签与状态） | 生成用例 / 冻结 | — |
-| ④ 开发 | 白名单 + prompt + 上一轮反馈（只读） | 跑开发 | 回滚改动 |
+| ④ 开发 | 白名单 + 先读的 + 上下文 + prompt + 上一轮反馈（全只读，给人核「② 交代的东西真的进 ④ 了」） | 跑开发 / 冻结 | 回滚改动 |
 | ⑤ 测试 | 用例表（带结论与证据）+ 总结框 | 跑测试 / 提交 | 接受并完成、再优化一轮 |
 
 **五个节点页共用同一个骨架**（`NodeShell`）：页头 + 状态一行 + 主区 + 折叠。
@@ -82,13 +82,21 @@
 
 ```
 src/main/frontend/src/
-  main.js  App.vue  router.js  store.js  api.js
+  main.js  App.vue  router.js  store.js  api.js      # api.js：唯一发请求的地方
   styles/tokens.css   # 颜色/间距/字级：唯一一处定义
   styles/app.css      # 布局与组件样式（手写，不引库）
-  components/  NodeShell.vue  Fold.vue  Chip.vue  Badge.vue  Empty.vue  Fail.vue  MoreMenu.vue
+  components/  NodeShell.vue  Fold.vue  Chip.vue  Chips.vue  Badge.vue
+               Empty.vue  Fail.vue  MoreMenu.vue
   views/       Welcome.vue  Workbench.vue  EnvNode.vue  ProbeNode.vue
                CasesNode.vue  DevNode.vue  TestNode.vue
-  lib/         events.js（事件→行/chip，纯函数）  facts.js（facts→徽章）  text.js（文案裁剪）
+  lib/         events.js（事件→行/chip）  facts.js（facts→徽章）
+               text.js（文案裁剪）  actions.js（按后端声明的 id 绑处理函数）
+               flow.js  pages.js（五格的名字与顺序）
 ```
 
 `lib/` 里的东西**纯函数、被单测钉住**；`.vue` 只做渲染与调用。
+
+**按钮文案不在 `.vue` 里**：名字/顺序/主次/进不进「⋯」全由后端 `flow/Actions.java` 声明，
+视图只写 `const handlers = { run, freeze, rollback }` 再 `head(node, handlers)`。
+视图里出现 `label:` / `tip:` 会被 `wiring.spec.js` 判红——这是"同一个动作只许有一个入口"
+那条规矩的机器版本。

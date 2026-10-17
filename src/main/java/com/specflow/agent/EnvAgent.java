@@ -213,6 +213,13 @@ public final class EnvAgent {
      * 本机是什么系统——写 {@code compileCommand} 时必须知道的一件事。
      *
      * <p>这段是上一版缺失、真项目上炸过的那一块（Linux 写法在 cmd 里跑不动）。判据只有这一处。
+     *
+     * <h2>为什么还要说"容器里也要跑"（实测撞出来的第二次）</h2>
+     * 这条命令**不止在一处跑**：④ 每次交差在<b>宿主机</b>上跑它，而 ① 起完环境还要在
+     * <b>Linux 容器</b>里跑同一行（不跑就无法保证 ⑤ 不会卡在这里）。所以它得同时是
+     * cmd.exe 和 sh 都认的写法。上一版这段的示例写的是 `javac -d out\main …`——
+     * 宿主机过了、容器里挂（`\` 在 sh 里是转义），于是 ① 冻结被闸拦下，
+     * 而错误信息看起来像"环境有问题"。**路径一律用正斜杠**：两边都认。
      */
     private static String hostFacts() {
         String os = System.getProperty("os.name", "未知");
@@ -225,12 +232,17 @@ public final class EnvAgent {
                 .append(arch.isBlank() ? "" : "（" + arch + "）").append('\n');
         out.append("- `compileCommand` 在**这台机器上直接跑**，用的是 ")
                 .append(windows ? "Windows 的 cmd.exe" : "本机的 sh").append("；\n");
+        out.append("""
+                - **同一行命令还要在 Linux 容器里再跑一次**（起完环境验证容器真能构建）。
+                  所以它必须**两处都认**：路径一律写**正斜杠**（`out/main` 而不是 `out\\main`
+                  —— cmd.exe 也认正斜杠，而 sh 里 `\\` 是转义字符，会变成 `outmain`）。
+                """);
         out.append("- `init` / `reset` 在**容器里跑**（Linux），只能用 `image` 里本来就有的命令。\n");
         if (windows) {
             out.append("""
                     - 这台机器是 Windows，`compileCommand` 里**不许**出现：
                       `$(...)`、`find`、`grep`、`sed`、单引号包参数、`;` 串命令。
-                      照 cmd 写：`javac -d out\\main src\\main\\java\\com\\demo\\*.java`、
+                      照 cmd 写、但路径用正斜杠：`javac -d out/main src/main/java/com/demo/*.java`、
                       `mvn -q -DskipTests compile`、`gradlew.bat build`。串步骤用 `&&`。
                     """);
         }

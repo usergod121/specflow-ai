@@ -60,9 +60,10 @@ public final class Capabilities {
      * @param buildSeconds 构建花了多久
      * @param detail      给人看的一句话（失败时说清缺什么、该怎么改）
      * @param raw         原始输出（失败时是尾巴；界面"展开看全部"看它）
+     * @param fixedCommand 校验顺手改对的编译命令（空串 = 没改）；非空时调用方要写回 project.yaml
      */
     public record Report(String tool, boolean toolOk, boolean buildOk, long buildSeconds,
-                         String detail, String raw) {
+                         String detail, String raw, String fixedCommand) {
 
         /** 探测通过、构建也通过，才算"这个环境真能用"。 */
         public boolean ok() {
@@ -88,21 +89,78 @@ public final class Capabilities {
                             + "改 .specflow/env.yaml 的 image（换一个自带该工具的镜像，"
                             + "例如 Java 项目用 maven:3.9-eclipse-temurin-17），或者在 init 里装一次，"
                             + "然后重新起环境。",
-                    tail(found.output(), 20));
+                    tail(found.output(), 20), "");
         }
 
         long started = System.currentTimeMillis();
         Cmd.Result built = env.inApp(compile, timeoutSeconds, progress);
         long seconds = Math.max(0, (System.currentTimeMillis() - started) / 1000);
         if (!built.ok()) {
+            // 自我修复一次：同一条命令要在宿主机和 Linux 容器两处都能跑，
+            // Windows 风格的反斜杠在 sh 里是转义字符（`out\main` → `outmain`）。
+            // 只在**第一次没过**且命令里真带反斜杠时才重试，代价是一次构建、收益是"不用人去猜哪里写错了"。
+            Report repaired = repair(env, compile, timeoutSeconds, progress, tool, built);
+            if (repaired != null) {
+                return repaired;
+            }
             return new Report(tool, true, false, seconds,
                     "容器里有 `" + tool + "`，但构建没过（" + built.summary() + "）。"
                             + "这是环境或项目本身的问题，⑤ 也一定会撞上——先在 ① 把它修好："
                             + "看下面的原始输出，多半是缺系统依赖、网络拉不到依赖，或者编译命令要改成容器里那套。",
-                    tail(built.output(), 40));
+                    tail(built.output(), 40), "");
         }
         return new Report(tool, true, true, seconds,
-                "容器里能构建（`" + tool + "`，" + seconds + " 秒）", "");
+                "容器里能构建（`" + tool + "`，" + seconds + " 秒）", "", "");
+    }
+
+    /**
+     * 把 {@code \} 换成正斜杠再试一次；过了就把它带回给调用方写回盘上。
+     *
+     * @return 试成功的那份结论；没得试、也没试成功时返回 {@code null}（让调用方按"真失败"收场）
+     */
+    private static Report repair(Environment env, String compile, long timeoutSeconds,
+                                 Progress progress, String tool, Cmd.Result first) {
+        String fixed = linuxSafe(compile);
+        if (fixed.isEmpty()) {
+            return null;
+        }
+        progress.line("容器里构建没过，先按 Linux 的写法再试一次：" + fixed);
+        long started = System.currentTimeMillis();
+        Cmd.Result again = env.inApp(fixed, timeoutSeconds, progress);
+        long seconds = Math.max(0, (System.currentTimeMillis() - started) / 1000);
+        if (!again.ok()) {
+            return null;
+        }
+        return new Report(tool, true, true, seconds,
+                "容器里能构建（`" + tool + "`，" + seconds + " 秒）。编译命令里的反斜杠引擎替你改成正斜杠了："
+                        + "同一条命令要在宿主机和 Linux 容器里都跑，`\\` 在容器里是转义字符。",
+                tail(first.output(), 20), fixed);
+    }
+
+    /**
+     * <b>这条命令换到 Linux 容器里该怎么写</b>：没有可换的就返回空串。
+     *
+     * <p>只做一件事：把路径里的 {@code \} 换成正斜杠（{@code out\main} → {@code out/main}）。
+     * 换与不换的判据刻意保守——<b>反斜杠在正则里是有意思的</b>，所以：
+     * <ul>
+     *   <li>带 {@code grep}/{@code sed}/{@code awk}/{@code perl}/{@code rg} 的命令一律不动（那多半是模式不是路径）；</li>
+     *   <li>已经有 {@code \\} 的不动（有人已经在按 Linux 的转义写了，再换会把意思改掉）。</li>
+     * </ul>
+     *
+     * <p>即便判错也不至于造成误伤：换了之后还要<b>真在容器里跑通</b>才会被采用，
+     * 跑不通就按原来的失败收场（原始输出照样给人看）。
+     */
+    static String linuxSafe(String compile) {
+        String text = compile == null ? "" : compile;
+        if (text.indexOf('\\') < 0 || text.contains("\\\\")) {
+            return "";
+        }
+        for (String regex: List.of("grep", "sed", "awk", "perl", "rg", "egrep", "tr")) {
+            if (text.matches("(?s).*\\b" + regex + "\\b.*")) {
+                return "";
+            }
+        }
+        return text.replace('\\', '/');
     }
 
     /**
