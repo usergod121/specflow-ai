@@ -2,7 +2,7 @@
 // ① 环境：env.yaml 与编译命令两个框 + 起容器 + 编译一次（UI.md §3）。
 import { computed, ref, watch } from 'vue';
 import * as api from '../api.js';
-import { store, act, runAction, say } from '../store.js';
+import { store, act, runAction, say, freezeNode } from '../store.js';
 import NodeShell from '../components/NodeShell.vue';
 import Fail from '../components/Fail.vue';
 import Empty from '../components/Empty.vue';
@@ -97,12 +97,21 @@ async function keepMinutes() {
   }
 }
 
+/** 冻结：① 这一格的收尾。没有它，② 永远解锁不了（闸判的是「前置是不是 DONE」）。 */
+async function freeze() {
+  const done = await freezeNode(node);
+  if (done.ok) {
+    say('已冻结');
+  }
+}
+
 const actions = computed(() => [
   {
     id: 'agent', label: '探测环境', primary: true, tip: '只读地读一遍项目，交回 env.yaml 草稿',
     disabled: Boolean(store.flow) === false, on: agent,
   },
   { id: 'up', label: '起环境', tip: '拉镜像 + init + reset，长任务', on: up },
+  { id: 'freeze', label: '冻结', tip: '做完了，冻住：冻住之后 ② 才可动', on: freeze },
 ]);
 const menu = computed(() => [
   { id: 'compile', label: '编译', tip: '跑一次编译命令，秒级', on: compile },

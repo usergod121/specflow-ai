@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 
@@ -33,6 +34,18 @@ public final class Compose {
 
     /** 容器里用哪个用户跑：非 root 的惯例 id。写死在渲染里——加固是边界，不是用户偏好。 */
     public static final String SANDBOX_USER = "1000:1000";
+
+    /**
+     * app 的家目录（引擎定的，不跟镜像走）：构建工具的依赖缓存都在它下面。
+     *
+     * <p>为什么不定成镜像里那个 {@code /home/ubuntu}：那是"恰好 eclipse-temurin 的 uid 1000 叫 ubuntu"
+     * 的结果，换个镜像（比如 {@code maven:3.9-eclipse-temurin-17}）就未必成立；
+     * 缓存路径必须是我们说了算，否则同一个项目会攒出两份缓存。
+     */
+    public static final String HOME_IN_CONTAINER = "/specflow-home";
+
+    /** 依赖缓存卷的后缀（{@code <compose 项目名>-home}）。 */
+    public static final String VOLUME_SUFFIX = "-home";
 
     private static final int APP_PIDS = 1024;
     private static final String APP_MEMORY = "2g";
@@ -75,7 +88,7 @@ public final class Compose {
                 .append("# 宿主端口一个都不映射：容器之间用服务名互连，映射出去等于白开一个口子。\n")
                 .append("name: ").append(quote(projectName)).append('\n')
                 .append("services:\n");
-        app(out, config, projectRoot);
+        app(out, config, projectRoot, projectName);
         for (Map.Entry<String, EnvConfig.Dependency> entry : config.dependencies().entrySet()) {
             dependency(out, entry.getKey(), entry.getValue());
         }
@@ -127,7 +140,7 @@ public final class Compose {
         }
     }
 
-    private static void app(StringBuilder out, EnvConfig config, Path projectRoot) {
+    private static void app(StringBuilder out, EnvConfig config, Path projectRoot, String projectName) {
         out.append("  ").append(APP_SERVICE).append(":\n")
                 .append("    image: ").append(quote(config.image())).append('\n')
                 .append("    working_dir: ").append(quote(config.workdir())).append('\n')
@@ -143,8 +156,20 @@ public final class Compose {
                 // 长语法而不是 `- E:/x:/work`：短语法用冒号分隔，而 Windows 的盘符正是冒号
                 .append("      - type: bind\n")
                 .append("        source: ").append(quote(hostPath(projectRoot))).append('\n')
-                .append("        target: ").append(quote(config.workdir())).append('\n');
-        environment(out, "    ", config.env());
+                .append("        target: ").append(quote(config.workdir())).append('\n')
+                // 构建工具的依赖缓存（Maven 的 ~/.m2、Gradle 的 ~/.gradle、npm 的 ~/.npm 都在它下面）。
+                // 为什么必须有它：项目树每轮都是新副本，镜像里又没有工具链时，
+                // agent 要么自己装（实测烧掉 20 轮）、要么每轮重下依赖（实测 7 轮 sleep / 17 分钟）。
+                // **缓存在卷里跨轮保留，数据仍然每轮重置**——CI 都是这么分的。
+                .append("      - type: volume\n")
+                .append("        source: ").append(quote(homeVolume(projectName))).append('\n')
+                .append("        target: ").append(quote(HOME_IN_CONTAINER)).append('\n');
+        // HOME 放最前，且**用户声明的 HOME 被忽略**：缓存全在它下面，
+        // 让它跟着"镜像里那个 uid 1000 恰好叫什么"走，缓存就会散在两个地方。
+        Map<String, String> env = new LinkedHashMap<>();
+        env.put("HOME", HOME_IN_CONTAINER);
+        config.env().forEach(env::putIfAbsent);
+        environment(out, "    ", env);
         if (!config.dependencies().isEmpty()) {
             out.append("    depends_on:\n");
             for (Map.Entry<String, EnvConfig.Dependency> entry : config.dependencies().entrySet()) {
@@ -156,6 +181,11 @@ public final class Compose {
                         .append('\n');
             }
         }
+    }
+
+    /** app 的依赖缓存卷名：跟 compose 项目名走，清理时按同一个名字找。 */
+    public static String homeVolume(String projectName) {
+        return projectName + VOLUME_SUFFIX;
     }
 
     private static void dependency(StringBuilder out, String name, EnvConfig.Dependency dependency) {

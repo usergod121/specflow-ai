@@ -166,7 +166,8 @@ public final class FlowService {
             return;
         }
         String blocked = "前置「" + previous.title() + "」还没做完（现在 "
-                + state().stateOf(previous).name() + "）：先把那一格做完，下游才会解锁";
+                + state().stateOf(previous).name() + "）：到那一格点「冻结」，下游才会解锁"
+                + "（READY = 活干完了但还没冻住）";
         events().append(Event.gate(0, node.key(), blocked));
         String what = action == null || action.isBlank() ? "碰「" + node.title() + "」" : action;
         throw FlowRejected.conflict("不能" + what + "。" + blocked);

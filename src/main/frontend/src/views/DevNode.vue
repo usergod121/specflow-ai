@@ -2,7 +2,7 @@
 // ④ 开发：白名单 + prompt + 上一轮反馈（只读）（UI.md §3）。
 import { ref, watch } from 'vue';
 import * as api from '../api.js';
-import { store, act, runAction, say } from '../store.js';
+import { store, act, runAction, say, freezeNode } from '../store.js';
 import NodeShell from '../components/NodeShell.vue';
 import Fail from '../components/Fail.vue';
 import Empty from '../components/Empty.vue';
@@ -46,8 +46,17 @@ async function rollback() {
   }
 }
 
+/** 冻结：④ 这一格的收尾。没有它，⑤ 永远解锁不了（闸判的是「前置是不是 DONE」）。 */
+async function freeze() {
+  const done = await freezeNode(node);
+  if (done.ok) {
+    say('已冻结');
+  }
+}
+
 const actions = [
   { id: 'run', label: '跑开发', primary: true, tip: '只在白名单里改真项目，每次交差编译一次', on: run },
+  { id: 'freeze', label: '冻结', tip: '改完了，冻住：冻住之后 ⑤ 才可动', on: freeze },
 ];
 const menu = [
   { id: 'rollback', label: '回滚改动', danger: true, tip: '按快照把真项目退回原文', on: rollback },
