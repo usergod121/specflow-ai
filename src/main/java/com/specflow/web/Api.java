@@ -270,11 +270,14 @@ public class Api {
         session.flow().requireReachable(Node.ENV, "起环境");
         com.specflow.core.EventProgress progress = new com.specflow.core.EventProgress(session.events(), Node.ENV.key());
         try (AutoCloseable ignored = com.specflow.core.Jobs.register(progress)) {
-            Environment environment = new Environment(project);
+            // 「这一步我愿意等多久」只有一个来源：界面上那一栏（flow.json 的 pullTimeoutMinutes）。
+            // 起环境、容器内构建、编译、⑤ 的容器与单条命令，全按这一个数走（见 env.Budgets）。
+            long wait = com.specflow.env.Budgets.secondsFrom(pullTimeout());
+            Environment environment = new Environment(project).withPullTimeoutMinutes(pullTimeout());
             Environment.Registration registration = environment.up(progress);
             session.flow().note(Node.ENV, Map.of(Facts.ENV_READY, "true", "envState", registration.state()));
 
-            Capabilities.Report capability = Capabilities.verify(environment, project, 30 * 60, progress);
+            Capabilities.Report capability = Capabilities.verify(environment, project, wait, progress);
             Map<String, String> learned = new LinkedHashMap<>();
             learned.put(Facts.CONTAINER_BUILD, String.valueOf(capability.ok()));
             learned.put(Facts.CONTAINER_DETAIL, capability.detail());
@@ -323,7 +326,8 @@ public class Api {
         com.specflow.core.EventProgress progress = new com.specflow.core.EventProgress(session.events(), Node.ENV.key());
         Compiler.Result result;
         try (AutoCloseable ignored = com.specflow.core.Jobs.register(progress)) {
-            result = Compiler.compile(project, progress);
+            result = Compiler.compile(project, progress,
+                    com.specflow.env.Budgets.secondsFrom(pullTimeout()));
         } catch (Exception e) {
             throw new IllegalStateException(e.getMessage(), e);
         }
@@ -649,10 +653,13 @@ public class Api {
     /** 起一轮测试（两条入口共用：整轮跑 / 单条重试）。 */
     private Map<String, Object> startTestRun(com.specflow.test.CaseList list, String focus) {
         FlowService flow = session.flow();
+        // 同一个旋钮：容器起、单条命令、整轮，都按「这一步我愿意等多久」走
+        long wait = com.specflow.env.Budgets.secondsFrom(pullTimeout());
         String runId = session.runs().start(Node.TEST,
                 focus.isBlank() ? "test-run" : "test-retry-" + focus, Map.of(), progress -> {
                     try (com.specflow.test.TestSandbox sandbox = com.specflow.test.TestSandbox.prepare(
-                            session.project(), "t" + progress.elapsedSeconds() + "-" + progress.hashCode(), progress)) {
+                            session.project(), "t" + progress.elapsedSeconds() + "-" + progress.hashCode(),
+                            progress, wait)) {
                         // 开工前先问一句：这个容器能构建吗？缺东西就当场失败并指名 ①
                         //（实测"让它自己装"那条路花了 28 轮 / 15 分钟）
                         com.specflow.test.Preflight.Verdict preflight = com.specflow.test.Preflight.check(
@@ -671,6 +678,7 @@ public class Api {
                                 flow.state().fact(Node.PROBE, "requirement"), totalRounds, perCase)
                                 .withContainerRoot(com.specflow.env.EnvConfigLoader.load(session.project().layout())
                                         .map(com.specflow.env.EnvConfig::workdir).orElse("/work"))
+                                .withWaitSeconds(wait)
                                 .withFocus(focus);
                         com.specflow.test.TestAgent.Result result = agent.run();
                         long skipped = list.cases().stream()

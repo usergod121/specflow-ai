@@ -92,6 +92,14 @@ public final class TestAgent {
     private String containerRoot = "/work";
     /** 这一轮只验哪一条（用户点了「重试这一条」时非空）。 */
     private String focus = "";
+    /** 单条命令最多等多久（「这一步我愿意等多久」那个唯一旋钮，见 {@code env.Budgets}）。 */
+    private long waitSeconds = com.specflow.env.Budgets.defaultSeconds();
+
+    /** 单条命令的等多久由调用方给（同一个旋钮）；不给就用默认。 */
+    public TestAgent withWaitSeconds(long seconds) {
+        this.waitSeconds = seconds <= 0 ? com.specflow.env.Budgets.defaultSeconds() : seconds;
+        return this;
+    }
 
     public TestAgent(Llm llm, Progress progress, Watcher watcher, Shell shell, CaseList cases,
                      Approval approval, Path sandboxRoot, String requirement, int rounds) {
@@ -131,12 +139,12 @@ public final class TestAgent {
                 budget.wrap(new ReadFileTool(new Roots(sandboxRoot))),
                 budget.wrap(new com.specflow.test.Frozen(new WriteFileTool(new Roots(sandboxRoot)), freeze)),
                 budget.wrap(new com.specflow.test.Frozen(new ApplyPatchTool(new Roots(sandboxRoot)), freeze)),
-                budget.wrap(new BashTool(shell, sandboxRoot, approval, progress, 600)),
+                budget.wrap(new BashTool(shell, sandboxRoot, approval, progress, waitSeconds)),
                 budget.wrap(new CaseUpdateTool(cases)),
                 budget.wrap(new PhaseTool(freeze)),
                 budget.wrap(new SubmitTool()));
 
-        Loop loop = new Loop("测试", llm, new LoopLimits(rounds, 400, 600, 1), tools, watcher, progress);
+        Loop loop = new Loop("测试", llm, new LoopLimits(rounds, 400, waitSeconds, 1), tools, watcher, progress);
         String system = systemPrompt();
         String message = userMessage(freeze);
         Outcome last = null;

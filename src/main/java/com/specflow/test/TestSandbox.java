@@ -67,6 +67,16 @@ public final class TestSandbox implements AutoCloseable {
      *                               别让调用方跑到一半才发现命令无处可跑
      */
     public static TestSandbox prepare(Project project, String runId, Progress progress) {
+        return prepare(project, runId, progress, com.specflow.env.Budgets.defaultSeconds());
+    }
+
+    /**
+     * @param timeoutSeconds 「这一步我愿意等多久」——由调用方从唯一那个旋钮换算来（见
+     *                       {@code env.Budgets}）。原来这里写死 600 秒，用户改超时对它没影响。
+     */
+    public static TestSandbox prepare(Project project, String runId, Progress progress,
+                                      long timeoutSeconds) {
+        long wait = timeoutSeconds <= 0 ? com.specflow.env.Budgets.defaultSeconds() : timeoutSeconds;
         EnvConfig config = EnvConfigLoader.load(project.layout())
                 .orElseThrow(() -> new IllegalStateException(
                         "这个项目没有 " + EnvConfigLoader.FILE + "：测试要在容器里跑，先回 ① 把环境声明写好"));
@@ -83,11 +93,11 @@ public final class TestSandbox implements AutoCloseable {
                 config.image(), project.root());
 
         if (progress != null) {
-            progress.step("起测试容器（挂副本）：docker compose up -d --wait", "", 600);
+            progress.step("起测试容器（挂副本）：docker compose up -d --wait", "", wait);
         }
         Cmd.Result up = Cmd.run(List.of("docker", "compose", "-p", projectName, "-f",
                         composeFile.toString(), "up", "-d", "--wait"),
-                copy, null, 600, progress == null ? null : progress::line);
+                copy, null, wait, progress == null ? null : progress::line);
         if (!up.ok()) {
             if (progress != null) {
                 progress.fail("测试容器没起来（" + up.summary() + "）：" + projectName, up.output());

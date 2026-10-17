@@ -49,7 +49,7 @@ public final class Environment {
     public static final String STANDALONE = "standalone";
 
     /** 起环境 + 跑 init 的时限：包含拉镜像，国内拉几十个镜像一小时不奇怪。 */
-    private static final long UP_TIMEOUT_SECONDS = 30 * 60;
+    private static final long UP_TIMEOUT_SECONDS = Budgets.defaultSeconds();
 
     /** 收环境的时限（删卷可以很慢）。 */
     private static final long DOWN_TIMEOUT_SECONDS = 3 * 60;

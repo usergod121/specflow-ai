@@ -31,6 +31,14 @@ public final class Compiler {
     }
 
     public static Result compile(Project project, Progress progress) {
+        return compile(project, progress, Budgets.defaultSeconds());
+    }
+
+    /**
+     * @param timeoutSeconds "这一次我愿意等多久"——由调用方从<b>唯一那个旋钮</b>
+     *                       （{@code flow.json} 的 {@code pullTimeoutMinutes}）换算来，见 {@link Budgets}
+     */
+    public static Result compile(Project project, Progress progress, long timeoutSeconds) {
         String command = project.compile();
         if (command.isBlank()) {
             String message = "还没配编译命令：在 ① 里让「探测环境」读一遍项目，或者自己填一条"
@@ -56,9 +64,9 @@ public final class Compiler {
         Path root = project.root();
         long started = System.currentTimeMillis();
         if (progress != null) {
-            progress.step("编译：" + command, command, timeoutSeconds(project));
+            progress.step("编译：" + command, command, timeoutSeconds);
         }
-        Cmd.Result run = Cmd.run(List.of("cmd", "/c", command), root, null, timeoutSeconds(project),
+        Cmd.Result run = Cmd.run(List.of("cmd", "/c", command), root, null, timeoutSeconds,
                 progress == null ? null : progress::line);
         long seconds = Math.max(0, (System.currentTimeMillis() - started) / 1000);
         boolean passed = run.ok();
@@ -71,16 +79,5 @@ public final class Compiler {
             }
         }
         return new Result(passed, passed ? "PASSED" : "FAILED", command, run.output(), seconds);
-    }
-
-    /**
-     * 编译最多等多久。
-     *
-     * <p>与「起环境」共用一个旋钮（`flow.json` 里 ① 的 `pullTimeoutMinutes`）：对用户来说
-     * 这两件事是同一句话——"这一步我愿意等多久"。分成两个旋钮的结果是实测踩过的那个坑：
-     * 界面上设了 30 分钟，编译照样在写死的 5 分钟被掐死，而报错一个字都没提这两个数怎么来的。
-     */
-    private static long timeoutSeconds(Project project) {
-        return 30 * 60;
     }
 }
