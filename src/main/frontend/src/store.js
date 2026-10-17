@@ -42,7 +42,6 @@ export const store = reactive({
   toast: '',
 });
 
-let pollTimer = 0;
 let ticks = 0;
 let failureSeq = 0;
 let toastTimer = 0;
@@ -171,9 +170,99 @@ export async function goNode(key) {
 }
 
 // ---------- 事件流 ----------
+//
+// 两条路，主路 SSE、备路轮询：
+//   - SSE（`GET /api/node/<k>/stream?from=N`）：服务端有新行就推，界面顺着出现；
+//   - 轮询（`GET /api/node/<k>/events?from=N`）：浏览器没有 EventSource、或 SSE 连不上时用。
+// 两条路的**载荷与游标语义完全一样**（events/next/running/stage，id ≡ 行号），
+// 所以换路不需要任何补偿逻辑，断线重连也只是带同一个游标再订一次。
+
+let eventSource = null;
+let pollTimer = 0;
+let flowTimer = 0;
+let retries = 0;
+
+/** 把一份增量视图吃进 store。两条路共用这一个口子（两套合并逻辑 = 两份真相）。 */
+function ingest(view) {
+  if (!view) {
+    return store.running;
+  }
+  const wasRunning = store.running;
+  store.events = mergeById(store.events, view.events || []);
+  store.cursor = Math.max(store.cursor, Number(view.next || store.cursor));
+  store.running = view.running === true;
+  store.stage = String(view.stage || '');
+  if (wasRunning && !store.running) {
+    store.settle += 1;
+    loadFlow().catch(() => {});
+  }
+  return store.running;
+}
+
+function closeSource() {
+  if (eventSource) {
+    try {
+      eventSource.close();
+    } catch (e) {
+      // 关不掉也不算事
+    }
+    eventSource = null;
+  }
+}
+
+function startPolling() {
+  if (pollTimer) {
+    return;
+  }
+  pollTimer = setInterval(async () => {
+    try {
+      const view = await api.events(store.node, store.cursor);
+      if (!ingest(view)) {
+        stopStream();
+      }
+    } catch (e) {
+      store.stage = String((e && e.message) || e);
+    }
+  }, POLL_MS);
+}
+
+function openSource() {
+  if (typeof EventSource === 'undefined') {
+    startPolling();
+    return;
+  }
+  const url = `/api/node/${encodeURIComponent(store.node)}/stream?from=${store.cursor}`;
+  const source = new EventSource(url);
+  eventSource = source;
+  source.addEventListener('events', (e) => {
+    try {
+      ingest(JSON.parse(e.data));
+      retries = 0;
+    } catch (err) {
+      store.stage = String((err && err.message) || err);
+    }
+  });
+  source.addEventListener('done', (e) => {
+    try {
+      ingest(JSON.parse(e.data));
+    } catch (err) {
+      // 最后一帧解析不出来不影响收场
+    }
+    closeSource();
+    stopStream();
+  });
+  source.onerror = () => {
+    // EventSource 自己会重连；连不上几次就退回轮询——别让界面假装还连着
+    retries += 1;
+    if (retries >= 3) {
+      closeSource();
+      startPolling();
+    }
+  };
+}
 
 export function startStream(node) {
-  if (store.node === node && pollTimer) {
+  if (store.node === node && (eventSource || pollTimer)) {
     return;
   }
   stopStream();
@@ -183,30 +272,27 @@ export function startStream(node) {
   store.running = false;
   store.stage = '';
   ticks = 0;
-  const tick = async () => {
-    const wasRunning = store.running;
-    try {
-      await pullEvents();
-    } catch (e) {
-      // 轮询本身出问题不进失败面板（那是「用户点了东西没成」才配占的位置）
-      store.stage = String((e && e.message) || e);
-    }
-    ticks += 1;
-    if (wasRunning && !store.running) {
-      store.settle += 1;
-      await loadFlow().catch(() => {});
-    } else if (ticks % FLOW_EVERY === 0) {
-      await loadFlow().catch(() => {});
-    }
-  };
-  pollTimer = setInterval(tick, POLL_MS);
-  tick();
+  retries = 0;
+  openSource();
+  // 顺手刷一下流程视图（节点状态在别人冻结/回写时会变，与事件流是两件事）
+  if (!flowTimer) {
+    flowTimer = setInterval(() => {
+      if (store.running) {
+        loadFlow().catch(() => {});
+      }
+    }, FLOW_EVERY * POLL_MS);
+  }
 }
 
 export function stopStream() {
+  closeSource();
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = 0;
+  }
+  if (flowTimer) {
+    clearInterval(flowTimer);
+    flowTimer = 0;
   }
 }
 
@@ -219,22 +305,23 @@ export function resetStream() {
   store.stage = '';
 }
 
-/** 拉一次增量；`next` 记下来当下次的 `from`；`running=false` 就停轮询。 */
+/** 拉一次增量（SSE 之外的备用/首屏用）；`next` 记下来当下次的 `from`。 */
 export async function pullEvents() {
   if (!store.node) {
     return;
   }
   const view = (await api.events(store.node, store.cursor)) || {};
-  store.events = mergeById(store.events, view.events || []);
-  store.cursor = Math.max(store.cursor, Number(view.next || store.cursor));
-  store.running = view.running === true;
-  store.stage = String(view.stage || '');
-  if (!store.running) {
+  if (!ingest(view)) {
     stopStream();
   }
 }
 
-/** 长任务：起活 → 轮询到 `running=false` 为止（停止轮询由 pullEvents 负责）。 */
+/**
+ * 长任务：起活 → 订阅到 `running=false` 为止。
+ *
+ * <p>起完活先把游标推到"现在"（`accepted.cursor`），再确保订阅在——这样
+ * 从"点下去"到"订阅建好"之间那几条事件也不会漏（服务端按 from 补）。
+ */
 export async function runAction(scope, action, start, work) {
   return act(scope, action, async () => {
     const accepted = await start();
@@ -242,7 +329,7 @@ export async function runAction(scope, action, start, work) {
       store.cursor = Math.max(store.cursor, Number(accepted.cursor) || 0);
     }
     store.running = true;
-    if (!pollTimer) {
+    if (!eventSource && !pollTimer) {
       startStream(store.node);
     }
     return work ? work(accepted) : accepted;

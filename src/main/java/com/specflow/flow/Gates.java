@@ -56,6 +56,19 @@ public final class Gates {
     }
 
     /**
+     * 一格一个实现，一张表查过去（{@link Gate} 的类注释里写了为什么不再用 switch）。
+     *
+     * <p>表在这里、<b>只有这里</b>：想知道"① 的门槛是什么"，看这张表就知道去哪个类；
+     * 想加一格，往表里加一行（漏了的话 {@link Node} 那边会缺一格，测不出来才怪）。
+     */
+    private static final java.util.Map<Node, Gate> TABLE = java.util.Map.of(
+            Node.ENV, Gates::env,
+            Node.PROBE, Gates::probe,
+            Node.CASES, Gates::cases,
+            Node.DEV, Gates::dev,
+            Node.TEST, Gates::test);
+
+    /**
      * 这一格自己的门槛（{@code docs/ARCHITECTURE.md} §5 那一列「完成的判据 = 冻结条件」）。
      *
      * @return 空串 = 能做；否则是给用户看的那句话
@@ -64,14 +77,12 @@ public final class Gates {
         if (node == null) {
             throw new IllegalArgumentException("判闸要有节点");
         }
-        Facts known = facts == null ? Facts.empty() : facts;
-        return switch (node) {
-            case ENV -> env(known);
-            case PROBE -> probe(known);
-            case CASES -> cases(known);
-            case DEV -> dev(known);
-            case TEST -> test(known);
-        };
+        Gate gate = TABLE.get(node);
+        if (gate == null) {
+            // 加了枚举却没进表：宁可当场炸，也不要悄悄放行（那会让"没闸"看起来像"能做"）
+            throw new IllegalStateException("节点 " + node + " 没有登记门槛：Gates.TABLE 里缺一行");
+        }
+        return gate.blocked(facts == null ? Facts.empty() : facts);
     }
 
     /**

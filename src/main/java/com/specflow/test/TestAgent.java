@@ -135,11 +135,14 @@ public final class TestAgent {
         // 超了就把那一条标成跳过并让模型换下一条——这是"一条用例吃掉整轮预算"的解药。
         CaseBudget budget = new CaseBudget(cases, roundsPerCase, progress);
         ToolRegistry tools = ToolRegistry.of(
-                budget.wrap(new ReadListTool(new Roots(sandboxRoot))),
-                budget.wrap(new ReadFileTool(new Roots(sandboxRoot))),
-                budget.wrap(new com.specflow.test.Frozen(new WriteFileTool(new Roots(sandboxRoot)), freeze)),
-                budget.wrap(new com.specflow.test.Frozen(new ApplyPatchTool(new Roots(sandboxRoot)), freeze)),
-                budget.wrap(new BashTool(shell, sandboxRoot, approval, progress, waitSeconds)),
+                budget.wrap(com.specflow.agent.StuckCheck.wrap(new ReadListTool(new Roots(sandboxRoot)))),
+                budget.wrap(com.specflow.agent.StuckCheck.wrap(new ReadFileTool(new Roots(sandboxRoot)))),
+                budget.wrap(com.specflow.agent.StuckCheck.wrap(
+                        new com.specflow.test.Frozen(new WriteFileTool(new Roots(sandboxRoot)), freeze))),
+                budget.wrap(com.specflow.agent.StuckCheck.wrap(
+                        new com.specflow.test.Frozen(new ApplyPatchTool(new Roots(sandboxRoot)), freeze))),
+                budget.wrap(com.specflow.agent.StuckCheck.wrap(
+                        new BashTool(shell, sandboxRoot, approval, progress, waitSeconds))),
                 budget.wrap(new CaseUpdateTool(cases)),
                 budget.wrap(new PhaseTool(freeze)),
                 budget.wrap(new SubmitTool()));
