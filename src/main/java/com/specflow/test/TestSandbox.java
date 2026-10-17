@@ -121,6 +121,52 @@ public final class TestSandbox implements AutoCloseable {
         return composeFile;
     }
 
+    /**
+     * 按 {@code env.yaml} 的 {@code reset} 把数据恢复到已知状态（**每条用例之前跑一次**）。
+     *
+     * <p>为什么必须有：用例之间会互相污染——C1 删掉的书、C5 改过的借阅状态，会让后面几条的
+     * 结论失真。而 {@code reset} 这一栏此前<b>只有命令行 {@code specflow env reset} 会调用</b>，
+     * 测试跑的时候一次都没用上（契约写了、没人接）。
+     *
+     * <p>只在声明了 {@code reset} 才动；跑失败只 warn 不中断（接着验，但会在事件里如实说）。
+     *
+     * @return 跑了几条 reset 命令（没声明就是 0）
+     */
+    public int reset(Progress progress) {
+        java.util.List<EnvConfig.Step> steps = config == null ? java.util.List.of() : config.reset();
+        if (steps.isEmpty()) {
+            return 0;
+        }
+        int ran = 0;
+        for (EnvConfig.Step step : steps) {
+            String service = step.service() == null || step.service().isBlank()
+                    ? Compose.APP_SERVICE : step.service().strip();
+            String stdin = "";
+            String command = step.command() == null ? "" : step.command();
+            if (step.stdin() != null && !step.stdin().isBlank()) {
+                // reset 喂的文件在**副本**里（挂进容器就是它），与项目目录无关
+                stdin = com.specflow.core.Atomic.read(root.resolve(step.stdin().strip()), "");
+                if (stdin.isBlank()) {
+                    progress.warn("reset 的 stdin 文件读不到：" + step.stdin() + "（跳过这一条）");
+                    continue;
+                }
+            }
+            progress.step("reset（" + service + "）：" + (command.length() > 60 ? command.substring(0, 60) + "…" : command),
+                    "", 0);
+            com.specflow.core.Cmd.Result done = com.specflow.core.Cmd.run(
+                    java.util.List.of("docker", "compose", "-p", composeName, "-f", composeFile.toString(),
+                            "exec", "-T", service, "sh", "-s"),
+                    project.root(), stdin, 120, null);
+            progress.stepDone(done.ok() ? "reset 完成" : "reset 失败");
+            if (!done.ok()) {
+                progress.warn("reset 没成功（" + service + "）：" + done.summary()
+                        + "——接着验，但这一条的结论可能受上一条影响");
+            }
+            ran++;
+        }
+        return ran;
+    }
+
     /** 在副本里跑命令的入口（测试 Agent 的 bash 走它）。 */
     public Sandbox shell() {
         return new Sandbox(project, composeFile, Compose.APP_SERVICE, composeName);

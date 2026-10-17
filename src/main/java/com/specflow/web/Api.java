@@ -704,10 +704,31 @@ public class Api {
         if (!exists) {
             throw ApiException.badRequest("清单里没有编号 " + wanted + " 的用例（现在有：" + list.ids() + "）");
         }
+        // **重试要有上限**：跳过可以回来重做，但不能无限重做——否则"一条用例反复重试"
+        // 会把整轮预算和你的时间一起吃掉。计数落在流程产物里（`flow.json` 的 facts），
+        // 界面上如实说还剩几次。
+        String key = "retries:" + wanted;
+        String raw = flow.state().fact(Node.TEST, key);
+        int used = 0;
+        try {
+            used = raw == null || raw.isBlank() ? 0 : Integer.parseInt(raw.strip());
+        } catch (NumberFormatException ignored) {
+            used = 0;
+        }
+        if (used >= MAX_RETRIES_PER_CASE) {
+            throw ApiException.conflict(wanted + " 已经重试过 " + used + " 次了（上限 " + MAX_RETRIES_PER_CASE
+                    + "）：再重试下去也只会烧轮次。要么改 ③ 的用例/期望，要么在 ⑤ 里给它写 ERROR 说明卡在哪，"
+                    + "把这一轮收场。");
+        }
+        flow.note(Node.TEST, Map.of(key, String.valueOf(used + 1)));
         list.reopen(wanted);
-        session.events().warn(Node.TEST.key(), "把 " + wanted + " 改回 PENDING：这一轮只验它（其余用例不动）");
+        session.events().warn(Node.TEST.key(), "把 " + wanted + " 改回 PENDING：这一轮只验它（其余用例不动）"
+                + "（第 " + (used + 1) + "/" + MAX_RETRIES_PER_CASE + " 次重试）");
         return startTestRun(list, wanted);
     }
+
+    /** 单条用例最多重试几次（再多就是在烧轮次，而不是在推进）。 */
+    private static final int MAX_RETRIES_PER_CASE = 3;
 
     /** 起一轮测试（两条入口共用：整轮跑 / 单条重试 / 从断点续跑）。 */
     private Map<String, Object> startTestRun(com.specflow.test.CaseList list, String focus) {
@@ -757,6 +778,7 @@ public class Api {
                                         .map(com.specflow.env.EnvConfig::workdir).orElse("/work"))
                                 .withWaitSeconds(wait)
                                 .withFocus(focus)
+                                .withOnCaseStart(() -> sandbox.reset(progress))
                                 .withOnCaseDone(() -> {
                                     try {
                                         saveCheckpoint.run();

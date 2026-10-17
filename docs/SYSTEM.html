@@ -1226,6 +1226,19 @@ curl.exe -s "http://127.0.0.1:8780/api/actuator/metrics/specflow.runs"   <span c
 把历史标记当成现状。所以这一类只有<b>真浏览器里点一遍</b>才抓得到：
 <code>ApiTest</code> 看载荷形状、单测看纯函数、端到端直接打接口，三样都碰不到"点了之后页面变成什么样"。</div>
 
+<h3>9.6 证据、重置、重试与中断（用户提的四件事）</h3>
+<table>
+  <tr><th>#</th><th>用户说的</th><th>根因</th><th>修法</th></tr>
+  <tr><td>1</td><td>「证据基本都是『资源不存在』，怎么能算 PASS？」</td><td>清单里的 <code>status</code>/<code>evidence</code> 全是<b>模型口供</b>，引擎只数"有没有到终态"——它<b>允许</b>编（这次没编，但没东西阻止）</td><td><code>case_update</code> 判 PASS 时问引擎自己的计数器：<b>这条用例期间一次工具调用都没发生 → 直接拒</b>（"先真跑一遍再回来写结论"）。真正的证据是事件流里那些调用的原文（<code>events.jsonl</code>，<code>id ≡ 行号</code>）</td></tr>
+  <tr><td>2</td><td>「每条用例 reset 会不会慢/重复？」</td><td><code>env.yaml</code> 的 <code>reset</code> 此前<b>只有 <code>specflow env reset</code> 调过</b>，测试跑的时候一次都没用上（契约写了、没人接）</td><td><code>CaseBudget</code> 在<b>换用例那一刻</b>回调一次（不是每次工具调用），<code>TestAgent.withOnCaseStart</code> → <code>TestSandbox.reset()</code>。一条用例一次、失败只 warn 不中断</td></tr>
+  <tr><td>3</td><td>「点叫停没反应 / 不能无限跑」</td><td>① 的「起环境」是<b>同步长任务</b>，<code>store.running</code> 只由 Runs 更新 → 界面上压根没渲染出「叫停」</td><td>「有活在跑」= <code>store.running</code> <b>或</b> 本页有 busy 的请求；叫人停的那一枚继续插队在页头最前面</td></tr>
+  <tr><td>4</td><td>「重试也要有上限」</td><td>跳过能重做是对的，但重做没有上限＝无限烧轮次</td><td>单条用例最多重试 <b>3</b> 次（计数落在 <code>flow.json</code> 的 facts 里），超了 409 并说清"改用例或写 ERROR 收场"</td></tr>
+  <tr><td>5</td><td>「起环境时刷新一下，提示就没了」</td><td>能力校验那句话只活在<b>这一次请求的局部变量</b>里</td><td>把它读自 facts（<code>containerDetail</code>，落在盘上）→ 刷新后仍在；正在跑的步骤显示 <code>stage</code></td></tr>
+</table>
+<div class="why"><b>这一组共同的教训</b>：凡是"结论/状态"，只信<b>引擎自己数得出来的东西</b>——
+调用次数、事件行号、盘上的 facts。模型写的话可以留着给人看（<code>evidence</code>），
+但<b>不能作为判定依据</b>；同样，长任务的"正在跑"也必须是引擎说的，界面自己猜不出来。</div>
+
 <h4>这张表的用法（比这十条本身更值钱）</h4><pre><code>核查一个"看起来做完了"的功能，只问三句：
 
 1. 它的<b>输入</b>有谁提供？        → <span class="c">没人提供 = 永远走默认值（#5）</span>

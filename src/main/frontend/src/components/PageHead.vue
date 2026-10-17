@@ -25,7 +25,10 @@ const props = defineProps({
 const view = computed(() => node(props.nodeKey));
 
 const buttons = computed(() => {
-  const running = store.running === true;
+  // 「在跑」有两类：① 提交给 Runs 的异步活（`store.running`），② 同步长任务（起环境那种，
+  // 请求还没回来时 `busy` 里有一项）。两类都要让「叫停」露面——否则用户只能干看着。
+  const busyHere = Object.keys(store.busy).some((one) => one.startsWith(props.nodeKey + ':'));
+  const running = store.running === true || busyHere;
   return actionsOf(props.nodeKey)
     .filter((one) => one.onlyWhileRunning !== true || running)
     .map((one) => {

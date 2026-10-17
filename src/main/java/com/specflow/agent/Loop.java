@@ -56,6 +56,8 @@ public final class Loop {
     private java.util.function.Supplier<String> extraAnchors = () -> "";
     private java.util.function.Supplier<String> grounding = () -> "";
     private Compact.Result lastCompact = new Compact.Result(false, 0, 0, 0, 0);
+    /** 这一段活已经执行过的工具调用次数（见 {@link #toolCalls()}）。 */
+    private int toolCalls;
 
     /** 锚点表里"动过的路径"最多几条、"最近的失败"最多几条（再多就不是锚点，是一份日志）。 */
     static final int ANCHOR_PATHS = 12;
@@ -147,6 +149,16 @@ public final class Loop {
     }
 
     /**
+     * 这一段活到现在执行了几次工具调用。
+     *
+     * <p>给"结论必须有据"用的：{@code case_update} 判 PASS 时问一句"这条期间到底动过手没有"，
+     * 引擎自己数的次数不会撒谎（模型的 {@code evidence} 那段话会）。
+     */
+    public int toolCalls() {
+        return toolCalls;
+    }
+
+    /**
      * <b>每次工具结果后面钉一行"你在哪"</b>（默认空 = 不钉）。
      *
      * <p>为什么值得单独一个口子：实测里模型在 {@code bash} 与文件工具之间来回猜路径，
@@ -167,7 +179,7 @@ public final class Loop {
 
         List<Outcome.Call> calls = new ArrayList<>();
         int modelCalls = 0;
-        int toolCalls = 0;
+        toolCalls = 0;
         int round = 0;
 
         while (round < limits.maxRounds()) {

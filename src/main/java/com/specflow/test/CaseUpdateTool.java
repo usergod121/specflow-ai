@@ -22,9 +22,13 @@ public final class CaseUpdateTool implements Tool {
 
     private final CaseList cases;
     private final Runnable afterEach;
+    /** 已经执行过几次工具调用（引擎侧计数，用来判"这条 PASS 期间到底动过手没有"）。 */
+    private final java.util.function.IntSupplier toolCalls;
+    /** 上一次写结论时的调用次数。 */
+    private int seenCalls;
 
     public CaseUpdateTool(CaseList cases) {
-        this(cases, null);
+        this(cases, null, null);
     }
 
     /**
@@ -32,8 +36,20 @@ public final class CaseUpdateTool implements Tool {
      *                  它<b>不该</b>抛异常——抛了会盖住"结论已经写成功"这件事，所以这里兜住。
      */
     public CaseUpdateTool(CaseList cases, Runnable afterEach) {
+        this(cases, afterEach, null);
+    }
+
+    /**
+     * @param toolCalls 引擎侧的工具调用计数（{@code Loop} 那个）。
+     *                  <b>为什么要它</b>：结论里的 {@code evidence} 是模型自己写的一段话，
+     *                  引擎没法核对。但"这条 PASS 期间到底跑没跑过东西"是引擎自己数的——
+     *                  一次都没动过手就宣布 PASS，那和不验一样（而且看起来更可信）。
+     */
+    public CaseUpdateTool(CaseList cases, Runnable afterEach,
+                          java.util.function.IntSupplier toolCalls) {
         this.cases = cases;
         this.afterEach = afterEach;
+        this.toolCalls = toolCalls;
     }
 
     @Override
@@ -86,6 +102,19 @@ public final class CaseUpdateTool implements Tool {
         if (status != CaseList.Status.PASS && note.isEmpty()) {
             return ToolResult.failure(id + " 判 " + statusText + " 但没说原因：note 里写清哪儿不对，"
                     + "下一轮开发照它改");
+        }
+        // 「一次都没动过手就宣布 PASS」直接拒：证据是模型自己写的一段话，引擎核不了；
+        // 但"这条用例期间跑没跑过工具"是引擎自己数的，谁说了算很清楚。
+        if (status == CaseList.Status.PASS && toolCalls != null) {
+            int now = toolCalls.getAsInt();
+            if (now <= seenCalls) {
+                return ToolResult.failure(id + " 判 PASS，但这一条期间<b>一次工具调用都没发生</b>："
+                        + "没有命令、没有请求、没有查询——那不叫验过。"
+                        + "先真跑一遍（bash 里跑命令/打接口/查库），再带着它的输出回来写结论。");
+            }
+            seenCalls = now;
+        } else if (toolCalls != null) {
+            seenCalls = toolCalls.getAsInt();
         }
         try {
             cases.settle(id, status, evidence, note);

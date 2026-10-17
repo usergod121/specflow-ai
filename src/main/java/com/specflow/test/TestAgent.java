@@ -96,6 +96,8 @@ public final class TestAgent {
     private long waitSeconds = com.specflow.env.Budgets.defaultSeconds();
     /** 每写回一条结论之后干什么（调用方用它落运行级断点）。 */
     private Runnable onCaseDone;
+    /** 换到新的一条用例时干什么（调用方用它跑 env.yaml 的 reset）。 */
+    private Runnable onCaseStart;
 
     /** 单条命令的等多久由调用方给（同一个旋钮）；不给就用默认。 */
     public TestAgent withWaitSeconds(long seconds) {
@@ -111,6 +113,17 @@ public final class TestAgent {
      */
     public TestAgent withOnCaseDone(Runnable callback) {
         this.onCaseDone = callback;
+        return this;
+    }
+
+    /**
+     * <b>换到新的一条用例时</b>做什么——调用方用它跑 {@code env.yaml} 的 {@code reset}。
+     *
+     * <p>为什么必要：用例会互相污染（C1 删掉的书、C5 改过的借阅状态），后面几条的结论就失真了。
+     * 而 {@code reset} 这一栏此前只有命令行调过，测试跑的时候一次都没用上。
+     */
+    public TestAgent withOnCaseStart(Runnable callback) {
+        this.onCaseStart = callback;
         return this;
     }
 
@@ -146,7 +159,14 @@ public final class TestAgent {
         Freeze freeze = new Freeze(sandboxRoot);
         // 每条用例的预算：**所有**工具调用都记在"当前这一条"的账上（读文件也算），
         // 超了就把那一条标成跳过并让模型换下一条——这是"一条用例吃掉整轮预算"的解药。
-        CaseBudget budget = new CaseBudget(cases, roundsPerCase, progress);
+        CaseBudget budget = new CaseBudget(cases, roundsPerCase, progress)
+                .withCaseStart(id -> {
+                    if (onCaseStart != null) {
+                        onCaseStart.run();
+                    }
+                });
+        // Loop 要拿 registry 才能建，而 CaseUpdateTool 要问"跑过几次工具"——用一个盒子把 loop 晚绑上去。
+        final Loop[] loopBox = new Loop[1];
         ToolRegistry tools = ToolRegistry.of(
                 budget.wrap(com.specflow.agent.StuckCheck.wrap(new ReadListTool(new Roots(sandboxRoot)),
                         com.specflow.agent.StuckCheck.CASE)),
@@ -161,11 +181,13 @@ public final class TestAgent {
                 budget.wrap(com.specflow.agent.StuckCheck.wrap(
                         new BashTool(shell, sandboxRoot, approval, progress, waitSeconds),
                         com.specflow.agent.StuckCheck.CASE)),
-                budget.wrap(new CaseUpdateTool(cases, onCaseDone)),
+                budget.wrap(new CaseUpdateTool(cases, onCaseDone,
+                        () -> loopBox[0] == null ? 0 : loopBox[0].toolCalls())),
                 budget.wrap(new PhaseTool(freeze)),
                 budget.wrap(new SubmitTool()));
 
         Loop loop = new Loop("测试", llm, new LoopLimits(rounds, 400, waitSeconds, 1), tools, watcher, progress);
+        loopBox[0] = loop;
         // 每条工具结果后面钉一行"你在哪"：解释一次不如每条都报一次
         //（SWE-agent 给每条 observation 都钉 (Current directory: …)，见其 07.yaml:68-72）
         loop.grounding(() -> containerRoot + "（项目根；文件工具用相对路径，bash 用这个路径）");

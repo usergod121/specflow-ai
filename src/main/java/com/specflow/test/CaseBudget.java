@@ -54,11 +54,25 @@ public final class CaseBudget {
     /** 整轮一共调了多少次（用来判准备阶段的宽限）。 */
     private int calls;
     private String current;
+    /** 换到新的一条用例时回调（⑤ 用它跑 env.yaml 的 {@code reset}：让每条用例从已知状态开始）。 */
+    private java.util.function.Consumer<String> onCaseStart;
 
     public CaseBudget(CaseList cases, int perCase, Progress progress) {
         this.cases = cases;
         this.perCase = perCase <= 0 ? DEFAULT_PER_CASE : perCase;
         this.progress = progress == null ? Progress.quiet() : progress;
+    }
+
+    /**
+     * 换用例时的回调：**每条用例从同一个已知状态开始**。
+     *
+     * <p>为什么需要：用例之间会互相污染——C1 删掉的书、C5 改过的借阅状态，会让 C2/C6 的结论失真。
+     * {@code env.yaml} 里本来就有一栏 {@code reset}（"每次跑测试之前把数据恢复到已知状态"），
+     * 但它此前<b>只有命令行 {@code specflow env reset} 调过</b>，测试跑的时候一次都没用上。
+     */
+    public CaseBudget withCaseStart(java.util.function.Consumer<String> callback) {
+        this.onCaseStart = callback;
+        return this;
     }
 
     /** 一条用例给几轮。 */
@@ -100,6 +114,17 @@ public final class CaseBudget {
      */
     private String exhausted() {
         String which = currentCase();
+        if (which != null && !which.equals(current)) {
+            // **换用例了**：先把它拉回已知状态，再让模型动它（每条用例从同一个起点开始）
+            current = which;
+            if (onCaseStart != null) {
+                try {
+                    onCaseStart.accept(which);
+                } catch (RuntimeException e) {
+                    progress.warn("跑 reset 失败（" + which + "）：" + e.getMessage() + "（接着验，但结论可能受上一条影响）");
+                }
+            }
+        }
         current = which;
         if (which == null) {
             return null;

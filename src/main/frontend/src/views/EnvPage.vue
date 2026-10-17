@@ -27,8 +27,12 @@ const loaded = ref(false);
 const facts = computed(() => node(key).facts || {});
 const containerOk = computed(() => flag(facts.value, 'containerBuild'));
 const envReady = computed(() => flag(facts.value, 'envReady'));
+/** 上一次能力校验的那句话：**刷新之后也要看得见**（以前它只活在这一次请求的局部变量里）。 */
+const containerDetail = computed(() => String(facts.value.containerDetail || ''));
 /** 两条编译的结论打架时要说一句（宿主机过了、容器里没过）。 */
 const halfCompiled = computed(() => flag(facts.value, 'compilePassed') && !containerOk.value);
+/** 现在是不是正在起环境/编译（同步长任务，刷新后也能看到）。 */
+const liveStage = computed(() => (store.running ? store.stage : ''));
 
 async function load() {
   const done = await act(`${key}:view`, () => api.envView());
@@ -161,6 +165,11 @@ onMounted(async () => {
         <span class="text">宿主机过了、容器里没过：这条命令在宿主机上能跑，但容器镜像里没有构件工具。
           换一个自带它的 image，或者在 init 里装一次，再点「起环境」。</span>
       </p>
+      <!-- 上一次能力校验的原话：刷新之后也留在页面上（以前它只活在这一次请求里，刷新就没了） -->
+      <p v-if="containerDetail" class="dim" style="margin-top: 8px" title="上一次「起环境」的能力校验结论">
+        上次校验：{{ containerDetail }}
+      </p>
+      <p v-if="liveStage" class="dim" style="margin-top: 8px" title="正在进行的步骤">进行中：{{ liveStage }}</p>
       <details class="fold" style="margin-top: 8px" :open="openTimeout" @toggle="openTimeout = $event.target.open">
         <summary>起环境愿意等多久（{{ minutes }} 分钟）</summary>
         <div class="body" style="display: flex; gap: 8px; align-items: flex-end; max-width: 420px">
