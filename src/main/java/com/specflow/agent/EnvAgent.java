@@ -8,6 +8,7 @@ import com.specflow.core.Json;
 import com.specflow.core.Llm;
 import com.specflow.core.Project;
 import com.specflow.core.Progress;
+import com.specflow.env.Capabilities;
 import com.specflow.env.EnvConfigLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,9 +96,17 @@ public final class EnvAgent {
             }
             List<String> problems = validate(submitted);
             if (problems.isEmpty()) {
-                log.info("环境 Agent 交差：env.yaml {} 行、编译命令「{}」",
-                        submitted.envYaml().split("\n").length, shortText(submitted.compileCommand()));
-                return new Result("DONE", "已完成", "", submitted.toDraft(), outcome);
+                // 模型的判断可能靠不住（提示词里那张表也不能保证它照做），所以再走一遍**确定性**兜底：
+                // 编译命令要 mvn、镜像是纯 JDK 时，直接把 image 换成自带该工具的那个，并说明换了什么。
+                Submitted fixed = withBuildImage(submitted);
+                if (!fixed.envYaml().equals(submitted.envYaml())) {
+                    progress.warn("镜像里没有编译要用的工具，已换成 " + imageOf(fixed.envYaml())
+                            + "（原来是 " + imageOf(submitted.envYaml()) + "）");
+                }
+                log.info("环境 Agent 交差：env.yaml {} 行、编译命令「{}」、镜像 {}",
+                        fixed.envYaml().split("\n").length, shortText(fixed.compileCommand()),
+                        imageOf(fixed.envYaml()));
+                return new Result("DONE", "已完成", "", fixed.toDraft(), outcome);
             }
             log.warn("环境 Agent 交的声明通不过校验（第 {} 版）：{}", attempt, String.join("；", problems));
             if (attempt == 3) {
@@ -148,6 +157,33 @@ public final class EnvAgent {
                    ```
 
                    **不要**在 init 里 `apt-get install`：沙箱是非 root + 能力全丢，装系统包必失败。
+
+                ## 第三条，最难的一条：**image 必须自带构建工具**
+
+                引擎起完环境会**在容器里**再跑一遍 `compileCommand`，跑不通 ① 就冻结不了。
+                而"跑不通"最常见的原因只有一个：**镜像里没有那个工具**。
+
+                所以：`compileCommand` 用什么工具，`image` 就必须自带它。照这张表选：
+
+                | compileCommand 里认出的工具 | image 该用 |
+                |---|---|
+                | `mvn` / `mvnw` | `maven:3.9-eclipse-temurin-17`（要 21 就用 `maven:3.9-eclipse-temurin-21`） |
+                | `gradle` / `gradlew` | `gradle:8-jdk17` |
+                | `javac`（没有 maven/gradle 的纯 Java 项目） | `eclipse-temurin:17` —— **只有这种项目才用它** |
+                | `npm` / `node` / `npx` | `node:20` |
+                | `pnpm` | `node:20`，并在 init 里 `corepack enable` |
+                | `go` | `golang:1.22` |
+                | `cargo` / `rustc` | `rust:1` |
+                | `python` / `pytest` / `pip` | `python:3.12` |
+                | `dotnet` | `mcr.microsoft.com/dotnet/sdk:8.0` |
+
+                **`eclipse-temurin:17` / `openjdk:17` 里没有 `mvn`。** 这是本项目最常见的一次失败：
+                项目是 Maven 的、镜像却是纯 JDK —— 宿主机编译能过、容器里 `sh: mvn: not found`，
+                ① 永远冻结不了。**看到 `pom.xml` 就该选 `maven:` 那个镜像。**
+
+                项目里已经有 env.yaml 时，`image` 不要因为"上一版写着"就照抄：
+                先在 `compileCommand` 里认出工具，再回头确认这一版镜像自带它；不带就换掉，
+                并在 `notes` 里写一句"原镜像没有 mvn，换成了 maven:3.9-eclipse-temurin-17"。
 
                 ## 规矩
 
@@ -200,9 +236,10 @@ public final class EnvAgent {
 
                 ```json
                 {
-                  "envYamlLines": ["image: eclipse-temurin:17", "workdir: /work", "init:", "  - \\"mvn -q -DskipTests compile\\""],
+                  "envYamlLines": ["image: maven:3.9-eclipse-temurin-17", "workdir: /work",
+                                   "init:", "  - \\"mvn -q -DskipTests compile\\""],
                   "compileCommand": "mvn -q -DskipTests compile",
-                  "notes": "读了 pom.xml 与 README；镜像版本取自 pom 的 java.version"
+                  "notes": "读了 pom.xml（Java 17、Maven）与 README；镜像用 maven:3.9-eclipse-temurin-17，因为编译要 mvn，而纯 JDK 镜像里没有它"
                 }
                 ```
                 """);
@@ -260,7 +297,8 @@ public final class EnvAgent {
     // ---------- 解析与校验 ----------
 
     /** 交差那一轮的三栏。 */
-    private record Submitted(String envYaml, String compileCommand, String notes) {
+    /** 交差那一轮的三栏（包内可见：镜像兜底那一组测试要构造它）。 */
+    record Submitted(String envYaml, String compileCommand, String notes) {
 
         Draft toDraft() {
             return new Draft(envYaml, compileCommand, notes);
@@ -311,6 +349,102 @@ public final class EnvAgent {
             problems.add(e.getMessage() == null ? "env.yaml 读不出来" : e.getMessage());
         }
         return problems;
+    }
+
+    // ---------- 确定性兜底：镜像里必须有编译要用的那个工具 ----------
+
+    /**
+     * 工具 → 该用的镜像。**认不出就不动**（宁可不修，也不要瞎换）。
+     *
+     * <p>这张表的用法只有一处：模型交的 image 跑不了它的 compileCommand 时，替它换成对的。
+     * 为什么不只靠提示词：提示词里那张表是"建议"，而这件事是**硬事实**
+     * （`eclipse-temurin:17` 里就是没有 `mvn`）；模型偶尔照抄上一版声明，用户就得自己回来改。
+     */
+    private static final Map<String, String> TOOL_IMAGES = Map.ofEntries(
+            Map.entry("mvn", "maven:3.9-eclipse-temurin-17"),
+            Map.entry("mvnw", "maven:3.9-eclipse-temurin-17"),
+            Map.entry("gradle", "gradle:8-jdk17"),
+            Map.entry("gradlew", "gradle:8-jdk17"),
+            Map.entry("npm", "node:20"),
+            Map.entry("node", "node:20"),
+            Map.entry("npx", "node:20"),
+            Map.entry("pnpm", "node:20"),
+            Map.entry("yarn", "node:20"),
+            Map.entry("go", "golang:1.22"),
+            Map.entry("cargo", "rust:1"),
+            Map.entry("rustc", "rust:1"),
+            Map.entry("python", "python:3.12"),
+            Map.entry("python3", "python:3.12"),
+            Map.entry("pip", "python:3.12"),
+            Map.entry("pytest", "python:3.12"),
+            Map.entry("dotnet", "mcr.microsoft.com/dotnet/sdk:8.0"));
+
+    /** env.yaml 里的 `image:` 那一行（读不出来就是空串）。 */
+    static String imageOf(String yaml) {
+        for (String row : (yaml == null ? "" : yaml).split("\n")) {
+            String line = row.strip();
+            if (line.startsWith("image:")) {
+                return line.substring("image:".length())
+                        .replace("\"", "").replace("'", "").strip();
+            }
+        }
+        return "";
+    }
+
+    /** 这个镜像自带 {@code tool} 吗（按仓库名认，认不出就当作"自带"，不误改）。 */
+    static boolean imageHas(String image, String tool) {
+        String repo = (image == null ? "" : image).toLowerCase(java.util.Locale.ROOT);
+        String name = (tool == null ? "" : tool).toLowerCase(java.util.Locale.ROOT);
+        if (repo.isBlank() || name.isBlank()) {
+            return true;
+        }
+        return switch (name) {
+            // 纯 JDK 镜像（temurin / openjdk / jdk）里有 javac，但没有 mvn/gradle
+            case "javac" -> repo.contains("jdk") || repo.contains("temurin") || repo.contains("openjdk")
+                    || repo.contains("java");
+            case "mvn", "mvnw" -> repo.startsWith("maven") || repo.contains("/maven");
+            case "gradle", "gradlew" -> repo.startsWith("gradle") || repo.contains("/gradle");
+            case "npm", "node", "npx", "yarn" -> repo.startsWith("node") || repo.contains("/node");
+            // pnpm 靠 corepack：node:20 就够
+            case "pnpm" -> repo.startsWith("node") || repo.contains("/node");
+            case "go" -> repo.startsWith("golang") || repo.contains("/golang");
+            case "cargo", "rustc" -> repo.startsWith("rust") || repo.contains("/rust");
+            case "python", "python3", "pip", "pytest" -> repo.startsWith("python") || repo.contains("/python");
+            case "dotnet" -> repo.contains("dotnet");
+            default -> true;
+        };
+    }
+
+    /**
+     * 编译命令要什么工具、镜像就换成自带它的那个。
+     *
+     * @return 改过的那一份（没得改就原样返回）
+     */
+    static Submitted withBuildImage(Submitted submitted) {
+        String tool = Capabilities.toolOf(submitted.compileCommand());
+        String image = imageOf(submitted.envYaml());
+        if (tool.isBlank() || imageHas(image, tool)) {
+            return submitted;
+        }
+        String wanted = TOOL_IMAGES.get(tool.toLowerCase(java.util.Locale.ROOT));
+        if (wanted == null) {
+            return submitted;
+        }
+        List<String> lines = new ArrayList<>();
+        boolean replaced = false;
+        for (String row : submitted.envYaml().split("\n")) {
+            if (!replaced && row.strip().startsWith("image:")) {
+                String indent = row.substring(0, row.indexOf("image:"));
+                lines.add(indent + "image: " + wanted);
+                replaced = true;
+            } else {
+                lines.add(row);
+            }
+        }
+        String notes = submitted.notes().isBlank()
+                ? "原镜像 " + image + " 里没有 " + tool + "，已换成 " + wanted
+                : submitted.notes() + "；原镜像 " + image + " 里没有 " + tool + "，已换成 " + wanted;
+        return new Submitted(String.join("\n", lines), submitted.compileCommand(), notes);
     }
 
     private static String shortText(String text) {
