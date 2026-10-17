@@ -833,15 +833,16 @@ Project.raw():                (size, mtime) 没变就复用；变了整份重读
 </table>
 
 <h3>7.2 端到端（真模型 + 真 Docker）</h3>
-<pre><code>node run2.mjs --jar target/specflow.jar --port 4001      → 通过（196s）
-  ① 环境 Agent 10.3s（编译命令 javac -d out/main …）→ 起容器 3.0s → 编译 PASSED → 冻结
-  ② 探针 9.2s（要改 1 个、可读 2 个）→ 冻结        ③ 10 条用例 → 冻结
-  ④ 开发 7.1s → <b>脚本自己 javac+java 核出 reserve(5)=false、onHand(A)=3</b> → 冻结
-  ⑤ 测试 158.7s：10 条全到终态（PASS 9）· 替你点了 0 条审批
+<pre><code>node run2.mjs --jar target/specflow.jar --port 4002      → 通过（116s）
+  ① 环境 Agent 11.3s（编译命令 javac -d out/main …）→ 起容器 4.1s → 编译 PASSED → 冻结
+  ② 探针 9.2s（要改 1 个、可读 2 个）→ 冻结        ③ 11 条用例 → 冻结
+  ④ 开发 6.1s → <b>脚本自己 javac+java 核出 reserve(5)=false、onHand(A)=3</b> → 冻结
+  ⑤ 测试 77.4s：11 条全到终态（PASS 9）· 替你点了 0 条审批
   ⑤ 提交 + 接受 → 闭环（done=true）</code></pre>
 <div class="why">④ 那一行<b>不采信 Agent 自述</b>：脚本自己编译目标项目、自己跑、要求打出指定结果——
-这是整个验证里唯一不依赖模型的地方。<br>
-<b>这一轮的 ① 还顺手证实了一件事</b>：同一次修好之前，Agent 交出的编译命令是
+这是整个验证里唯一不依赖模型的地方。同一个 jar 上连着两次通过（116 秒 / 11 条，196 秒 / 10 条），
+差别只在 ⑤ 的沙箱那一轮走了多久。<br>
+<b>① 那行还顺手证实了一件事</b>：修好之前 Agent 交出的编译命令是
 <code>javac -d out\main …</code>，宿主机过、容器里挂，① 冻结直接被闸拦下（见 5.11 与 4.3）。
 提示词改成"路径一律正斜杠"之后，同一条命令两处都能跑通了。</div>
 

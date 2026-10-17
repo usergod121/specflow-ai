@@ -193,20 +193,22 @@ node E:\sf-e2e\probe-context.mjs 4122 E:/specflow-v2/fixture
 
 ```
 cd E:\sf-e2e
-node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 4001
+node run2.mjs --jar E:/specflow-v2/target/specflow.jar --port 4002
 
-  ✓ ① 跑环境 Agent（10.3s）编译命令「javac -d out/main src/main/java/com/demo/*.java」
-  ✓ ① 保存声明（0.1s）  ✓ ① 起环境（真 docker）（3.0s）容器 sf-sfv2-4001-1-822c18-app-1
+  ✓ ① 跑环境 Agent（11.3s）编译命令「javac -d out/main src/main/java/com/demo/InventoryStore.java …」
+  ✓ ① 保存声明（0.1s）  ✓ ① 起环境（真 docker）（4.1s）容器 sf-sfv2-4002-1-1aa15f-app-1
   ✓ ① 编译（0.6s）状态 PASSED  ✓ ① 冻结（状态 DONE）
   ✓ ② 需求 + 跑探针（9.2s）要改 1 个、可读 2 个   ✓ ② 保存 + 冻结
-  ✓ ③ 生成 + 保存 + 冻结（2.7s）10 条            ✓ ④ 跑开发（7.1s）编译通过
+  ✓ ③ 生成 + 保存 + 冻结（2.3s）11 条            ✓ ④ 跑开发（6.1s）编译通过
   ✓ ④ 自己核一遍（javac + java 看行为）打印 reserve(5)=false、onHand(A)=3   ✓ ④ 冻结
-  ✓ ⑤ 跑测试（容器沙箱）（158.7s）10 条全到终态（PASS 9）；替你点了 0 条审批
+  ✓ ⑤ 跑测试（容器沙箱）（77.4s）11 条全到终态（PASS 9）；替你点了 0 条审批
   ✓ ⑤ 提交 + 接受（0.1s）已闭环（done=true）
-  → 通过（196s）
+  → 通过（116s）
 ```
 
-原始输出在 `E:\sf-e2e\reports-v2\`（`e2e-2026-10-17T09-44-47.json`）。
+原始输出在 `E:\sf-e2e\reports-v2\`（`e2e-2026-10-17T09-57-51.json`）。
+同一个 jar 上**连续两次通过**：这一次 116 秒 / 11 条 / PASS 9，上一次 196 秒 / 10 条 / PASS 9
+（差在 ⑤ 的沙箱那一轮：77 秒 vs 159 秒，模型每轮走的路不一样）。
 
 **这一轮最值钱的两行**：
 
