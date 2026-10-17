@@ -21,9 +21,19 @@ import java.util.Map;
 public final class CaseUpdateTool implements Tool {
 
     private final CaseList cases;
+    private final Runnable afterEach;
 
     public CaseUpdateTool(CaseList cases) {
+        this(cases, null);
+    }
+
+    /**
+     * @param afterEach 每写回一条结论之后的回调（用来落运行级断点：哪几条已经到终态了）。
+     *                  它<b>不该</b>抛异常——抛了会盖住"结论已经写成功"这件事，所以这里兜住。
+     */
+    public CaseUpdateTool(CaseList cases, Runnable afterEach) {
         this.cases = cases;
+        this.afterEach = afterEach;
     }
 
     @Override
@@ -82,10 +92,22 @@ public final class CaseUpdateTool implements Tool {
         } catch (RuntimeException e) {
             return ToolResult.failure("写回清单失败：" + e.getMessage());
         }
+        if (afterEach != null) {
+            try {
+                afterEach.run();
+            } catch (RuntimeException e) {
+                // 断点落不下不该让"结论写成功了"这件事看起来失败：吞掉，下一次写回会再写一遍
+                ignored();
+            }
+        }
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("id", id);
         data.put("status", status.name());
         data.put("pending", cases.pending());
         return ToolResult.ok(data);
+    }
+
+    /** 明确的"这里故意什么都不做"（免得后来人以为漏了）。 */
+    private static void ignored() {
     }
 }

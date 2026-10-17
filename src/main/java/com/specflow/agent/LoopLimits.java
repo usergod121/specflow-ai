@@ -9,10 +9,17 @@ package com.specflow.agent;
  * @param toolAttempts       单次工具调用最多试几次（默认 1：失败原因带回去让模型自己改，
  *                           引擎不替它重试——调用方点名要试才试）
  */
-public record LoopLimits(int maxRounds, int maxInstalls, long toolTimeoutSeconds, int toolAttempts) {
+public record LoopLimits(int maxRounds, int maxInstalls, long toolTimeoutSeconds, int toolAttempts,
+                         int compactChars, int compactKeepTail) {
 
     /** 单次输出上限（注入模型的那一份、以及 {@code bash} 留的那一份）。 */
     public static final int MAX_OUTPUT_CHARS = 20_000;
+
+    /** 老的四段式（压缩用默认阈值：6 万字符 / 保留尾巴 8 条）。 */
+    public LoopLimits(int maxRounds, int maxInstalls, long toolTimeoutSeconds, int toolAttempts) {
+        this(maxRounds, maxInstalls, toolTimeoutSeconds, toolAttempts,
+                Compact.DEFAULT_CHARS, Compact.DEFAULT_KEEP_TAIL);
+    }
 
     public static LoopLimits defaults() {
         return new LoopLimits(12, 60, 180, 1);
@@ -22,5 +29,7 @@ public record LoopLimits(int maxRounds, int maxInstalls, long toolTimeoutSeconds
         maxRounds = maxRounds <= 0 ? 1 : maxRounds;
         maxInstalls = maxInstalls <= 0 ? 1 : maxInstalls;
         toolAttempts = toolAttempts <= 0 ? 1 : toolAttempts;
+        compactChars = compactChars <= 0 ? Compact.DEFAULT_CHARS : compactChars;
+        compactKeepTail = compactKeepTail <= 0 ? Compact.DEFAULT_KEEP_TAIL : compactKeepTail;
     }
 }

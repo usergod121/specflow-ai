@@ -25,8 +25,31 @@ import java.util.concurrent.TimeUnit;
  */
 public final class Approvals implements Approval {
 
-    /** 等不到回答就按拒处理：必须比 HTTP 客户端那些超时短。 */
-    public static final long WAIT_SECONDS = 10 * 60;
+    /**
+     * 等不到回答就按拒处理。
+     *
+     * <h2>为什么从 10 分钟缩到 2 分钟（这一条是改过的）</h2>
+     * 十分钟的意思是"你人不在的十分钟里，这一格什么都不做，而且你看不到它在等"。
+     * 实测里那条 sudo 审批让用户等了 187 秒——而<b>问题根本不是等得久，是根本不该问</b>
+     * （容器里没有 sudo）。所以：
+     * <ul>
+     *   <li>该问的只剩"真有可能正当"的那几种（{@code dd}、{@code curl | sh}、{@code chmod 777}、成片删）；</li>
+     *   <li>问出来之后只等两分钟：等不到就<b>按拒</b>，并在回给模型的话里写清
+     *       "这条用例请标 ERROR 说清'等审批超时'，用户回答后用「重试这一条」重跑"。</li>
+     * </ul>
+     * 这样一次审批最坏拿走两分钟，而不是十分钟；而"事后回答 + 单条重试"这条路
+     * 已经能覆盖绝大多数真实场景（见 {@code docs/BOOK.html} 关于"可恢复中断"的那一节）。
+     */
+    public static final long WAIT_SECONDS = 2 * 60;
+
+    /** 超时按拒时给模型看的那句话（三件事：发生了什么、现在该怎么办、用户怎么续跑）。 */
+    public static String timedOutHint(String command) {
+        return "`" + command + "` 停下来等你回答，等了 " + (WAIT_SECONDS / 60) + " 分钟没人回答，"
+                + "已经按<b>拒绝</b>处理、没有执行。这不是命令失败。"
+                + "现在这样做：换一条不需要审批的命令达到同样目的；"
+                + "如果非它不可，就先把这条用例标 ERROR 并写明「等审批超时」，"
+                + "用户看到后回答那条审批、再点「重试这一条」，从头验这一条即可。";
+    }
 
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("HH:mm:ss");
 
@@ -48,7 +71,7 @@ public final class Approvals implements Approval {
     }
 
     @Override
-    public boolean ask(String command, String reason) {
+    public Decision decide(String command, String reason) {
         Waiting one;
         synchronized (lock) {
             one = new Waiting("a" + (++seq), command, reason,
@@ -56,12 +79,17 @@ public final class Approvals implements Approval {
             waiting.put(one.id(), one);
         }
         try {
-            return Boolean.TRUE.equals(one.answer().get(WAIT_SECONDS, TimeUnit.SECONDS));
+            Boolean allowed = one.answer().get(WAIT_SECONDS, TimeUnit.SECONDS);
+            // 没人回答时 future 由 clear() 以 false 收场，但那是"换项目/关服务"，
+            // 与"用户点了 n" 一样都按拒——区别只在工具对模型说的话（见 Approval.Decision）
+            return Boolean.TRUE.equals(allowed) ? Decision.ALLOW : Decision.DENY;
+        } catch (java.util.concurrent.TimeoutException e) {
+            return Decision.TIMEOUT;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return false;
+            return Decision.DENY;
         } catch (Exception e) {
-            return false;
+            return Decision.DENY;
         } finally {
             synchronized (lock) {
                 waiting.remove(one.id());

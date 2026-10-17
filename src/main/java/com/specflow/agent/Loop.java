@@ -58,6 +58,8 @@ public final class Loop {
     private final Progress progress;
 
     private BiConsumer<Map<String, Object>, ToolResult> onToolResult;
+    private java.util.function.Supplier<String> anchors = () -> "";
+    private Compact.Result lastCompact = new Compact.Result(false, 0, 0, 0, 0);
 
     public Loop(String runName, Llm llm, LoopLimits limits, ToolRegistry tools, Watcher watcher,
                 Progress progress) {
@@ -91,6 +93,23 @@ public final class Loop {
         return this;
     }
 
+    /**
+     * 压缩时那张<b>锚点表</b>由谁提供（默认空：只留 system + 任务书 + 尾巴）。
+     *
+     * <p>为什么不在这里自己攒：这三件事（动过哪些文件 / 最近为什么失败 / 做到哪一条）
+     * 只有<b>调用方</b>能准地说清——它知道 case 清单长什么样、哪些工具算"动过文件"。
+     * 循环只管"什么时候压、压成什么形状"。
+     */
+    public Loop anchors(java.util.function.Supplier<String> supplier) {
+        this.anchors = supplier == null ? () -> "" : supplier;
+        return this;
+    }
+
+    /** 最后一次压缩的结果（没压过就是 {@code applied=false}）。 */
+    public Compact.Result lastCompact() {
+        return lastCompact;
+    }
+
     public Outcome run(String systemPrompt, String userMessage) {
         List<Llm.Msg> messages = new ArrayList<>();
         messages.add(Llm.Msg.system(systemPrompt == null ? "" : systemPrompt));
@@ -105,6 +124,13 @@ public final class Loop {
             round++;
             if (progress.cancelled()) {
                 return outcome(Outcome.CANCELLED, round, "用户叫停", "", calls, modelCalls);
+            }
+            // 每轮开头看一眼上下文有多大：太长就压成"锚点 + 尾巴"（确定性拼装，不调模型）
+            lastCompact = Compact.maybe(messages, anchors.get(), limits.compactChars(),
+                    limits.compactKeepTail());
+            if (lastCompact.applied()) {
+                progress.warn(lastCompact.describe());
+                log.info("{} 第 {} 轮：{}", runName, round, lastCompact.describe());
             }
 
             Turn turn = turn(messages);

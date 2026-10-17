@@ -96,6 +96,16 @@ public record Layout(Path root) {
         return flow(id).resolve("env");
     }
 
+    /**
+     * 运行级断点（{@code flow/<id>/checkpoint.json}）：跑到哪、下一步干什么。
+     *
+     * <p>它是<b>一份可以被删掉的提示</b>，不是真相：真相永远是
+     * {@code cases.json}（哪几条到了终态）与 {@code events.jsonl}（发生过什么）。
+     */
+    public Path checkpoint(String id) {
+        return flow(id).resolve("checkpoint.json");
+    }
+
     /** 相对项目根的展示路径（界面与报错里给人看的那种，永远是正斜杠）。 */
     public String show(Path file) {
         Path abs = file.toAbsolutePath().normalize();

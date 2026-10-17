@@ -94,10 +94,23 @@ public final class TestAgent {
     private String focus = "";
     /** 单条命令最多等多久（「这一步我愿意等多久」那个唯一旋钮，见 {@code env.Budgets}）。 */
     private long waitSeconds = com.specflow.env.Budgets.defaultSeconds();
+    /** 每写回一条结论之后干什么（调用方用它落运行级断点）。 */
+    private Runnable onCaseDone;
 
     /** 单条命令的等多久由调用方给（同一个旋钮）；不给就用默认。 */
     public TestAgent withWaitSeconds(long seconds) {
         this.waitSeconds = seconds <= 0 ? com.specflow.env.Budgets.defaultSeconds() : seconds;
+        return this;
+    }
+
+    /**
+     * 每写回一条结论之后做什么——调用方用它落<b>运行级断点</b>
+     * （{@code flow/<id>/checkpoint.json}：哪几条已经到终态、下一步干什么）。
+     *
+     * <p>断点是"提示"，不是真相：真相是 {@code cases.json}。所以这个回调坏了也不影响验证本身。
+     */
+    public TestAgent withOnCaseDone(Runnable callback) {
+        this.onCaseDone = callback;
         return this;
     }
 
@@ -143,11 +156,41 @@ public final class TestAgent {
                         new com.specflow.test.Frozen(new ApplyPatchTool(new Roots(sandboxRoot)), freeze))),
                 budget.wrap(com.specflow.agent.StuckCheck.wrap(
                         new BashTool(shell, sandboxRoot, approval, progress, waitSeconds))),
-                budget.wrap(new CaseUpdateTool(cases)),
+                budget.wrap(new CaseUpdateTool(cases, onCaseDone)),
                 budget.wrap(new PhaseTool(freeze)),
                 budget.wrap(new SubmitTool()));
 
         Loop loop = new Loop("测试", llm, new LoopLimits(rounds, 400, waitSeconds, 1), tools, watcher, progress);
+        // 压缩时那张锚点表：只有这一层知道"清单长什么样、哪些路径算动过"
+        java.util.Set<String> touched = new java.util.LinkedHashSet<>();
+        java.util.List<String> failures = new java.util.ArrayList<>();
+        loop.onToolResult((args, result) -> {
+            Object path = args.get("path");
+            if (path instanceof String one && !one.isBlank() && touched.size() < 12) {
+                touched.add(one.strip());
+            }
+            if (result != null && !result.ok() && failures.size() < 3) {
+                String why = String.valueOf(result.reason()).lines().findFirst().orElse("");
+                failures.add(why.length() > 90 ? why.substring(0, 90) + "…" : why);
+            }
+        });
+        loop.anchors(() -> {
+            StringBuilder out = new StringBuilder();
+            if (!touched.isEmpty()) {
+                out.append("- 读过/改过的路径：").append(String.join("、", touched)).append('\n');
+            }
+            if (!failures.isEmpty()) {
+                out.append("- 最近的失败：").append(String.join("；", failures)).append('\n');
+            }
+            out.append("- 进度：清单 ").append(cases.count()).append(" 条，还有 ")
+                    .append(cases.pending()).append(" 条没到终态");
+            String now = budget.current();
+            if (now != null) {
+                out.append("（当前在验 ").append(now).append("，已用 ")
+                        .append(budget.spentOn(now)).append('/').append(budget.perCase()).append(" 轮）");
+            }
+            return out.toString();
+        });
         String system = systemPrompt();
         String message = userMessage(freeze);
         Outcome last = null;

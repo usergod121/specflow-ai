@@ -650,13 +650,28 @@ public class Api {
         return startTestRun(list, wanted);
     }
 
-    /** 起一轮测试（两条入口共用：整轮跑 / 单条重试）。 */
+    /** 起一轮测试（两条入口共用：整轮跑 / 单条重试 / 从断点续跑）。 */
     private Map<String, Object> startTestRun(com.specflow.test.CaseList list, String focus) {
         FlowService flow = session.flow();
         // 同一个旋钮：容器起、单条命令、整轮，都按「这一步我愿意等多久」走
         long wait = com.specflow.env.Budgets.secondsFrom(pullTimeout());
+        String flowId = flow.state().id();
+        java.nio.file.Path checkpointFile = session.layout().checkpoint(flowId);
         String runId = session.runs().start(Node.TEST,
                 focus.isBlank() ? "test-run" : "test-retry-" + focus, Map.of(), progress -> {
+                    // 运行级断点：跑到哪、下一步干什么（存"状态 + 下一步"，不存对话历史——
+                    // 那是两万字符一条的东西，存下来就是第二份真相。抄的是 LangGraph 最省的那一档
+                    // durability="exit"：一步做完才落一次）
+                    Runnable saveCheckpoint = () -> com.specflow.flow.Checkpoint.write(checkpointFile,
+                            new com.specflow.flow.Checkpoint(Node.TEST.key(), "current",
+                                    com.specflow.flow.Checkpoint.now(),
+                                    "接着验还没到终态的那几条（" + list.pending() + " 条）",
+                                    list.cases().stream()
+                                            .filter(one -> one.status() != com.specflow.test.CaseList.Status.PENDING)
+                                            .map(com.specflow.test.CaseList.Case::id).toList(),
+                                    progress.elapsedSeconds() > 0 ? (int) progress.elapsedSeconds() : 0,
+                                    "RUNNING"));
+                    saveCheckpoint.run();
                     try (com.specflow.test.TestSandbox sandbox = com.specflow.test.TestSandbox.prepare(
                             session.project(), "t" + progress.elapsedSeconds() + "-" + progress.hashCode(),
                             progress, wait)) {
@@ -667,6 +682,9 @@ public class Api {
                         if (!preflight.ok()) {
                             com.specflow.test.Preflight.report(progress, preflight);
                             flow.note(Node.TEST, Map.of(Facts.TEST_RUN, "true", Facts.FAILED, "true"));
+                            com.specflow.flow.Checkpoint.write(checkpointFile, new com.specflow.flow.Checkpoint(
+                                    Node.TEST.key(), "current", com.specflow.flow.Checkpoint.now(),
+                                    "修好环境（改 env.yaml 的 image 或 init）再回来", List.of(), 0, "BLOCKED"));
                             throw new IllegalStateException("预检没过：" + preflight.message());
                         }
                         int perCase = com.specflow.test.CaseBudget.DEFAULT_PER_CASE;
@@ -679,7 +697,14 @@ public class Api {
                                 .withContainerRoot(com.specflow.env.EnvConfigLoader.load(session.project().layout())
                                         .map(com.specflow.env.EnvConfig::workdir).orElse("/work"))
                                 .withWaitSeconds(wait)
-                                .withFocus(focus);
+                                .withFocus(focus)
+                                .withOnCaseDone(() -> {
+                                    try {
+                                        saveCheckpoint.run();
+                                    } catch (RuntimeException ignored) {
+                                        // 断点是提示，不是真相：落不下也不影响验证
+                                    }
+                                });
                         com.specflow.test.TestAgent.Result result = agent.run();
                         long skipped = list.cases().stream()
                                 .filter(one -> one.status() == com.specflow.test.CaseList.Status.SKIPPED).count();
@@ -690,14 +715,62 @@ public class Api {
                         if (!result.ok()) {
                             progress.fail("这一段测试没验完（" + result.status() + "）：" + result.reason()
                                     + "（已写下 " + result.verdicts() + " 条结论）", null);
+                            com.specflow.flow.Checkpoint.write(checkpointFile, new com.specflow.flow.Checkpoint(
+                                    Node.TEST.key(), "current", com.specflow.flow.Checkpoint.now(),
+                                    "点「跑测试」从断点接着验（已到终态的不会重验）",
+                                    list.cases().stream()
+                                            .filter(one -> one.status() != com.specflow.test.CaseList.Status.PENDING)
+                                            .map(com.specflow.test.CaseList.Case::id).toList(),
+                                    result.rounds(), result.status()));
                             return;
                         }
+                        com.specflow.flow.Checkpoint.clear(checkpointFile);
                         progress.done("测试验完了：清单 " + list.count() + " 条全部到终态",
                                 Map.of("verdicts", result.verdicts(), "cases", list.cases(),
                                         "rounds", result.rounds(), "sandbox", sandbox.root().toString()));
                     }
                 });
         return accepted(runId, Node.TEST);
+    }
+
+    /** ⑤ 的断点：跑到哪、下一步干什么（没有就是 {@code {"present":false}}）。 */
+    @GetMapping("/api/node/test/checkpoint")
+    public Map<String, Object> testCheckpoint() {
+        com.specflow.flow.Checkpoint checkpoint = com.specflow.flow.Checkpoint.read(
+                session.layout().checkpoint(session.flow().state().id()));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("present", checkpoint != null);
+        if (checkpoint != null) {
+            body.put("summary", checkpoint.summarize());
+            body.put("next", checkpoint.next());
+            body.put("status", checkpoint.status());
+            body.put("doneCases", checkpoint.doneCases());
+            body.put("at", checkpoint.at());
+        }
+        return body;
+    }
+
+    /**
+     * 从断点接着跑。
+     *
+     * <p>它<b>不做任何魔法</b>：已到终态的用例本来就不会再被验（{@code TestAgent} 只认 PENDING），
+     * 所以"接着跑"就是再跑一次。这个入口存在的意义是<b>把话说清</b>——
+     * 让用户看到"上次停在哪儿、已经完成几条"，而不是对着一个 409 猜。
+     */
+    @PostMapping("/api/node/test/resume")
+    public Map<String, Object> testResume() {
+        FlowService flow = session.flow();
+        flow.requireReachable(Node.TEST, "从断点接着跑");
+        com.specflow.test.CaseList list = caseList();
+        if (list.count() == 0) {
+            throw ApiException.badRequest("③ 的用例清单是空的：没有东西可接着验");
+        }
+        com.specflow.flow.Checkpoint checkpoint = com.specflow.flow.Checkpoint.read(
+                session.layout().checkpoint(flow.state().id()));
+        session.events().say(Node.TEST.key(), "info", checkpoint == null
+                ? "没有找到断点：按清单从头验（已到终态的本来就不会重验）"
+                : "从断点接着跑 —— " + checkpoint.summarize());
+        return startTestRun(list, "");
     }
 
     /** ⑤ 待回答的高危命令。 */

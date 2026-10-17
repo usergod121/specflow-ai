@@ -107,9 +107,19 @@ public final class BashTool implements Tool {
             return ToolResult.failure(bootstrap);
         }
         String risk = CommandGuard.highRisk(command);
-        if (risk != null && !approval.ask(command, risk)) {
-            return ToolResult.failure("这条命令被用户拒绝了，没有执行：`" + command + "`。"
-                    + "原因：" + risk + " 换一条不含那种写法的命令，或者换一种做法达到同样的目的。");
+        if (risk != null) {
+            // 问之前先把"在等什么、等多久"写进事件流：用户切走页面也知道它卡在哪
+            progress.warn("等你回答（最多 " + (Approvals.WAIT_SECONDS / 60) + " 分钟）：`"
+                    + command.lines().findFirst().orElse(command) + "`");
+            Approval.Decision decision = approval.decide(command, risk);
+            if (decision == Approval.Decision.TIMEOUT) {
+                // 「没人回答」与「人说不」要说两句不同的话：前者这条先放下、回头重跑
+                return ToolResult.failure(Approvals.timedOutHint(command));
+            }
+            if (!decision.allowed()) {
+                return ToolResult.failure("这条命令被拒绝了，没有执行：`" + command + "`。"
+                        + "原因：" + risk + " 换一条不含那种写法的命令，或者换一种做法达到同样的目的。");
+            }
         }
         String workdir = String.valueOf(args.getOrDefault("workdir", "")).strip();
         String inside = workdir.isEmpty() ? null : workdir;
