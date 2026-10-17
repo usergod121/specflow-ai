@@ -61,19 +61,38 @@ class CaseBudgetTest {
     }
 
     @Test
-    @DisplayName("超预算：第三条调用之后的第四次被拦住，当前用例标成 SKIPPED 并带原因")
+    @DisplayName("准备阶段有宽限：最前面几次调用不算任何一条用例的账")
+    void preparationIsNotChargedToTheFirstCase(@TempDir Path dir) {
+        CaseList cases = list(dir, "C1");
+        CaseBudget budget = new CaseBudget(cases, 3, null);
+        Tool counting = budget.wrap(tool("read_file"));
+
+        // 前 PREP_GRACE 次（摸目录、读几个关键文件）全都放行，且不算预算
+        for (int at = 0; at < CaseBudget.PREP_GRACE; at++) {
+            assertThat(counting.run(Map.of()).ok()).as("准备第 %d 次", at + 1).isTrue();
+        }
+        assertThat(budget.spentOn("C1")).as("准备阶段不算账").isZero();
+        assertThat(cases.cases().get(0).status()).isEqualTo(CaseList.Status.PENDING);
+    }
+
+    @Test
+    @DisplayName("超预算：宽限之后第 perCase+1 次被拦住，当前用例标成 SKIPPED 并带原因")
     void skipsTheCaseWhenBudgetRunsOut(@TempDir Path dir) {
         CaseList cases = list(dir, "C1", "C2");
         CaseBudget budget = new CaseBudget(cases, 3, null);
         Tool counting = budget.wrap(tool("read_file"));
 
         assertThat(budget.current()).isEqualTo("C1");
+        // 先走完准备宽限（不计账）
+        for (int at = 0; at < CaseBudget.PREP_GRACE; at++) {
+            counting.run(Map.of());
+        }
         for (int at = 0; at < 3; at++) {
-            assertThat(counting.run(Map.of()).ok()).as("前 3 次照常").isTrue();
+            assertThat(counting.run(Map.of()).ok()).as("计入预算的前 3 次照常").isTrue();
         }
         ToolResult stopped = counting.run(Map.of());
 
-        assertThat(stopped.ok()).as("第 4 次被拦住").isFalse();
+        assertThat(stopped.ok()).as("宽限之后的第 4 次被拦住").isFalse();
         assertThat(stopped.reason()).contains("C1").contains("跳过").contains("预算");
         assertThat(statusOf(cases, "C1")).isEqualTo("SKIPPED");
         assertThat(statusOf(cases, "C2")).as("下一条不算这一条的账").isEqualTo("PENDING");

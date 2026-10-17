@@ -34,11 +34,25 @@ public final class CaseBudget {
     /** 一条用例默认给多少轮。12 是实测出来的折中：够"读代码 + 起服务 + 发一次请求"，又不至于一条吃掉整轮。 */
     public static final int DEFAULT_PER_CASE = 12;
 
+    /**
+     * <b>准备阶段的宽限</b>：整轮最前面这么多次工具调用不算在任何一条用例头上。
+     *
+     * <p>为什么需要（端到端实测两次才看清）：Agent 在真正开始"验"之前，要先读一圈代码
+     * （<code>read_list</code> 走七八次、<code>read_file</code> 读几个关键文件）。这些调用如果
+     * 记在**第一条**用例的账上，那条用例会在还没开始验的时候就"超预算被跳过"——
+     * 实测就是这样：C1 一秒没验，直接被标成 SKIPPED。
+     *
+     * <p>宽限给 8 次：够它摸清目录与几个关键文件，又不至于宽到"一条用例吃掉整轮"。
+     */
+    public static final int PREP_GRACE = 8;
+
     private final CaseList cases;
     private final int perCase;
     private final Progress progress;
     /** 每条用例各花了多少轮（**按用例记账**，不是"当前这一条"一个计数）。 */
     private final Map<String, Integer> spent = new java.util.HashMap<>();
+    /** 整轮一共调了多少次（用来判准备阶段的宽限）。 */
+    private int calls;
     private String current;
 
     public CaseBudget(CaseList cases, int perCase, Progress progress) {
@@ -90,6 +104,11 @@ public final class CaseBudget {
         if (which == null) {
             return null;
         }
+        // 准备阶段的宽限：整轮最前面几次调用（摸目录、读几个关键文件）不算在任何一条头上，
+        // 不然第一条用例会在"还没开始验"的时候就被标成跳过（端到端实测撞到过）
+        if (calls <= PREP_GRACE) {
+            return null;
+        }
         if (spentOn(which) < perCase) {
             return null;
         }
@@ -133,13 +152,14 @@ public final class CaseBudget {
 
         @Override
         public ToolResult run(Map<String, Object> args) {
+            calls++;
             String stopped = exhausted();
             if (stopped != null) {
                 // 拦住这一次：返回一份模型能读懂、能继续的失败结果（不是异常）
                 return ToolResult.failure(stopped);
             }
             String which = currentCase();
-            if (which != null) {
+            if (which != null && calls > PREP_GRACE) {
                 spent.merge(which, 1, Integer::sum);
             }
             ToolResult result = inner.run(args);
