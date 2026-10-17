@@ -59,6 +59,7 @@ public final class Loop {
 
     private BiConsumer<Map<String, Object>, ToolResult> onToolResult;
     private java.util.function.Supplier<String> anchors = () -> "";
+    private java.util.function.Supplier<String> grounding = () -> "";
     private Compact.Result lastCompact = new Compact.Result(false, 0, 0, 0, 0);
 
     public Loop(String runName, Llm llm, LoopLimits limits, ToolRegistry tools, Watcher watcher,
@@ -108,6 +109,20 @@ public final class Loop {
     /** 最后一次压缩的结果（没压过就是 {@code applied=false}）。 */
     public Compact.Result lastCompact() {
         return lastCompact;
+    }
+
+    /**
+     * <b>每次工具结果后面钉一行"你在哪"</b>（默认空 = 不钉）。
+     *
+     * <p>为什么值得单独一个口子：实测里模型在 {@code bash} 与文件工具之间来回猜路径，
+     * 白烧了 5 轮——提示词解释过"两个世界"，但<b>解释一次不如每条结果都报一次</b>。
+     * 深读 SWE-agent 时看到它的做法更省：给<u>每一条</u> observation 都钉一行
+     * {@code (Current directory: {{working_dir}}) (Open file: {{open_file}})}
+     * （{@code config/sweagent_0_7/07.yaml:68-72}）——不解释差异，只报当前位置。
+     */
+    public Loop grounding(java.util.function.Supplier<String> supplier) {
+        this.grounding = supplier == null ? () -> "" : supplier;
+        return this;
     }
 
     public Outcome run(String systemPrompt, String userMessage) {
@@ -225,8 +240,10 @@ public final class Loop {
         calls.add(new Outcome.Call(round, tool, argsJson, result.ok(), summary));
 
         // 注入的正文**保留换行**：read_file 的内容是要给模型照着读的
-        messages.add(Llm.Msg.user(
-                head(injection(argsJson, result), LoopLimits.MAX_OUTPUT_CHARS)));
+        String where = grounding == null ? "" : grounding.get();
+        String body = head(injection(argsJson, result), LoopLimits.MAX_OUTPUT_CHARS);
+        messages.add(Llm.Msg.user(where == null || where.isBlank() ? body
+                : body + "\n（当前位置：" + where.strip() + "）"));
         log.info("{} 第 {} 轮 调用 {}：{}", runName, round, tool, result.ok() ? "成功" : summary);
         return result.data() instanceof Signal signal ? signal : null;
     }

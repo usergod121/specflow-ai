@@ -190,6 +190,20 @@ public class Api {
         }
     }
 
+    /**
+     * <b>跨流程看一眼</b>：这个项目下每条流程的状态与结论数（只读扫描，不是查询语言）。
+     *
+     * <p>一次读 {@code flow/<id>/flow.json} 与 {@code cases.json} 各一份小文件，
+     * 按 id 倒序（id 是时间戳，字典序就是时间序）。坏文件跳过，不让整页报错。
+     */
+    @GetMapping("/api/flows")
+    public Map<String, Object> flows(@RequestParam(name = "limit", defaultValue = "20") int limit) {
+        java.util.List<com.specflow.flow.FlowIndex> rows = session.opened()
+                ? com.specflow.flow.FlowIndex.scan(session.layout(), limit)
+                : java.util.List.of();
+        return Map.of("flows", rows, "current", session.opened() ? session.flow().state().id() : "");
+    }
+
     /** 五格共用的一条事件流（界面按 `?from=` 增量拉）。 */
     @GetMapping("/api/node/{key}/events")
     public Map<String, Object> nodeEvents(@PathVariable("key") String key,

@@ -174,6 +174,9 @@ public final class TestAgent {
                 failures.add(why.length() > 90 ? why.substring(0, 90) + "…" : why);
             }
         });
+        // 每条工具结果后面钉一行"你在哪"：解释一次不如每条都报一次
+        //（SWE-agent 给每条 observation 都钉 (Current directory: …)，见其 07.yaml:68-72）
+        loop.grounding(() -> containerRoot + "（项目根；文件工具用相对路径，bash 用这个路径）");
         loop.anchors(() -> {
             StringBuilder out = new StringBuilder();
             if (!touched.isEmpty()) {
