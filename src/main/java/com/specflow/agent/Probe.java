@@ -24,7 +24,7 @@ import java.util.Map;
  * <p>四样：
  * <ol>
  *   <li>{@code files} —— 开发<b>能读</b>的文件（可读清单）；</li>
- *   <li>{@code changes} —— 开发<b>允许改</b>的文件（写白名单）。**必须是 files 的子集**；</li>
+ *   <li>{@code changes} —— 写白名单：**要改的**（必须在 files 里）+ **要新建的**（可以还不存在）；</li>
  *   <li>{@code context} —— 几段要喂给开发的文本，一条一句"为什么相关"；</li>
  *   <li>{@code prompt} —— 组装好的 prompt，能直接交给开发。</li>
  * </ol>
@@ -144,7 +144,8 @@ public final class Probe {
                 - **已有的同层目录里通常就有对应物**（`dto/` 下有 `BookDTO`？那新接口多半要 `XxxDTO`）：
                   先 `read_list` 看一眼同层，再照同样的包名/命名风格把**新路径**写出来（例如
                   `src/main/java/com/library/dto/BookCreateDTO.java`）；
-                - 新路径要写**完整的相对路径**（含包目录），并且**同时列进 `files`**（开发先要读它确认不存在）；
+                - 新路径要写**完整的相对路径**（含包目录）。**只放进 `changes`，不要放进 `files`**
+                  （`files` 是「要读的文件」，列一个还不存在的路径会被引擎驳回）；
                 - `context` 里用一句话说明"这个文件是新增的、放哪、照着哪个已有文件的样子写"。
 
                 别怕列多：列进 `changes` 只是"允许它动"，不是"必须动"。**漏列才是硬伤**——
@@ -266,16 +267,7 @@ public final class Probe {
         if (answer.prompt().isBlank()) {
             return "prompt 是空的：开发照它干活，空 prompt 等于让它自己发明一个需求";
         }
-        List<String> outside = new ArrayList<>();
-        for (String change : answer.changes()) {
-            if (!answer.files().contains(change)) {
-                outside.add(change);
-            }
-        }
-        if (!outside.isEmpty()) {
-            return "changes 里有不在 files 里的路径：" + String.join("、", outside)
-                    + "（能改的必须是能读的子集）";
-        }
+        // `files` = 开发要**读**的：必须真存在（读一个不存在的文件没有意义，多半是猜的）。
         List<String> missing = new ArrayList<>();
         for (String file : answer.files()) {
             if (!java.nio.file.Files.isRegularFile(project.root().resolve(file))) {
@@ -284,7 +276,21 @@ public final class Probe {
         }
         if (!missing.isEmpty()) {
             return "这些路径在项目里不存在：" + String.join("、", missing)
-                    + "（它多半是猜的——探针不许写没读到过的路径）";
+                    + "（files 是「要读的文件」，只能是读到的）。"
+                    + "要**新增**的文件请只放进 changes，不要放进 files。";
+        }
+        // `changes` = 写白名单：**已有**的必须同时可读（能改的必须先能读）；
+        // **还没有**的算"新建"——这类不需要出现在 files 里，否则等于要它去读一个不存在的文件。
+        List<String> outside = new ArrayList<>();
+        for (String change : answer.changes()) {
+            boolean exists = java.nio.file.Files.isRegularFile(project.root().resolve(change));
+            if (exists && !answer.files().contains(change)) {
+                outside.add(change);
+            }
+        }
+        if (!outside.isEmpty()) {
+            return "changes 里有已存在、但不在 files 里的路径：" + String.join("、", outside)
+                    + "（要改已有文件，得先把它列进 files 让开发读一遍）";
         }
         return null;
     }

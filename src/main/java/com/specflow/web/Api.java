@@ -550,11 +550,25 @@ public class Api {
                     new com.specflow.agent.EventWatcher(session.events(), Node.PROBE.key()), 30);
             com.specflow.agent.Probe.Result result = probe.run(requirement, design);
             if (!result.ok()) {
-                progress.fail("探针没交出产物（" + result.status() + "）：" + result.reason(), null);
+                // 说清"旧产物没动"：用户报过"重跑探针，旧的没被覆盖"——那时其实是被校验驳回了，
+                // 盘上那份当然还是上一版的。不说这一句，看起来就像"引擎没写"。
+                progress.fail("探针没交出产物（" + result.status() + "）：" + result.reason()
+                        + "\n\n（磁盘上旧的那份 probe.json 没动：这一轮没能交出一份合法的产物）", null);
                 return;
             }
             com.specflow.core.Atomic.write(session.layout().probe(flow.state().id()),
                     com.specflow.core.Json.write(result.artifacts().view()));
+            // 把"要新建的文件"单独点出来：这类白名单条目在盘上还不存在，是 ④ 用 write_file 建出来的。
+            List<String> creates = new ArrayList<>();
+            for (String one : result.artifacts().changes()) {
+                if (!java.nio.file.Files.isRegularFile(session.project().root().resolve(one))) {
+                    creates.add(one);
+                }
+            }
+            if (!creates.isEmpty()) {
+                progress.warn("要新建的文件 " + creates.size() + " 个（④ 会用 write_file 建）："
+                        + String.join("、", creates));
+            }
             // 闸判的是「有没有」= "true"，不是数量：数量另开一栏给界面用。
             // （实测踩到：写成数量时闸读到的不是 "true"，于是"跑完了却还说没有可读文件"）
             flow.note(Node.PROBE, Map.of(
