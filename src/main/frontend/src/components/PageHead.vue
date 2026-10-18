@@ -72,8 +72,15 @@ const gate = computed(() => String(view.value.blockedReason || ''));
  * 所以按**前缀**取。原来这里只比 `nodeKey`，于是后端明明回了 400/409，页面上一片安静——
  * 用户的原话就是「点了跑探针没有反应」。
  */
-const mine = computed(() => store.failures.filter((one) =>
-  one.scope === props.nodeKey || String(one.scope || '').startsWith(props.nodeKey + ':')));
+const mine = computed(() => {
+  const gateText = String(gate.value || '').trim();
+  // 跟闸那句话**一模一样**的失败条不再单独显示：用户贴过一屏——同一句「还没跑过开发…」
+  // 在闸那里一遍、在失败条那里又一遍（还带个 ×），像是引擎说了两遍话。
+  return store.failures.filter((one) => {
+    const ours = one.scope === props.nodeKey || String(one.scope || '').startsWith(props.nodeKey + ':');
+    return ours && String(one.text || '').trim() !== gateText;
+  });
+});
 
 function run(one) {
   one.on();

@@ -648,7 +648,7 @@ public class Api {
             }
             com.specflow.agent.Dev dev = new com.specflow.agent.Dev(session.project(),
                     com.specflow.core.Llm.from(session.project()), progress,
-                    new com.specflow.agent.EventWatcher(session.events(), Node.DEV.key()), 40);
+                    new com.specflow.agent.EventWatcher(session.events(), Node.DEV.key()), devRounds(changes.size()));
             com.specflow.agent.Dev.Result result = dev.run(prompt, changes, files, context, feedback);
             flow.note(Node.DEV, Map.of(
                     "compilePassed", String.valueOf(result.compilePassed()),
@@ -741,6 +741,17 @@ public class Api {
         return startTestRun(list, wanted);
     }
 
+    /**
+     * 这一段开发最多几轮：**按写白名单的规模给**，不是一个写死的数。
+     *
+     * <p>为什么：实测一次「按 api 文档新增 dto/vo/entity」的任务，白名单 9 个文件（其中 6 个要新建），
+     * 写死 40 轮根本不够——它读到一半就到上限收场，连编译都没跑到，界面于是永远显示
+     * 「还没跑过开发，或者上一次编译没过」（用户看到的就是这个，而项目本身是能编的）。
+     * 每个文件大致要 1 次读 + 1~2 次写，再多留几轮给编译错误回喂后的修改。
+     */
+    private static int devRounds(int files) {
+        return Math.min(160, Math.max(40, 12 + Math.max(0, files) * 8));
+    }
     /** 单条用例最多重试几次（再多就是在烧轮次，而不是在推进）。 */
     private static final int MAX_RETRIES_PER_CASE = 3;
 
@@ -972,7 +983,7 @@ public class Api {
             }
             com.specflow.agent.Dev dev = new com.specflow.agent.Dev(session.project(),
                     com.specflow.core.Llm.from(session.project()), progress,
-                    new com.specflow.agent.EventWatcher(session.events(), Node.TEST.key()), 40);
+                    new com.specflow.agent.EventWatcher(session.events(), Node.TEST.key()), devRounds(changes.size()));
             com.specflow.agent.Dev.Result devResult = dev.run(prompt, changes, files, context, goal);
             if (!devResult.compilePassed()) {
                 progress.fail("优化这一轮开发没过编译：" + devResult.reason(), devResult.compileOutput());
