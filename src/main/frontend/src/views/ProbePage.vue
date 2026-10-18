@@ -7,7 +7,7 @@
  */
 import { onMounted, ref } from 'vue';
 import * as api from '../api.js';
-import { act, say } from '../store.js';
+import { act, say, waitIdle } from '../store.js';
 import { useNode } from '../lib/useNode.js';
 import { lines, join } from '../lib/format.js';
 import PageHead from '../components/PageHead.vue';
@@ -70,7 +70,11 @@ const handlers = {
     dirty.value = false;
     const done = await act(`${key}:agent`, () => api.probeAgent());
     if (done.ok) {
-      setTimeout(load, 800);
+      // 等它真跑完再读：后端 202 就返回，写盘发生在后台那段活里。
+      // 固定等 800ms 会读到一份还没写的 probe.json（用户实报：要再点一次才刷出来）。
+      if (await waitIdle()) {
+        await load();
+      }
     }
   },
   brief: saveBrief,
@@ -140,7 +144,7 @@ onMounted(load);
                     @input="files = lines($event.target.value)" />
         </div>
         <div class="field">
-          <label for="changes">要改的文件（写白名单，一行一个）</label>
+          <label for="changes">要改 / 要新增的文件（写白名单，一行一个；新增的写完整相对路径）</label>
           <textarea id="changes" :value="join(changes)" rows="5" spellcheck="false"
                     @input="changes = lines($event.target.value)" />
         </div>

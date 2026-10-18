@@ -7,7 +7,7 @@
  */
 import { computed, onMounted, ref } from 'vue';
 import * as api from '../api.js';
-import { store, act, node, say } from '../store.js';
+import { store, act, node, say, waitIdle } from '../store.js';
 import { useNode } from '../lib/useNode.js';
 import { flag } from '../lib/status.js';
 import PageHead from '../components/PageHead.vue';
@@ -72,8 +72,10 @@ const handlers = {
   agent: async () => {
     const done = await act(`${key}:agent`, () => api.envAgent());
     if (done.ok) {
-      // 探测完立刻把写下来的那份读回来（后端已经落盘，这里只是把它显示出来）
-      setTimeout(load, 600);
+      // 等它真跑完再读：env.yaml 是后台那段活写下去的
+      if (await waitIdle()) {
+        await load();
+      }
     }
   },
   up: async () => {

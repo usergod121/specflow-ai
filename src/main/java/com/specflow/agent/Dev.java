@@ -3,6 +3,7 @@ import com.specflow.agent.tools.ApplyPatchTool;
 import com.specflow.agent.tools.ReadFileTool;
 import com.specflow.agent.tools.ReadListTool;
 import com.specflow.agent.tools.SubmitTool;
+import com.specflow.agent.tools.WriteFileTool;
 
 import com.specflow.core.Llm;
 import com.specflow.core.Project;
@@ -94,6 +95,11 @@ public final class Dev {
                 StuckCheck.wrap(new ReadListTool(new Roots(project.root()))),
                 StuckCheck.wrap(new ReadFileTool(new Roots(project.root()))),
                 StuckCheck.wrap(new Whitelist(new ApplyPatchTool(new Roots(project.root())), whitelist)),
+                // **新建文件**也必须能写：需求要的 DTO / VO / entity 往往原来并不存在，
+                // 只有 apply_patch 的话它只能"改已有文件"，于是交出来的永远是"要改哪些"，
+                // 新增的那几个类根本写不出来（用户实报：API 文档要求新增 DTO/VO，它一个都没建）。
+                // 走同一个白名单：只有 ② 列进「要改/要新增」的路径才允许写。
+                StuckCheck.wrap(new Whitelist(new WriteFileTool(new Roots(project.root())), whitelist)),
                 new SubmitTool());
 
         Loop loop = new Loop("开发", llm, new LoopLimits(rounds, 200, 300, 1), tools, watcher, progress);
@@ -161,17 +167,20 @@ public final class Dev {
 
                 规矩：
 
-                1. **只许改下面「写白名单」里列出的文件。** 改别的文件会被工具直接拒掉——
+                1. **只许动下面「写白名单」里列出的文件。** 动别的文件会被工具直接拒掉——
                    那不是建议，是边界。
                 2. 改之前先把要改的文件**读一遍**（`read_file`）。凭印象改会改坏。
-                3. 改动用 `apply_patch`：给出**要替换的原文**（必须在文件里**恰好出现一次**）与**替换成什么**。
-                   一次改动一小步，改完自己读一遍确认。
-                4. 目标是「需求说的行为对了」，**不是**「让某一条断言通过」：
+                3. **改已有文件用 `apply_patch`**：给出**要替换的原文**（必须在文件里**恰好出现一次**）与
+                   **替换成什么**。一次改动一小步，改完自己读一遍确认。
+                4. **新增文件用 `write_file`**：整份内容一次写全。需求要的 DTO / VO / entity / 接口实现
+                   经常原来**并不存在**——那就照着 api 文档/设计把它们建出来，别只写"要改哪些"。
+                   **新增的路径也必须在白名单里**（② 把它们列进「要改/要新增的文件」）。
+                5. 目标是「需求说的行为对了」，**不是**「让某一条断言通过」：
                    不许为了让测试过而写死返回值、加特判、把断言改掉。
-                5. 需求没要求的地方不要顺手重构（改得越少越安全）。
-                6. 改完 `submit` 交差。编译没过的话，原始错误会回给你，照着它改，再交一次。
+                6. 需求没要求的地方不要顺手重构（改得越少越安全）。
+                7. 改完 `submit` 交差。编译没过的话，原始错误会回给你，照着它改，再交一次。
 
-                ## 写白名单（只有这些能改）
+                ## 写白名单（只有这些能改/能建）
 
                 %s
                 """.formatted(whitelist.stream().map(one -> "- " + one).reduce("", (a, b) -> a + b + "\n"))

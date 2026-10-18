@@ -106,6 +106,31 @@ function syncHeartbeat() {
 }
 
 /**
+ * 等这段活真的跑完（`GET /api/flow` 的 running 变 false）。
+ *
+ * <h2>为什么必须有它（用户实报）</h2>
+ * 点「跑探针」后，后端立刻 202 返回、活还在后台跑十几秒。原来界面用固定
+ * `setTimeout(load, 800)` 去读产物——那一刻 probe.json 还没写，于是
+ * 「跑完什么都没刷出来，再点一次（上一次这时已经写完了）才冒出来」。</p>
+ *
+ * @return 跑完了 true；超时或后端没了 false（界面据此给人话）
+ */
+export async function waitIdle(maxMillis = 20 * 60 * 1000) {
+  const deadline = Date.now() + Math.max(5_000, maxMillis);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const flow = await refresh().catch(() => null);
+    if (!flow) {
+      return false;
+    }
+    if (flow.running !== true) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * 一切会改变后端状态的调用都走这里。
  *
  * @param key  用于「这一个正在忙」（同一个 key 不并发）

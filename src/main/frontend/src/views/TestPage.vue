@@ -6,7 +6,7 @@
  */
 import { computed, onMounted, ref } from 'vue';
 import * as api from '../api.js';
-import { act, say, store } from '../store.js';
+import { act, say, store, waitIdle } from '../store.js';
 import { useNode } from '../lib/useNode.js';
 import PageHead from '../components/PageHead.vue';
 import EventStream from '../components/EventStream.vue';
@@ -39,7 +39,9 @@ async function retry(id) {
   const done = await act(`${key}:retry:${id}`, () => api.testRetry(id));
   if (done.ok) {
     say(`重跑 ${id}`);
-    setTimeout(load, 800);
+    if (await waitIdle()) {
+      await load();
+    }
   }
 }
 
