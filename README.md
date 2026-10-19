@@ -5,7 +5,7 @@
 
 现状：可以完整跑通一条链路，但只在 Windows 11 + Docker Desktop + DeepSeek API 上实测过。
 后端 231 条单测、前端 11 条、七页浏览器冒烟；没有 CI，也没有自动化端到端脚本。
-仓库里 `v3` 分支是现在这份代码，`master` 是上一版，两份互不影响。
+代码都在 `master` 上。上一版叫 `v2-final`（tag），不是这条历史线的祖先，需要时按 tag 取。
 
 ## 五步与闸
 
@@ -209,7 +209,7 @@ SPECFLOW_PLAYWRIGHT=file:///D:/tools/node_modules/playwright/index.mjs node test
 - 实际验证过的项目都是 Java/Maven 一类。别的语言要自己写 `compile`，没测过。
 - 模型只接过 DeepSeek 和一处 OpenAI 兼容端点。小模型偶尔吐不合规的代码块，引擎会当场补问两次，两次都不合规就收场。
 - 没有 CI、没有覆盖率门槛。文档里的数字是手工跑出来的。
-- Maven 版本号还是 `2.0.0`，`v3` 只是分支名，`specflow version` 也打印 2.0.0。
+- Maven 版本号还是 `2.0.0`，`specflow version` 也打印 2.0.0（历史遗留，`v3` 曾经只是分支名）。
 - 还没有 License 文件。
 
 ## 目录结构
