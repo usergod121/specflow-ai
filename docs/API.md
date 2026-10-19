@@ -33,9 +33,16 @@ POST /api/flow/goto   {node}      → {invalidated:[...]}      回退：下游�
 POST /api/flow/freeze {node}      → 冻结（闸不过 → 409）
 GET  /api/node/{key}/events?from= → {running, stage, events:[Event], next}
 GET  /api/node/{key}/stream?from= → SSE：event: events|ping|done
-POST /api/node/cancel             → {stopped:[...]}          叫停
+POST /api/node/cancel             → {cancelling:true, cursor}  叫停（没活在跑 → 409）
 GET  /api/flows?limit=            → {flows:[{id,project,stage,createdAt,done}], current}
 ```
+
+**叫停管两种"在跑"**：后台运行（②③④⑤ 的 `run`/`agent`，登记在 `flow.Runs`）**和**
+同步长任务（① 的「起环境」「编译」、③ 的「生成用例」，登记在 `core.Jobs`）。
+判据只有一处（`Runs.cancel()`：`running || Jobs.running() > 0`），路由不再自己判——
+否则最长的那一段（拉镜像）会出现"按钮在、点了回 409"。
+被叫停**不算失败**：后台那段按 `CANCELLED` 收场（"已停下"），同步那句回
+409「已按你的意思停下：…这一页什么都没记」。
 
 `Node`：
 
@@ -51,7 +58,7 @@ GET  /api/flows?limit=            → {flows:[{id,project,stage,createdAt,done}]
 
 `actions` 是**这一格有哪些按钮的唯一声明**（`flow/Actions.java`）：界面按 `id` 绑处理函数，
 「页头还是 ⋯ 菜单」「主按钮还是危险按钮」也读这里。声明了而界面没绑，那一枚就渲染成
-**不可点 + 一句说明**——不会静默消失（`wiring.spec.js` 会红）。
+**不可点 + 一句说明**——不会静默消失（`smoke.mjs` 用真浏览器对账"声明的按钮画出来了没"）。
 
 > **这一栏必须真的出现在响应里**（曾经漏过：`NodeView` 有 `actions`、`Actions.TABLE` 也写了，
 > 但 `Api.flowView()` 往外拼 `Map` 时没带上它 → 五个页面全都"只有状态、没有按钮"，且不报任何错）。

@@ -77,6 +77,28 @@ class ActionsTest {
         assertThat(freeze.menu()).as("冻结进 ⋯，页头留给主流程").isTrue();
     }
 
+    /**
+     * 五格都必须有「叫停」。
+     *
+     * <p>这条断言是补漏留下的：有一版只给 ①③④ 加了 cancel，② 和 ⑤ 漏着——
+     * 用户恰好在 ⑤ 卡住跑不完，页面上没有任何能停的按钮（错误话术却写着"点『叫停』"）。
+     * 只测一格等于没测：漏的那一格才是出事的那一格。
+     */
+    @Test
+    @DisplayName("五格都声明了「叫停」，且都在有活时才出现")
+    void everyNodeCanBeCancelled() {
+        for (Node node : Node.values()) {
+            List<Actions.ActionSpec> cancel = Actions.of(node).stream()
+                    .filter(one -> one.id().equals("cancel")).toList();
+            assertThat(cancel).as("%s 没有「叫停」：长任务跑飞了就再也停不下来", node)
+                    .hasSize(1);
+            assertThat(cancel.get(0).onlyWhileRunning())
+                    .as("%s 的叫停不该常驻（没活在跑时它是死的）", node).isTrue();
+            assertThat(cancel.get(0).menu())
+                    .as("%s 的叫停平时留在 ⋯，跑起来才提到页头", node).isTrue();
+        }
+    }
+
     @Test
     @DisplayName("按钮上的字 ≤6 个汉字（文案预算；长解释一律进 tip）")
     void labelsAreShort() {

@@ -3,7 +3,8 @@
 > 2026-10-17。这一版是**在 v2 上就地升级**（没有新开目录）：`E:\specflow-v2`。
 > 三份契约在 `docs/`（架构 / API / UI），**讲解这一本在 `docs/SYSTEM.html`**（用浏览器打开），
 > 设计在 `PRODUCT.md` / `DESIGN.md`，任务账在 `TASKS.md` 与 `docs/v3/PLAN.md`，
-> 这一轮的取舍与评审记录在 `docs/v3/DECISIONS.md`。
+> 这一轮的取舍与评审记录在 `docs/v3/DECISIONS.md`。（`PRODUCT.md` 与 `TASKS.md` 是过程台账，
+> 只留在本机，没入库。）
 >
 > 这一份只回答三件事：**怎么跑、验过什么、没做什么**。
 

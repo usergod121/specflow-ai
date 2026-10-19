@@ -1,0 +1,9 @@
+# specflow 项目配置
+build:
+  compile: "javac -d out/main src/main/java/com/demo/*.java"
+
+llm:
+  base-url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  api-key-env: "SPECFLOW_API_KEY"
+  temperature: 0.2

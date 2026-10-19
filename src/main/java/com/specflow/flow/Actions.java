@@ -100,18 +100,21 @@ public final class Actions {
             Node.CASES, List.of(
                     ActionSpec.primary("save", "保存", "整份清单存回项目文件（不合规就整份不落盘）"),
                     ActionSpec.menu("agent", "生成用例", "AI 出一版草稿交给你改（不落盘）"),
-                    ActionSpec.freeze("冻住之后 ④ 才可动")),
+                    ActionSpec.freeze("冻住之后 ④ 才可动"),
+                    ActionSpec.cancel()),
 
             Node.DEV, List.of(
                     ActionSpec.primary("run", "跑开发", "只在白名单里改真项目，每次交差编译一次"),
                     ActionSpec.head("freeze", "冻结", "改完了、冻住：之后 ⑤ 才可动"),
-                    ActionSpec.danger("rollback", "回滚改动", "按快照把真项目退回原文")),
+                    ActionSpec.danger("rollback", "回滚改动", "按快照把真项目退回原文"),
+                    ActionSpec.cancel()),
 
             Node.TEST, List.of(
                     ActionSpec.primary("run", "跑测试", "在容器副本里逐条验，结论写回清单"),
                     ActionSpec.head("submit", "提交", "落 summary.md；清单还有未定的会被拦"),
                     ActionSpec.menu("accept", "接受并完成", "闭环：这一轮到此为止"),
-                    ActionSpec.menu("optimize", "再优化一轮", "把总结回喂给 ④ 再来一次")));
+                    ActionSpec.menu("optimize", "再优化一轮", "把总结回喂给 ④ 再来一次"),
+                    ActionSpec.cancel()));
 
     private Actions() {
     }

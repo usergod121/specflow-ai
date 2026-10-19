@@ -177,6 +177,11 @@ class ApiTest {
                     .hasSizeGreaterThanOrEqualTo(2);
             assertThat(actions.get(0).id()).as("id 不能是空的：前端按它绑处理函数").isNotBlank();
             assertThat(actions.get(0).label()).as("label 不能是空的：界面上要显示它").isNotBlank();
+            // 叫停必须一路走到界面上：后端声明了但前端没接、或者某一格干脆没声明，
+            // 用户就会在看到「点『叫停』」这句话的地方找不到那一枚（⑤ 卡死时正是这样）。
+            assertThat(actions.stream().anyMatch(one -> one.id().equals("cancel") && one.onlyWhileRunning()))
+                    .as("「%s」这一格的动作表里没有叫停", node.get("key"))
+                    .isTrue();
         }
 
         // ① 的两个关键入口必须在（起环境是它唯一能往下走的路；冻结是解锁下游的唯一入口）
@@ -184,6 +189,21 @@ class ApiTest {
                 (List<com.specflow.flow.Actions.ActionSpec>) nodes.get(0).get("actions");
         assertThat(env.stream().map(com.specflow.flow.Actions.ActionSpec::id).toList())
                 .contains("up", "freeze");
+    }
+
+    @Test
+    @DisplayName("/api/node/cancel：没活在跑时是 409 并说清「没有东西可以停」，不是回一句「已停下」")
+    void cancelWithoutARunIsConflict(@TempDir Path root) throws IOException {
+        Api api = new Api(opened(project(root)));
+
+        RuntimeException thrown = org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                api::cancel);
+        assertThat(thrown.getMessage())
+                .as("话术要让人知道「现在没东西可停」，而不是以为叫停生效了")
+                .contains("没有在跑");
+        assertThat(thrown).as("这一档必须是 409（「现在不能这么做」），不是 500（「引擎炸了」）")
+                .isInstanceOf(com.specflow.flow.FlowRejected.class);
+        assertThat(((com.specflow.flow.FlowRejected) thrown).status()).isEqualTo(409);
     }
 
     @Test

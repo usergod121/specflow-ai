@@ -231,14 +231,40 @@ public class Api {
         return eventsView(from);
     }
 
+    /**
+     * 叫停：把这一格正在跑的活停掉（立标记 + 杀它起的整棵进程树）。
+     *
+     * <p><b>「有没有活可停」只在 {@link com.specflow.flow.Runs#cancel()} 里判一次</b>。
+     * 这里先前自己又判了一遍「后台运行在不在跑」，于是撞上了一个很难看的情形：
+     * ① 的「起环境」与「编译」是<b>同步</b>长任务（进度走事件流，请求挂着等），
+     * 它登记在 {@code Jobs} 里、却不在 {@code Runs} 里——按钮在那儿、点了却回 409
+     * 「现在没有在跑的东西」，而那恰恰是全流程里最长的一段。
+     * 判据只留一处，两条路（后台运行 / 同步长任务）就都被覆盖到了。
+     */
     @PostMapping("/api/node/cancel")
     public Map<String, Object> cancel() {
         Runs runs = session.runs();
-        if (!runs.running()) {
-            throw ApiException.conflict("现在没有在跑的东西：没有东西可以停");
-        }
         runs.cancel();
         return Map.of("cancelling", true, "cursor", eventsView(0).get("next"));
+    }
+
+    /**
+     * 同步长任务（{@code 起环境} / {@code 编译} / {@code 生成用例}）被叫停之后的统一收场。
+     *
+     * <p>为什么非要这一句：那些活不是跑在 {@link Runs} 上的，没有那条"按 CANCELLED 收场"的路。
+     * 进程被杀之后，它们手上拿到的是<b>非 0 退出码</b>——于是编译被记成"失败"、
+     * 用例被记成"生成了 0 条"。可用户明明是自己按的「叫停」：
+     * 把"我让它停"显示成"它坏了"，是这一版最不该犯的错。
+     *
+     * <p>所以这里既不记成功也不记失败，只把「停下」原样说出来，并交代清楚哪些东西还留着。
+     */
+    private static void stopIfCancelled(com.specflow.core.EventProgress progress, String what) {
+        if (!progress.cancelled()) {
+            return;
+        }
+        throw com.specflow.flow.FlowRejected.conflict("已按你的意思停下：" + what
+                + "没有跑完，所以这一页什么都没记（没记成功、也没记失败）。"
+                + "已经做出来的东西都留着，想接着来就再点一次。");
     }
 
     // ---------- ① 环境 ----------
@@ -308,9 +334,11 @@ public class Api {
             long wait = com.specflow.env.Budgets.secondsFrom(pullTimeout());
             Environment environment = new Environment(project).withPullTimeoutMinutes(pullTimeout());
             Environment.Registration registration = environment.up(progress);
+            stopIfCancelled(progress, "起环境");
             session.flow().note(Node.ENV, Map.of(Facts.ENV_READY, "true", "envState", registration.state()));
 
             Capabilities.Report capability = Capabilities.verify(environment, project, wait, progress);
+            stopIfCancelled(progress, "容器里的能力校验");
             Map<String, String> learned = new LinkedHashMap<>();
             learned.put(Facts.CONTAINER_BUILD, String.valueOf(capability.ok()));
             learned.put(Facts.CONTAINER_DETAIL, capability.detail());
@@ -346,6 +374,10 @@ public class Api {
             cap.put("detail", capability.detail());
             body.put("capability", cap);
             return body;
+        } catch (com.specflow.flow.FlowRejected e) {
+            // 「已按你的意思停下」不能被下面那一档翻成 ok:false —— 那看起来像"起环境失败了"，
+            // 而事实是用户自己停的。让它带着 409 原样上到界面。
+            throw e;
         } catch (RuntimeException e) {
             // 失败**常驻**：error 事件已经由 progress 写进流里了，这里只把它交回响应
             Map<String, Object> body = new LinkedHashMap<>();
@@ -371,6 +403,7 @@ public class Api {
         } catch (Exception e) {
             throw new IllegalStateException(e.getMessage(), e);
         }
+        stopIfCancelled(progress, "这次编译");
         session.flow().note(Node.ENV, Map.of(
                 "compilePassed", String.valueOf(result.passed()),
                 "compileStatus", result.status(),
@@ -606,6 +639,7 @@ public class Api {
                     flow.state().fact(Node.PROBE, "design"),
                     probe.map(one -> lines(one.get("files"))).orElse(List.of()),
                     probe.map(one -> lines(one.get("context"))).orElse(List.of()));
+            stopIfCancelled(progress, "这次生成用例");
             List<Map<String, Object>> cases = new ArrayList<>();
             for (com.specflow.agent.CasesAgent.One one : generated) {
                 Map<String, Object> item = new LinkedHashMap<>();
@@ -616,6 +650,9 @@ public class Api {
                 cases.add(item);
             }
             return Map.of("cases", cases, "tags", com.specflow.test.CaseList.TAGS);
+        } catch (com.specflow.flow.FlowRejected e) {
+            // 同上：叫停不是失败，别被下面那一档包成 400
+            throw e;
         } catch (Exception e) {
             throw new IllegalStateException(e.getMessage(), e);
         }

@@ -9,8 +9,14 @@ src/main/frontend/node_modules/
 .specflow/
 *.log
 
-# 启动脚本的状态（pid / 端口 / 上一个项目）
+# 启动脚本及本机封装：只在我这台机器上用，不进仓库
+*.bat
+tools/
 .run/
+
+# 我自己的过程台账，不是交付物
+TASKS.md
+PRODUCT.md
 
 # 编辑器 / 系统
 .idea/
@@ -18,3 +24,9 @@ src/main/frontend/node_modules/
 *.iml
 .DS_Store
 Thumbs.db
+
+# fixture 的项目配置要留在仓库里，其余运行时数据不要
+# （.specflow/ 全局忽略，这里只把 fixture 的那一份放回来）
+!fixture/.specflow/
+fixture/.specflow/*
+!fixture/.specflow/project.yaml

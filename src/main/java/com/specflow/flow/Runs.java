@@ -160,7 +160,7 @@ public final class Runs {
      */
     public void cancel() {
         if (!running && Jobs.running() == 0) {
-            throw FlowRejected.conflict("现在没有在跑的东西，不必要叫停。");
+            throw FlowRejected.conflict("现在没有在跑的东西：没有东西可以停");
         }
         int stopped = Jobs.cancelAll();
         stage = "叫停了：" + what + (stopped > 0 ? "（它起的进程正在被杀掉）" : "");

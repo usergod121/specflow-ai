@@ -6,12 +6,17 @@
  *  3. 换项目之后五格状态必须跟着换（上一版换了项目还显示上一条流程）。
  *
  * 用法：node tests/smoke.mjs [jar路径] [端口]
+ *
+ * playwright 不是这个项目的依赖（只是我本机装了它），所以路径从环境变量取：
+ *   SPECFLOW_PLAYWRIGHT=file:///D:/somewhere/node_modules/playwright/index.mjs node tests/smoke.mjs
+ * 不设就按普通包名 'playwright' 解析（在 frontend 目录里 npm i -D playwright 也能用）。
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium } from 'file:///E:/specflow-ai/src/main/frontend/node_modules/playwright/index.mjs';
+
+const { chromium } = await import(process.env.SPECFLOW_PLAYWRIGHT || 'playwright');
 
 const JAR = process.argv[2] || 'E:/specflow-v2/target/specflow.jar';
 const PORT = Number(process.argv[3] || 3821);
@@ -88,6 +93,26 @@ try {
     return out;
   }, BASE + '/api/flow');
 
+  // 五格都必须声明「叫停」——有一版只给了 ①③④，用户在 ⑤ 卡住时页面上没有任何能停的按钮，
+  // 而错误话术却写着"点『叫停』"。所以这里对五格逐个核对，不是抽查一格。
+  const cancels = await page.evaluate(async (url) => {
+    const flow = await (await fetch(url)).json();
+    const out = {};
+    for (const node of flow.nodes || []) {
+      const one = (node.actions || []).find((action) => action.id === 'cancel');
+      out[node.key] = one ? { label: String(one.label || ''), only: one.onlyWhileRunning === true } : null;
+    }
+    return out;
+  }, BASE + '/api/flow');
+  for (const key of ['env', 'probe', 'cases', 'dev', 'test']) {
+    const one = cancels[key];
+    if (!one) {
+      problems.push(`/api/flow 里 ${key} 没声明「叫停」：这一格跑飞了没有退路`);
+    } else if (!one.only) {
+      problems.push(`/api/flow 里 ${key} 的「叫停」没有 onlyWhileRunning（没活在跑时它会常驻死按钮）`);
+    }
+  }
+
   const rows = [];
   for (const route of ROUTES) {
     errors.length = 0;
@@ -119,6 +144,9 @@ try {
       if (!labels.includes(label)) {
         problems.push(`${route}：后端声明了页头动作「${label}」，界面没画出来`);
       }
+    }
+    if (labels.includes('叫停')) {
+      problems.push(`${route}：没活在跑却画出了「叫停」（只在跑着时该出现）`);
     }
   }
 
