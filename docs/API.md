@@ -97,7 +97,7 @@ POST /api/node/probe/save {files,changes,context,prompt} → 人改产物
   界面那个 textarea 提交的是字符串；脚本提交数组。**只认一种的后果是另一形态被静默清成 `[]`。**
 - 四栏**全部手改得动**，而且**四栏都会进 ④**：`prompt` → 「这一轮要做的事」、
   `changes` → 写白名单、`files` → 「先读这几处」、`context` → 「上下文（为什么这些地方相关）」
-  （见 `SYSTEM.html` §4.4 的那张契约表）。
+  （见 `SYSTEM.html` §3.3 的那张契约表）。
 - 落盘位置：`flow/<id>/probe.json`；`requirement` / `design` 存在 `flow.json` 的产物袋里。
 
 ## 5. ③ 用例
