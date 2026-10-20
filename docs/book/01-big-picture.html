@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>1.1 五个模块 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">第一层 · 粗线条</span> · <a href="02-dataflow.html">下一页 →</a></nav>
+
+<h1>1.1 五个模块</h1>
+<p class="lead">整个系统只有五块。这一页不出现任何类名、方法名、日志。</p>
+
+<div class="fig">                 界面
+                   │  人点按钮，界面转发
+                   ▼
+                 流程  ──── 谁敢动、一段活怎么跑
+                ／    ＼
+             环        环境与验收
+          问模型改代码   起容器、逐条验
+                ＼    ／
+                   ▼
+                 账本  ──── 发生过的事，一人一行</div>
+
+<ol>
+  <li><b>账本</b>：发生过的每件事记一行，记在哪个文件只由一处决定。</li>
+  <li><b>流程</b>：五级台阶，一步一个闸；一段活怎么起、怎么停、怎么收场。</li>
+  <li><b>环</b>：问模型、认它的动作、跑工具、把结果喂回去——改代码的就是它。</li>
+  <li><b>环境与验收</b>：把项目变成能跑的环境，再在副本里逐条验。</li>
+  <li><b>界面</b>：只转发、只显示，不自己判断任何事。</li>
+</ol>
+
+<h2>依赖是单向的</h2>
+<p>界面只跟流程说话；流程驱动环和环境；环和环境都只往账本写。
+所以「改哪块」很好定位：<b>判据</b>在流程，<b>改代码</b>在环，<b>起容器</b>在环境，<b>看见什么</b>在界面，<b>记录</b>在账本。</p>
+
+<div class="why">这五块之外没有第六块。看到某个类同时干了两块的事（比如路由里出现判闸逻辑），那就是一处设计漏了。</div>
+
+<nav class="bot"><a href="../SYSTEM.html">目录</a> · <a href="02-dataflow.html">下一页：数据流 →</a></nav>
+
+</body>
+</html>

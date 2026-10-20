@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>2.4 环境与验收怎么跑 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">第二层 · 每块怎么走</span> · <a href="07-ui.html">下一页 →</a></nav>
+
+<h1>2.4 环境与验收怎么跑</h1>
+<p class="lead">这块解决两个问题：<b>项目在什么环境里能跑</b>，和<b>凭什么说“验过了”</b>。
+三个名字：<code>Environment</code>、<code>Capabilities</code>、<code>TestSandbox</code>。</p>
+
+<h2>起环境：声明 → compose → 起 → 验</h2>
+<div class="fig">env.yaml（人写的声明：镜像、依赖、初始化命令、重置命令）
+   │ 渲染
+   ▼
+compose.yaml
+   │ docker up
+   ▼
+容器（非 root，去掉特权，只挂项目目录，依赖装在外部缓存卷上）
+   │ init 命令逐条跑，失败就整体收掉，不留半成品
+   ▼
+能力校验：先问“有没有这个构建工具”，再在容器里真构建一次
+   │
+   └ 构建在容器内的副本里跑，宿主的产物目录一个字节不动</div>
+
+<p>为什么要真构建一次：容器起来了不等于能干活。镜像里没装 Maven 也能“启动成功”，
+然后下游一路撞墙。校验不过就明确拦在第一步，并告诉人去改哪一行。</p>
+
+<h2>验收：副本 + 容器 + 逐条</h2>
+<div class="fig">清单（人定的，一条一个判据）
+   │
+   ├ 复制一份项目 → 起一个测试容器 → 预检
+   │
+   ├ 对每一条用例：
+   │    ├ 先跑重置命令，把数据恢复到一个已知状态
+   │    ├ 给它一小份预算（12 轮，准备阶段多给 8 轮）
+   │    ├ 模型用工具自己验（跑命令、读文件），最后写结论 + 证据
+   │    └ 预算用完 → 标“跳过”，可以单条重试；单条最多重试 3 次
+   │
+   └ 跑完把容器、网络、卷一起收掉</div>
+
+<p>模型写的命令只在容器里跑，带超时；危险命令（提权、动设备、<code>curl | sh</code>）会停下来问人，
+没人回答按拒绝处理，但话术与“你拒绝了”不同——它得知道是没人理它，不是被否决。</p>
+
+<div class="why"><b>踩过的坑</b>：在容器里直接构建会撞上写权限，退出码 1 看起来像“镜像坏了”。
+改成复制到容器内的临时目录再编，什么问题都没了，宿主侧产物也不受影响。</div>
+
+<p class="lead">想看沙箱、预算、审批的代码 → <a href="13-code-sandbox.html">4.4 验收源码</a>。</p>
+
+<nav class="bot"><a href="05-loop.html">← 上一页：环</a> · <a href="../SYSTEM.html">目录</a> · <a href="07-ui.html">下一页：界面 →</a></nav>
+
+</body>
+</html>

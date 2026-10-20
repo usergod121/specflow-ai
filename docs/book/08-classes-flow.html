@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>3.1 流程：类与调用链 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">第三层 · 类与调用顺序</span> · <a href="09-classes-loop.html">下一页 →</a></nav>
+
+<h1>3.1 流程：类与调用链</h1>
+<p class="lead">包 <code>flow/</code> 共 16 个类，真正要认的是下面六个。</p>
+
+<table>
+  <tr><th>类</th><th>管什么</th></tr>
+  <tr><td><code>Node</code> / <code>State</code></td><td>五格与三态；顺序由枚举顺序定</td></tr>
+  <tr><td><code>Gates</code> / <code>Gate</code> / <code>Facts</code></td><td>一格一个判据、一张表、事实的名字</td></tr>
+  <tr><td><code>FlowService</code></td><td>读状态、写事实、冻结、回退；所有改动串行</td></tr>
+  <tr><td><code>Runs</code></td><td>一段后台活：立刻返回、只许一段、收场只写一条结论</td></tr>
+  <tr><td><code>Journal</code> / <code>Snapshot</code></td><td>崩溃恢复那本账 / 改代码前的原文</td></tr>
+  <tr><td><code>Actions</code></td><td>每格有哪些按钮，只在这里声明</td></tr>
+</table>
+
+<h2>一次动作的调用链</h2>
+<div class="fig">界面  POST /api/flow/freeze {node}
+  │
+Api                   取参数，不判任何事
+  │
+FlowService.freeze
+  ├ requireReachable   前驱没完成 → 409 + 那句话
+  ├ Gates.blocked      唯一判据；返回一句话或“能过”
+  ├ 写事实 + 存盘       整份替换
+  │
+  └ 返回；界面再问一次 /api/flow 重画</div>
+
+<div class="fig">界面  POST /api/node/test/run
+  │
+Api                   判、拼 prompt、拿产物
+  │
+Runs.start            登记，立刻回“已开始 + 游标”
+  └ 后台线程
+       ├ Journal.begin          写开工
+       ├ body.run(progress)     干活，过程写成事件
+       └ 收场：读这一段的事件，写一条结论 → Journal.end</div>
+
+<p>收场那条结论为什么不在 <code>Runs</code> 里算：轮次、模型调用次数、编译错误——只有干活的知道。
+它通过“说一句话”的方式写进事件，<code>Runs</code> 只负责把这一段事件收口成一份载荷，不猜也不补算。</p>
+
+<div class="why">界面拿到的 <code>blockedReason</code> 就是 409 的正文，两处永远是同一句——判据只有一处，话术也就只有一处。</div>
+
+<p class="lead">往下：<a href="11-code-flow.html">4.2 流程的关键源码</a>。</p>
+
+<nav class="bot"><a href="07-ui.html">← 上一页：界面</a> · <a href="../SYSTEM.html">目录</a> · <a href="09-classes-loop.html">下一页：环的类 →</a></nav>
+
+</body>
+</html>

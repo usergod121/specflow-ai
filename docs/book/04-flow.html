@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>2.2 流程怎么管进度 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">第二层 · 每块怎么走</span> · <a href="05-loop.html">下一页 →</a></nav>
+
+<h1>2.2 流程怎么管进度</h1>
+<p class="lead">流程管两件事：<b>这道台阶能不能往下走</b>，和<b>一段活怎么起、怎么停、怎么收场</b>。
+三个名字：<code>Gates</code>、<code>FlowService</code>、<code>Runs</code>。</p>
+
+<h2>五级台阶</h2>
+<div class="fig">① 环境 ──▶ ② 探针 ──▶ ③ 用例 ──▶ ④ 开发 ──▶ ⑤ 测试
+   │           │           │          │          │
+ 一格一个闸：判的不是“我做完了没”，而是“我交出来的东西够不够下一步用”
+   │           │           │          │          │
+   ▼           ▼           ▼          ▼          ▼
+ 冻结        冻结        冻结       冻结      提交 → 接受
+
+每格三态：未开始 ──▶ 待完成 ──▶ 已完成
+                  └── 前驱没完成就叫“未开始”，点它会回一句话，不报错也不动手</div>
+
+<p>闸是纯函数：给同样的状态和事实，永远给同样的结论或同一句话。
+界面上那句“不能跑测试，前置开发还没做完”就是它返回的原文。</p>
+
+<h2>一段活的一生</h2>
+<div class="fig">点按钮
+  │ 判（不过 → 回一句话，什么也不写）
+  │ 登记：立刻回“已开始”，给一个读事件流的起点
+  ▼
+后台一个线程跑：过程一边跑一边往事件流写
+  │
+  ├ 跑完     → 收场写一条“已完成 + 结论”
+  ├ 出错     → 收场写一条“失败 + 原因”，异常原文不吞
+  └ 被叫停   → 收场写一条“已停下”，并杀它起的整棵进程树</div>
+
+<p>同一时刻只允许一段活。第二段直接拒绝，理由是两段活会同时改同一个项目，而留档里看不出是谁改的。</p>
+
+<div class="why"><b>踩过的坑</b>：闸的判据曾经写在两处（路由一处、界面一处），于是界面说能点、后端回 409。
+现在判据只有一处，前端一行都不许有，只显示那句话。</div>
+
+<p class="lead">想看判据和收场的代码 → <a href="11-code-flow.html">4.2 流程源码</a>；想看有哪些类和调用链 → <a href="08-classes-flow.html">3.1 流程的类</a>。</p>
+
+<nav class="bot"><a href="03-ledger.html">← 上一页：账本</a> · <a href="../SYSTEM.html">目录</a> · <a href="05-loop.html">下一页：环怎么干活 →</a></nav>
+
+</body>
+</html>

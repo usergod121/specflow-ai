@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>2.5 界面怎么不长脑子 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">第二层 · 每块怎么走</span> · <a href="08-classes-flow.html">下一页 →</a></nav>
+
+<h1>2.5 界面怎么不长脑子</h1>
+<p class="lead">界面只做三件事：把后端说的画出来、把人的动作发出去、把结果重新问一遍。
+判断一概不做。三个名字：<code>/api/flow</code>、<code>store.refresh()</code>、<code>PageHead</code>。</p>
+
+<h2>只认一份数据</h2>
+<div class="fig">GET /api/flow
+  ├ 五格：id、状态、那句话（为什么不能点）、事实
+  ├ 每格的按钮：id、文字、悬停说明、主按钮/危险、进页头还是进「⋯」
+  └ 现在有没有活在跑
+
+界面拿这一份画左侧进度、状态胶囊、按钮条、那句话。
+按钮怎么摆、能不能点，全看后端；前端只负责“按 id 找到处理函数”。</div>
+
+<h2>只走一个刷新的口</h2>
+<div class="fig">人点按钮
+  → 发出动作
+  → 不管成功还是被拒（409），都再问一次 /api/flow
+  → 用新状态重画
+
+换项目：清空上一套（流程、事件、错误条、游标）→ 重新问 → 重新连流
+有活在跑：每 1.5 秒补一次问，防止推送断了之后按钮永远灰着</div>
+
+<p>这样做每次动作多一个很小的请求，换来的是一件事：界面不会显示后端已经不这么认为的旧状态。</p>
+
+<h2>唯一的例外：叫停</h2>
+<p>平时“叫停”在「⋯」里，跑起来的时候被提到页头最前面，因为它是唯一能解开死锁的按钮。
+这个提升规则写在页头组件里，按钮本身仍然是后端声明的那一枚。</p>
+
+<div class="why"><b>踩过的坑</b>：按钮的声明漏了“叫停”，或者界面把它藏进折叠里——提示写着“点叫停”，用户却找不到。
+现在三处都有断言：声明里有、响应里有、没活在跑时页面上不许画出来。</div>
+
+<nav class="bot"><a href="06-env.html">← 上一页：环境与验收</a> · <a href="../SYSTEM.html">目录</a> · <a href="08-classes-flow.html">下一页：第三层，流程的类 →</a></nav>
+
+</body>
+</html>

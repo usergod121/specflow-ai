@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>4.4 验收源码 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">第四层 · 关键源码</span> · <a href="90-rules.html">下一页 →</a></nav>
+
+<h1>4.4 验收：沙箱、预算、审批</h1>
+<p class="lead">三段。第一段是战场怎么铺，后两段是“凭什么停”和“危险命令问谁”。</p>
+
+<h2>① 沙箱：副本也放在流程目录里</h2>
+<pre><code>Path copy = layout.flow(currentFlowId).resolve("sandbox").resolve(runId);
+copyTree(project.root(), copy);                              <span class="c">// 整份复制，含未提交的改动</span>
+Atomic.write(copy.resolve("compose.yaml"), Compose.render(config, copy, projectName));
+up(copy, ...);                                               <span class="c">// 起容器，工作目录指着副本</span>
+preflight(...);                                              <span class="c">// 预检：工具在不在、目录挂对没有</span>
+<span class="c">// 收场：down -v + 删副本，下一轮从干净的一份开始</span></code></pre>
+<p>副本不是放系统临时目录，而是放在这一次运行的目录里——出问题时能直接进去看，跑完连卷一起收掉。</p>
+
+<h2>② 预算：12 轮 + 准备宽限 8 轮</h2>
+<pre><code>public static final int DEFAULT_PER_CASE = 12;     <span class="c">// 一条用例能问几次模型</span>
+public static final int PREP_GRACE      = 8;       <span class="c">// 准备阶段（还没到第一条）多给几轮</span>
+
+换到新的一条用例时回调一次 onCaseStart         → ⑤ 用它跑 env.yaml 的 reset
+预算用尽 → 标 SKIPPED（不是结论），可以单条重试，最多 3 次</code></pre>
+<p>“每条用例 reset”这一栏原本只有命令行用过，测试跑的时候一次都没调——所以第二条用例开始就带着上一条的脏数据，
+结论会失真。现在换用例那一刻回调一次，失败只提醒不中断。</p>
+
+<h2>③ 审批：三态，不是一个布尔</h2>
+<pre><code>允许   → 执行
+拒绝   → 不执行，告诉模型“用户拒绝了这条”
+没人理 → 等满 2 分钟按拒绝处理，但话术不同：说清“没人回你，不是否决”</code></pre>
+<p>为什么分开：说“你被拒绝了”，模型会换条路继续试；说“没人回你”，它才知道该收场。
+两者混成一个布尔，模型的行为就永远对不上现场的真相。</p>
+
+<div class="why"><b>踩过的坑</b>：<code>sudo</code> 原来在“问一句”的名单里，用户等了 187 秒回“允许”，
+结果容器里根本没有 sudo。现在这类命令直接拒，并指名去改 <code>env.yaml</code>。</div>
+
+<p class="lead">完整实现：<code>test/TestSandbox.java</code>、<code>test/CaseBudget.java</code>、<code>test/Approvals.java</code>、
+<code>env/Capabilities.java</code>。查表：<a href="90-rules.html">铁律与不变式</a>。</p>
+
+<nav class="bot"><a href="12-code-loop.html">← 上一页：环源码</a> · <a href="../SYSTEM.html">目录</a> · <a href="90-rules.html">下一页：查表 →</a></nav>
+
+</body>
+</html>

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>3.2 环：类与调用链 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">第三层 · 类与调用顺序</span> · <a href="10-code-ledger.html">下一页 →</a></nav>
+
+<h1>3.2 环：类与一次回合的调用链</h1>
+<p class="lead">包 <code>agent/</code> 18 个类、<code>agent/tools/</code> 8 个。用到一半的就这几个。</p>
+
+<table>
+  <tr><th>类</th><th>管什么</th></tr>
+  <tr><td><code>Loop</code></td><td>回合、四道闸、工具派发、锚点记忆、压缩时机</td></tr>
+  <tr><td><code>Protocol</code></td><td>只认两种代码块；认不出来时的补问话术</td></tr>
+  <tr><td><code>Compact</code></td><td>上下文压缩：系统规矩 + 任务书 + 锚点 + 尾巴</td></tr>
+  <tr><td><code>StuckCheck</code></td><td>打转：第 4 次提醒、第 6 次判死</td></tr>
+  <tr><td><code>Tool</code> / <code>ToolRegistry</code> / <code>ToolResult</code></td><td>工具接口、按名字派发、成功失败两态</td></tr>
+  <tr><td><code>Dev</code> / <code>Probe</code> / <code>CasesAgent</code> / <code>EnvAgent</code></td><td>四个节点的任务书与工具装箱</td></tr>
+</table>
+
+<h2>一个回合</h2>
+<div class="fig">Loop.run
+  ├ progress.cancelled()  被叫停就收场，不再问模型
+  ├ Compact.maybe         太长就压
+  ├ turn(messages)
+  │    ├ ask()            真正花钱的那一步
+  │    ├ Protocol.parse   两种块：动作 / 交差
+  │    └ 认不出来 → 补问，最多两次，算同一轮
+  ├ 交差 → 收场
+  └ runTool
+       ├ 推一条“开始跑某个工具”事件
+       ├ 工具执行（外面套着预算 / 打转 / 白名单三层）
+       ├ 推一条“跑完了 + 结果”事件（同一条 id 成对）
+       └ 结果入历史；顺手记下“动过哪个路径 / 这次为什么失败”</div>
+
+<h2>装箱顺序</h2>
+<div class="fig">new Whitelist(          ← 只许动白名单里的文件（最外层，最后拦）
+    new StuckCheck(       ← 重复到一定次数就判死
+        new CaseBudget(   ← 每条用例的轮次预算
+            new ApplyPatchTool(root) )))</div>
+
+<p>顺序不能换：预算得先扣（不然一直不花钱判不出打转），打转要看全动作（不然看不清重复），
+权限放最外面（不管什么原因，越界一律不执行）。</p>
+
+<div class="why">工具坏了不抛异常、不崩循环：注册表统一翻成“失败 + 原因”喂回模型。它自己会换条路再试。</div>
+
+<p class="lead">往下：<a href="12-code-loop.html">4.3 环的关键源码</a>。</p>
+
+<nav class="bot"><a href="08-classes-flow.html">← 上一页：流程的类</a> · <a href="../SYSTEM.html">目录</a> · <a href="10-code-ledger.html">下一页：账本源码 →</a></nav>
+
+</body>
+</html>

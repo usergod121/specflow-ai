@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>2.3 环怎么干活 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">第二层 · 每块怎么走</span> · <a href="06-env.html">下一页 →</a></nav>
+
+<h1>2.3 环怎么干活</h1>
+<p class="lead">模型不会自己动手。它的每次“动作”都是一段固定格式的文本，环负责认、执行、把结果还回去。
+三个名字：<code>Loop</code>、<code>Protocol</code>、<code>Compact</code>。</p>
+
+<h2>一个回合</h2>
+<div class="fig">        ┌─ 上下文太长？→ 压一次（本地算，不花钱）
+        │
+一轮：  ├─ 问模型（唯一花钱的一步）
+        ├─ 认它这一轮想干什么
+        │     ├ 给了工具调用 → 跑它 → 结果塞回历史 → 下一轮
+        │     ├ 给了交差 → 收场
+        │     └ 什么都没给（或者格式不对）→ 当场补问，最多两次，不算新一轮
+        └─ 四道闸：轮次用完 / 工具调太多 / 输出太长 / 超时 → 各自收场</div>
+
+<p>只认两种代码块：标了 <code>specflow-tool</code> 的是动作，标了 <code>json</code> 的是交差。
+其它一律算格式不对——但补问时会把<b>它到底写了什么</b>说清楚（“你给的是 java 块”），模型下一轮基本就改对了。</p>
+
+<h2>工具是分层的</h2>
+<div class="fig">模型的调用
+   → 预算层：这条用例还剩几轮？用完就停
+   → 打转层：同一个动作重复第 4 次提醒它、第 6 次直接判死
+   → 权限层：只许动白名单里的文件
+   → 真正的工具（读、写、改、跑容器、交差）</div>
+
+<p>工具自己出错不崩循环：异常会被翻成一份“失败 + 原因”喂回模型，由它自己纠。</p>
+
+<h2>压缩保什么</h2>
+<p>压缩把中间几万字的工具输出丢掉，只留三样：系统规矩、原始任务书、最后几条对话，
+外加一份<b>引擎自己攒的锚点</b>——动过哪些路径、最近几次失败是什么。这两句不是业务知识，
+是循环每轮都看在眼里的东西，所以由循环自己记，不指望调用方拼。</p>
+
+<div class="why"><b>踩过的坑</b>：锚点表原来交给调用方拼，五格里只有一格拼了，其余三格一压缩就只剩“规矩 + 任务书 + 尾巴”，
+上下文省下来了，最该留的两句没了。</div>
+
+<p class="lead">想看回合与压缩的代码 → <a href="12-code-loop.html">4.3 环源码</a>；想看类的分工 → <a href="09-classes-loop.html">3.2 环的类</a>。</p>
+
+<nav class="bot"><a href="04-flow.html">← 上一页：流程</a> · <a href="../SYSTEM.html">目录</a> · <a href="06-env.html">下一页：环境与验收 →</a></nav>
+
+</body>
+</html>

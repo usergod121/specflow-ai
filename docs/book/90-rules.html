@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>查表 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">查表</span> · <a href="01-big-picture.html">回第一页 →</a></nav>
+
+<h1>查表：铁律、不变式、边界、坑</h1>
+<p class="lead">这一页不按顺序读，回头查的时候用。</p>
+
+<h2>三条铁律</h2>
+<table>
+  <tr><th>铁律</th><th>意思</th></tr>
+  <tr><td>一个写者</td><td>日志、工具、闸、收场全从同一处追加</td></tr>
+  <tr><td>id 恒等于行号</td><td>游标与“第几条”是同一个数，重启接着数</td></tr>
+  <tr><td>盘是唯一真相</td><td>内存只是副本，按文件大小与修改时间校验，对不上整份重读</td></tr>
+</table>
+
+<h2>十二条不变式</h2>
+<p class="lead">原文在 <code>docs/ARCHITECTURE.md</code> §4，这里只留一句一条。</p>
+<table>
+  <tr><th>#</th><th>不变式</th><th>#</th><th>不变式</th></tr>
+  <tr><td>1</td><td>一个写者；id ≡ 行号</td><td>7</td><td>崩溃可恢复：开工写一笔、收场写一笔，启动时扫一遍</td></tr>
+  <tr><td>2</td><td>一个事实只有一个名字</td><td>8</td><td>模型与命令各只有一个出口；模型写的命令只在容器里跑</td></tr>
+  <tr><td>3</td><td>产物只写一处落点</td><td>9</td><td>界面说明 ≤ 6 个汉字，状态名固定四档</td></tr>
+  <tr><td>4</td><td>长任务只有一个过程口</td><td>10</td><td>日志只有四种类型，渲染最新在上</td></tr>
+  <tr><td>5</td><td>闸只有一处判据，前端零判据</td><td>11</td><td>改完必须读得回来：人改的东西下一处要现读</td></tr>
+  <tr><td>6</td><td>写项目前先拍快照，写文件一律原子</td><td>12</td><td>“做完了”= 输入有人给、输出有人用</td></tr>
+</table>
+
+<h2>边界</h2>
+<table>
+  <tr><th>边界</th><th>现状</th></tr>
+  <tr><td>单实例</td><td>没有跨进程锁。两个引擎开同一项目会丢事实更新、可能重复 id；单实例是前提</td></tr>
+  <tr><td>持久性</td><td>原子替换保证“不出半份文件”，但没做 fsync，断电可能丢最后几行</td></tr>
+  <tr><td>跨文件一致性</td><td>没有事务。恢复粒度是“重跑这一步”，不是回放日志到一致点</td></tr>
+  <tr><td>同步任务互斥</td><td>只有后台运行串行；起环境/编译/生成用例之间没有锁，靠界面按钮变灰挡</td></tr>
+  <tr><td>叫停</td><td>杀得掉进程，打不断正在飞的模型调用</td></tr>
+  <tr><td>崩溃恢复的测试</td><td>有实现、有调用点，<b>没有单测</b>，靠手工杀进程验证</td></tr>
+  <tr><td>平台</td><td>Windows + Docker Desktop 实测；只监听回环地址；无鉴权</td></tr>
+</table>
+
+<h2>踩过的坑（一行一条）</h2>
+<p class="lead">细节与取舍在 <code>docs/v3/DECISIONS.md</code> 和 <code>docs/DELIVERY.md</code>。</p>
+<table>
+  <tr><th>现象</th><th>根因</th><th>现在的做法</th></tr>
+  <tr><td>五个页面只有状态、没有按钮</td><td>动作表没随响应下发</td><td>响应里必带，测试断言</td></tr>
+  <tr><td>按钮一直灰着</td><td>禁用条件只在挂载时算一次</td><td>每次渲染重算</td></tr>
+  <tr><td>提示让点叫停，页面上没有</td><td>声明漏了、或藏进折叠里</td><td>跑起来插队到页头；三处断言</td></tr>
+  <tr><td>换了项目还显示上一条流程</td><td>只换了外壳，没重拉</td><td>换项目全量重置</td></tr>
+  <tr><td>探针只列“要改”，不列“要新增”</td><td>校验把不存在的路径判死</td><td>要改 + 要新增都进白名单</td></tr>
+  <tr><td>④ 只会改、不会建</td><td>工具只有改文件</td><td>补了一个写新文件的工具，也过白名单</td></tr>
+  <tr><td>④ 一跑就到上限</td><td>轮次写死，与白名单规模无关</td><td>按白名单文件数算</td></tr>
+  <tr><td>改了上下文，下一处没反应</td><td>读的是启动那一刻的快照</td><td>配置与产物一律现读</td></tr>
+  <tr><td>PASS 的证据是“资源不存在”</td><td>只认模型口供</td><td>引擎数自己的工具调用，零调用就拒</td></tr>
+  <tr><td>起环境刷新一下提示就没了</td><td>那句话只在局部变量里</td><td>落盘，正在跑的步骤单独显示</td></tr>
+  <tr><td>环境“已就绪”但声明文件不存在</td><td>只看历史标记，不看盘</td><td>以“文件真在盘上”为前提判</td></tr>
+  <tr><td>编译命令填了，闸说还是空的</td><td>配置只读一次</td><td>每次问盘</td></tr>
+  <tr><td>容器里构建退出码 1</td><td>与宿主共享产物目录，写权限不足</td><td>副本里编</td></tr>
+</table>
+
+<p class="lead">想知道这些坑的来龙去脉：<code>docs/v3/DECISIONS.md</code>（取舍）、<code>docs/DELIVERY.md</code>（验过什么）。</p>
+
+<nav class="bot"><a href="13-code-sandbox.html">← 上一页：验收源码</a> · <a href="../SYSTEM.html">目录</a> · <a href="01-big-picture.html">再读一遍 →</a></nav>
+
+</body>
+</html>
