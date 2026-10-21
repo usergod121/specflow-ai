@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>② 上下文 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">纵向 · 节点 ②</span> · <a href="23-cases.html">下一页 →</a></nav>
+
+<h1>② 上下文：告诉开发"改哪儿、为什么"</h1>
+<p class="lead">这一格交四样东西，其中 <code>changes</code> 是 ④ 的<b>写白名单</b>——它直接决定开发能碰哪些文件。</p>
+
+<h2>先存需求，再跑探针</h2>
+<div class="fig">Api.probeBrief {requirement, design}
+ └ FlowService.note(PROBE,{requirement,design})       需求与设计进 facts，可随时改
+
+Api.probeAgent
+ ├ requireReachable(PROBE,"跑探针")
+ ├ Runs.start(PROBE,"probe-agent")
+ └ body: Probe.run()
+      ├ Loop 跑 read_list / read_file（只读）
+      ├ 交回四样：files / changes / context / prompt
+      ├ Probe.validate 三条：
+      │    files 必须真存在（读不存在的文件＝在猜）
+      │    changes 里"已存在"的必须先出现在 files 里（能改的先得能读）
+      │    changes 里"还不存在"的放行（那正是要新建的）
+      ├ 过 → Atomic.write(layout.probe(id), 四样)    ← 旧产物这时才被覆盖
+      └ 不过 → REJECTED，旧 probe.json 一个字节不动</div>
+
+<h2>四样产物到底是什么意思</h2>
+<table>
+  <tr><th>栏</th><th>语义</th><th>谁在用它</th></tr>
+  <tr><td><code>files</code></td><td>开发<b>要读</b>的文件（必须真存在）</td><td>④ 提示词“先读这几处”</td></tr>
+  <tr><td><code>changes</code></td><td>写白名单：要改的 <b>+</b> 要新增的</td><td><code>Whitelist</code> 包住两个写工具；也决定轮次预算</td></tr>
+  <tr><td><code>context</code></td><td>为什么这些地方相关（人写的交代）</td><td>④ 提示词第二段</td></tr>
+  <tr><td><code>prompt</code></td><td>这一轮要做什么（不许空）</td><td>压缩时原样保住的那份任务书</td></tr>
+</table>
+
+<h2>另外两个按钮</h2>
+<p><code>Api.probeView</code> 读回盘上那份；<code>Api.probeSave</code> 存人改过的四样——三栏（files/changes/context）
+字符串或数组都认，避免界面提交字符串时被清成空数组。</p>
+
+<p><b>闸</b>：<code>files</code> 非空 <b>且</b> <code>prompt</code> 非空。<br />
+<b>常见失败</b>：只列了“要改”没列“要新增”（④ 因此建不出文件）；往 <code>files</code> 里塞还不存在的路径（被驳回并提示只放 <code>changes</code>）。</p>
+
+<nav class="bot"><a href="21-env.html">← 上一页：① 环境</a> · <a href="../SYSTEM.html">目录</a> · <a href="23-cases.html">下一页：③ 用例 →</a></nav>
+
+</body>
+</html>

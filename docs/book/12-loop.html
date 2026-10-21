@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>全局 3：环（③④⑤ 共用） · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">横向 · 共用件</span> · <a href="21-env.html">下一页 →</a></nav>
+
+<h1>全局 3：环 —— 模型是怎么动手的</h1>
+<p class="lead">① 到 ⑤ 的 Agent 都跑在同一个循环上（<code>agent/Loop</code>）。这一页讲清一轮里发生什么、工具怎么被包起来。</p>
+
+<h2>一个回合</h2>
+<div class="fig">Loop.run 每轮：
+  ├ progress.cancelled()   叫停了就收场，不再问模型
+  ├ Compact.maybe(...)     上下文太长就压（本地算，不花钱）
+  ├ turn(messages)         问模型 → Protocol.parse 认这一轮想干什么
+  │     ├ TOOL         → runTool
+  │     ├ ANSWER       → 收场（DONE）
+  │     └ UNPARSABLE   → 当场补问，最多两次，算同一轮
+  └ 四道闸各自收场：轮次用完 / 工具调太多 / 输出太长 / 超时</div>
+
+<h2>一次工具调用，发生了什么</h2>
+<div class="fig">runTool(parsed)
+  ├ 推"开始跑 xxx"事件（动手之前推，bash 能跑十分钟）
+  ├ 查注册表，调 tool.run(args)
+  │     └ 外面套着装饰器：预算 / 打转 / 权限（见下）
+  ├ 推"跑完了 + 结果"事件（与上一条同 callId，界面合成一枚 chip）
+  ├ 结果作为一条普通消息塞回对话（失败就是 {"ok":false,"reason":"…"}）
+  └ 顺手记锚点：动过哪个路径、这次为什么失败</div>
+
+<h2>工具怎么包起来</h2>
+<p>工具都是同一个接口，所以能一层层套。外层先跑前段、再交给里层、最后跑后段：</p>
+<div class="fig"><span class="c">// ④ 开发：改文件</span>   StuckCheck( Whitelist( ApplyPatchTool ) )
+<span class="c">// ⑤ 测试：验用例</span>   CaseBudget( StuckCheck( Frozen( WriteFileTool ) ) )</div>
+<table>
+  <tr><th>层</th><th>它看什么</th><th>越界/打转时</th></tr>
+  <tr><td><code>CaseBudget</code></td><td>这条用例还剩几轮</td><td>用完就拒，并提示标 <code>SKIPPED</code></td></tr>
+  <tr><td><code>StuckCheck</code></td><td>同一个调用（工具名 + 参数原文）连着第几次</td><td>第 4 次提醒、第 6 次让它标 ERROR 收场</td></tr>
+  <tr><td><code>Whitelist</code> / <code>Frozen</code></td><td>这个路径在白名单里吗 / 现在是验收阶段吗</td><td>直接拒，不执行</td></tr>
+</table>
+<p>顺序有意义：预算先扣（被拒的调用也算用了一轮）；打转要看<b>模型提交的调用</b>，与被权限拒掉无关；
+权限紧挨真工具，是最后一道。</p>
+
+<p class="lead">往下：五个节点各一页。<a href="21-env.html">① 环境 →</a></p>
+
+<nav class="bot"><a href="11-shared.html">← 上一页：共用的件</a> · <a href="../SYSTEM.html">目录</a> · <a href="21-env.html">下一页：① 环境 →</a></nav>
+
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>源码 1：闸、冻结、收场 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">源码 · 判据与收场</span> · <a href="32-code-loop.html">下一页 →</a></nav>
+
+<h1>源码 1：闸、冻结、收场</h1>
+<p class="lead">三段代码，回答三个问题：凭什么判、判完之后动什么、一段活怎么收。都在 <code>flow/</code>。</p>
+
+<h2>① 闸：先看顺序，再看这一格交的东西够不够</h2>
+<pre><code>public static String blocked(Node node, Facts facts, Map&lt;Node, State&gt; states) {
+    Node previous = node.previous();
+    if (previous != null &amp;&amp; states != null &amp;&amp; states.getOrDefault(previous, LOCKED) != DONE) {
+        return "上一步「" + previous.title() + "」" + word(was)
+             + "：先把「" + previous.title() + "」做完并冻结，再动「" + node.title() + "」。";
+    }
+    return blocked(node, facts);        <span class="c">// 每格自己的门槛，表在 Gates.TABLE</span>
+}</code></pre>
+<p>返回空串＝能过；返回一句话＝不行，那句话原样给用户看（也是 409 的正文）。所以“为什么点不动”不用前端自己猜。</p>
+
+<h2>② 冻结：判过之后才动状态，顺手记一个游标</h2>
+<pre><code>public synchronized void freeze(Node node) {
+    FlowState state = synced();
+    String blocked = Gates.blocked(node, facts(state), state.states());
+    if (!blocked.isEmpty()) {
+        events().append(Event.gate(0, node.key(), blocked));   <span class="c">// 留档：为什么不让往下走</span>
+        throw FlowRejected.conflict(blocked);                  <span class="c">// 409</span>
+    }
+    state.setState(node, State.DONE);
+    state.note(node, Map.of(Facts.FROZEN, "true"));
+    ...
+    state.note(node, Map.of(Facts.CURSOR, String.valueOf(events().lines())));
+    store.save(state);
+}</code></pre>
+<p>那个游标是给“回退”用的：回到某一格要截事件流，“截到哪”只有冻结这一刻说得清。截之前先留副本——回退作废的是状态，不是记录。</p>
+
+<h2>③ 收场：结论只有一条，来源只有一个</h2>
+<pre><code>if (mine.cancelled())        status = CANCELLED;   <span class="c">// 叫停优先，不写成失败</span>
+else if (thrown != null)     status = FAILED;
+else if (errorId &gt; doneId)   status = FAILED;      <span class="c">// 有报错就没算完</span>
+else                          status = DONE;
+log.append(Event.result(..., payload));</code></pre>
+<p>轮次、模型调用次数、编译错误这些只有干活的知道，它“说一句话”写进事件；<code>Runs</code> 只把这一段事件收口成一份载荷。界面画那一页就只读这一条。</p>
+
+<nav class="bot"><a href="25-test.html">← 上一页：⑤ 测试</a> · <a href="../SYSTEM.html">目录</a> · <a href="32-code-loop.html">下一页：回合与压缩 →</a></nav>
+
+</body>
+</html>

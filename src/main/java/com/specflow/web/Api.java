@@ -120,6 +120,25 @@ public class Api {
         return answer;
     }
 
+    /**
+     * 拍新快照之前，把上一份「没人处置」的收进 {@code .stale}。
+     *
+     * <p>用户实报：跑了三次开发、既没冻结也没回滚，快照目录里叠了三份，看着像「把整个项目拷了下来」。
+     * 其实每份只含那一次 ④ 白名单里的文件，但 {@code Snapshot.latest()} 只认最新一份，
+     * 旧的既回滚不到、又一直挂在目录里。所以开跑前先把它们收起来（改名不删，原文还能人工捞）。
+     */
+    private void supersedeOldSnapshots(com.specflow.core.Progress progress) {
+        try {
+            List<String> folded = com.specflow.flow.Snapshot.supersede(session.project());
+            if (!folded.isEmpty()) {
+                progress.warn("上一次的写前快照没人处置（" + String.join("、", folded)
+                        + "），已收进 .stale：回滚只认最新一份，旧的不会再被选中。");
+            }
+        } catch (RuntimeException e) {
+            progress.warn("旧快照没收起来（不影响这一次）：" + e.getMessage());
+        }
+    }
+
     /** 把 ④ 留下的写前快照处置掉（{@code accept}）。失败不许拦住冻结——它只是清一份副本。 */
     private void acceptSnapshot() {
         try {
@@ -676,6 +695,7 @@ public class Api {
         List<String> context = lines(probe.get("context"));
         String feedback = flow.state().fact(Node.DEV, "feedback");
         String runId = session.runs().start(Node.DEV, "dev-run", Map.of(), progress -> {
+            supersedeOldSnapshots(progress);
             com.specflow.flow.Snapshot snapshot = com.specflow.flow.Snapshot.capture(
                     session.project(), changes.stream().map(one ->
                             session.project().root().resolve(one)).toList());
@@ -987,6 +1007,8 @@ public class Api {
     public Map<String, Object> testAccept() {
         FlowService flow = session.flow();
         flow.freeze(Node.TEST);
+        // 闭环这一刻，⑤「再优化一轮」拍的那份写前快照也没用了（改动认了，原文不必再留）
+        acceptSnapshot();
         session.events().say(Node.TEST.key(), "info", "你接受了这一版：工作流闭环完成");
         return Map.of("done", true, "flow", flow.view());
     }
@@ -1012,6 +1034,7 @@ public class Api {
         List<String> context = lines(probe.get("context"));
         String goal = feedback;   // lambda 里要用它，而 feedback 上面被重新赋过值（不是 effectively final）
         String runId = session.runs().start(Node.TEST, "optimize", Map.of(), progress -> {
+            supersedeOldSnapshots(progress);
             com.specflow.flow.Snapshot snapshot = com.specflow.flow.Snapshot.capture(
                     session.project(), changes.stream().map(one ->
                             session.project().root().resolve(one)).toList());

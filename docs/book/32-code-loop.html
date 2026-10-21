@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>源码 2：回合与压缩 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">源码 · 环</span> · <a href="33-code-ledger.html">下一页 →</a></nav>
+
+<h1>源码 2：回合与压缩</h1>
+<p class="lead">两段代码，都在 <code>agent/</code>。第一段是整个循环，二十行，没有玄机。</p>
+
+<h2>① 回合</h2>
+<pre><code>while (round &lt; limits.maxRounds()) {
+    round++;
+    if (progress.cancelled()) return outcome(CANCELLED, round, "用户叫停", ...);
+    lastCompact = Compact.maybe(messages, anchorTable(),          <span class="c">// 太长就压</span>
+            limits.compactChars(), limits.compactKeepTail());
+
+    Turn turn = turn(messages);                    <span class="c">// 问模型 + 认它（认不出同轮补问）</span>
+    if (turn.status() != null) return outcome(turn.status(), ...);
+    if (turn.parsed().kind() == ANSWER) return outcome(DONE, ...);
+    if (++toolCalls &gt; limits.maxInstalls()) return outcome(TOOL_LIMIT, ...);
+
+    Signal signal = runTool(round, turn.parsed(), messages, calls);
+    if (signal != null) return outcome(DONE, "模型交差", ...);
+}
+return outcome(ROUND_LIMIT, round, "轮次上限用尽，模型还没收工", ...);</code></pre>
+<p>四道闸各有自己的收场档，所以“它为什么停了”永远答得出来：轮次用完、工具调太多、格式一直不对、超时、被叫停。</p>
+
+<h2>② 压缩：锚点由循环自己攒</h2>
+<pre><code>private void remember(Map&lt;String, Object&gt; args, ToolResult result) {
+    Object path = args.get("path");
+    if (path instanceof String one &amp;&amp; !one.isBlank() &amp;&amp; touched.size() &lt; ANCHOR_PATHS) {
+        touched.add(one.strip());                  <span class="c">// 动过哪些路径</span>
+    }
+    if (result != null &amp;&amp; !result.ok() &amp;&amp; failures.size() &lt; ANCHOR_FAILURES) {
+        failures.add(第一行, ≤90 字);                <span class="c">// 最近几次为什么不行</span>
+    }
+}</code></pre>
+<p>压缩保四样：系统规矩、原始任务书、最后几条对话、这份锚点。锚点不是业务知识，是循环每轮都看在眼里的东西，所以由循环自己记——
+原来交给调用方拼，五格里只有一个拼了，其余一压缩就丢，模型开始重复读同一个文件。</p>
+
+<h2>③ 认不出来时的那句补问</h2>
+<pre><code>if (parsed.kind() == UNPARSABLE &amp;&amp; retries &lt; 2) {
+    messages.add(Llm.Msg.user(Protocol.retryNotice(parsed.problem())));   <span class="c">// “你给的是 java 块…”</span>
+    continue;   <span class="c">// 同一轮内重问，不扣轮次</span>
+}</code></pre>
+<p>补问两次还认不出来才以 <code>UNPARSABLE</code> 收场，话术带上它写的原文。理解成“没听懂”，不是“失败”。</p>
+
+<nav class="bot"><a href="31-code-gates.html">← 上一页：闸与收场</a> · <a href="../SYSTEM.html">目录</a> · <a href="33-code-ledger.html">下一页：账本 →</a></nav>
+
+</body>
+</html>

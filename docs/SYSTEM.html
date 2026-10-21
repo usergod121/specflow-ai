@@ -9,45 +9,41 @@
 <body>
 
 <h1>specflow · 系统说明书</h1>
-<p class="lead">一个规格驱动的编码助手：给它项目和一段需求，它按五步把活干完——搭环境、摸清代码、定验收线、改代码、在容器副本里逐条验。</p>
-<p class="lead">这份说明书分四层，<b>一层一页，一页只讲一件事</b>。按顺序读，别跳。
-读完第一层你能听懂别人在说哪一块；读完第二层你知道数据怎么流；第三、四层是给要改它的人看的。</p>
+<p class="lead">给它项目和一段需求，它按五个节点把活干完：环境、上下文、用例、开发、测试。每一步交出的东西是下一步的输入，交不够就不许往下走。</p>
+<p class="lead">这份说明书画成一张表：<b>横向三页讲共性，纵向五页讲每个节点，最后三页源码</b>。每页只讲一件事，页尾有「下一页」，按顺序读就不用记目录。</p>
 
-<h2>目录</h2>
+<h2>横向：五个节点共用的东西</h2>
 <div class="tree">
-  <b>第一层 · 粗线条</b><span class="n">只有五块，没有类名</span><br />
-  &nbsp;&nbsp;<a href="book/01-big-picture.html">1.1 五个模块</a><span class="n">一屏</span><br />
-  &nbsp;&nbsp;<a href="book/02-dataflow.html">1.2 数据流：一次点击</a><span class="n">一屏</span><br />
+  <a href="book/10-skeleton.html">全局 1 · 一次点击的骨架</a><span class="n">判 → 登记 → 干活 → 收场</span><br />
+  <a href="book/11-shared.html">全局 2 · 共用的八件东西</a><span class="n">事件流 / 闸 / 动作表 / 运行 / 叫停 / 预算 / 快照 / 错误口径</span><br />
+  <a href="book/12-loop.html">全局 3 · 环</a><span class="n">模型怎么动手：回合、工具调用、三层装箱</span><br />
+</div>
 
-  <b>第二层 · 每块怎么走</b><span class="n">流程图或伪代码，每页最多三个类名</span><br />
-  &nbsp;&nbsp;<a href="book/03-ledger.html">2.1 账本怎么记账</a><br />
-  &nbsp;&nbsp;<a href="book/04-flow.html">2.2 流程怎么管进度</a><br />
-  &nbsp;&nbsp;<a href="book/05-loop.html">2.3 环怎么干活</a><br />
-  &nbsp;&nbsp;<a href="book/06-env.html">2.4 环境与验收怎么跑</a><br />
-  &nbsp;&nbsp;<a href="book/07-ui.html">2.5 界面怎么不长脑子</a><br />
+<h2>纵向：五个节点，一页一个</h2>
+<div class="tree">
+  <a href="book/21-env.html">① 环境</a><span class="n">探测 → 起容器 → 在容器里真构建一次</span><br />
+  <a href="book/22-probe.html">② 上下文</a><span class="n">交四样产物，其中 changes 是 ④ 的写白名单</span><br />
+  <a href="book/23-cases.html">③ 用例</a><span class="n">清单要能逐条判“过没过”</span><br />
+  <a href="book/24-dev.html">④ 开发</a><span class="n">白名单内改真代码，每次交差编译一次</span><br />
+  <a href="book/25-test.html">⑤ 测试</a><span class="n">副本 + 容器里逐条验，结论与证据写回清单</span><br />
+</div>
 
-  <b>第三层 · 那几个类与调用顺序</b><span class="n">表加时序，只挑真用得上的</span><br />
-  &nbsp;&nbsp;<a href="book/08-classes-flow.html">3.1 流程：类与一次动作的调用链</a><br />
-  &nbsp;&nbsp;<a href="book/09-classes-loop.html">3.2 环：类与一次回合的调用链</a><br />
-
-  <b>第四层 · 关键源码</b><span class="n">一段代码一段解读，一页最多三段</span><br />
-  &nbsp;&nbsp;<a href="book/10-code-ledger.html">4.1 账本：<code>append</code> 与原子写</a><br />
-  &nbsp;&nbsp;<a href="book/11-code-flow.html">4.2 流程：闸、冻结、收场</a><br />
-  &nbsp;&nbsp;<a href="book/12-code-loop.html">4.3 环：回合与压缩</a><br />
-  &nbsp;&nbsp;<a href="book/13-code-sandbox.html">4.4 验收：沙箱、预算、审批</a><br />
-
-  <b>查表</b><span class="n">回头查的时候用</span><br />
-  &nbsp;&nbsp;<a href="book/90-rules.html">铁律 · 十二条不变式 · 边界 · 踩过的坑</a><br />
+<h2>再往下：源码与查表</h2>
+<div class="tree">
+  <a href="book/31-code-gates.html">源码 1 · 闸、冻结、收场</a><br />
+  <a href="book/32-code-loop.html">源码 2 · 回合、压缩、补问</a><br />
+  <a href="book/33-code-ledger.html">源码 3 · append、原子写、截断</a><br />
+  <a href="book/90-rules.html">查表 · 铁律、十二条不变式、边界、踩过的坑</a><br />
 </div>
 
 <h2>三条提醒</h2>
 <ol>
-  <li>每页末尾都有「下一页」，跟着走就行，不用背目录。</li>
-  <li>数字（几个类、几条路由、几条测试）都能数。对不上说明文档旧了。</li>
-  <li>文档里的代码是从 <code>src/main/java</code> 抄的。和代码不一致时以代码为准，然后回来改文档。</li>
+  <li>五个节点页是同一个模板：<b>点一下按钮 → 调用哪个类哪个方法 → 交什么 → 闸问什么 → 常见失败</b>。</li>
+  <li>数字都能数（几个类、几条路由、几条测试）。对不上说明文档旧了。</li>
+  <li>文档里的代码是从 <code>src/main/java</code> 抄的；和代码不一致时以代码为准，然后回来改文档。</li>
 </ol>
 
-<p class="lead">想知道怎么跑起来、怎么配，看仓库根的 <code>README.md</code>；想知道加一个按钮要动哪几处，看 <code>CONTRIBUTING.md</code>。</p>
+<p class="lead">怎么跑起来、怎么配看仓库根的 <code>README.md</code>；加一个按钮要动哪几处看 <code>CONTRIBUTING.md</code>。</p>
 
 </body>
 </html>

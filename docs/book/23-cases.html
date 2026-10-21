@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>③ 用例 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">纵向 · 节点 ③</span> · <a href="24-dev.html">下一页 →</a></nav>
+
+<h1>③ 用例：把一句需求变成能逐条判定"过没过"的清单</h1>
+<p class="lead">这一格只有一份产物：<code>cases.json</code>。它是 ⑤ 的工作清单，也是这一轮"验过什么"的唯一依据。</p>
+
+<h2>点「生成用例」</h2>
+<div class="fig">Api.casesAgent（同步，用 Jobs.register 登记，不走 Runs）
+ ├ requireReachable(CASES,"让 AI 写用例")
+ ├ 读 facts：requirement（需求）必须非空，design 可选
+ ├ 读 probe.json 的 files / context 当背景
+ ├ CasesAgent.generate(...)      Loop 跑一轮，交回一组 One{id, what, tags, expect}
+ └ 直接返回给界面，**不落盘**（草稿要人先过一眼）</div>
+
+<h2>点「保存」</h2>
+<div class="fig">Api.casesSave {cases:[…]}
+ ├ 逐条解析成 CaseList.Case（标签只认 CaseList.TAGS 里那几个）
+ ├ CaseList.save(...)
+ │    ├ 先整份校验：每条要有描述、要有标签、id 不重复
+ │    ├ 任一处不合规 → 抛异常，**整份都不落盘**（正文逐条列出哪里不对）
+ │    └ 全过 → Atomic.write(cases.json)   一次写完，不会出现半份清单
+ └ 返回新清单；界面刷新后看到的就是盘上那份</div>
+
+<h2>清单长什么样</h2>
+<table>
+  <tr><th>字段</th><th>意思</th></tr>
+  <tr><td><code>id</code> / <code>what</code></td><td>名字与一句可判定的描述（不是“测试一下借书”，而是“借出 3 本后余量应为 2”）</td></tr>
+  <tr><td><code>tags</code></td><td>分类标签（只从那几个固定值里选）</td></tr>
+  <tr><td><code>expect</code></td><td>期望结果，⑤ 照着判</td></tr>
+  <tr><td><code>status</code> / <code>evidence</code></td><td>由 ⑤ 写：<code>PENDING</code> → <code>PASS</code>/<code>FAIL</code>/<code>ERROR</code>/<code>SKIPPED</code> + 证据</td></tr>
+</table>
+
+<p><b>闸</b>：至少一条用例，且每条都有描述和标签。<br />
+<b>一条规矩</b>：清单的状态与证据由 ⑤ 写，人只在 ③ 改“验什么”——这样“验过没有”就不会被人在中途改掉。</p>
+
+<nav class="bot"><a href="22-probe.html">← 上一页：② 上下文</a> · <a href="../SYSTEM.html">目录</a> · <a href="24-dev.html">下一页：④ 开发 →</a></nav>
+
+</body>
+</html>

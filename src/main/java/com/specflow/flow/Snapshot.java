@@ -45,6 +45,8 @@ public final class Snapshot {
 
     private static final String PENDING = ".pending";
     private static final String DONE = ".done";
+    /** 没人处置、又被新一次快照顶替的旧快照：收进这个后缀，不再被 {@link #latest} 选中。 */
+    private static final String STALE = ".stale";
     private static final String MANIFEST = "manifest.tsv";
     private static final String PAYLOAD = "files";
     private static final String PRESENT = "PRESENT";
@@ -118,6 +120,43 @@ public final class Snapshot {
         }
         Atomic.write(directory.resolve(MANIFEST), manifest.isEmpty() ? "" : String.join("\n", manifest) + "\n");
         return new Snapshot(project, id, directory, skipped, present, absent);
+    }
+
+    /**
+     * 把「没人处置」的旧快照收进 {@code .stale}，并返回收起来的那些号。
+     *
+     * <h2>为什么要有这一步（用户实报：目录里像把整个项目拷了一份）</h2>
+     * 一次 ④ 跑开发拍一份 {@code .pending}，它只在两种情况下被处置：人点「冻结」（删掉）
+     * 或点「回滚」（改成 {@code .done}）。实际情况是：跑了三次开发、叫停一次、没冻也没滚——
+     * 三份 {@code .pending} 一直挂着，加起来二十几个文件，看起来像"整个项目被拷了下来"。
+     *
+     * <p>而 {@link #latest} 只认<b>最新</b>一份，旧的已经永远回滚不到了；留着它们除了占地方、
+     * 还会让人误判。所以拍新快照之前先把旧的收起来：改名而不是删——那毕竟是用户文件的原文，
+     * 真出了问题人还能自己从目录里捞回来，但产品不会再选它。
+     */
+    public static List<String> supersede(Project project) {
+        if (project == null) {
+            return List.of();
+        }
+        Path root = project.layout().snapshot(new Store(project).currentId());
+        if (!Files.isDirectory(root)) {
+            return List.of();
+        }
+        List<String> folded = new ArrayList<>();
+        try (Stream<Path> children = Files.list(root)) {
+            for (Path one : children.filter(Files::isDirectory)
+                    .filter(dir -> dir.getFileName().toString().endsWith(PENDING))
+                    .sorted()
+                    .toList()) {
+                String name = one.getFileName().toString();
+                String id = name.substring(0, name.length() - PENDING.length());
+                Files.move(one, one.resolveSibling(id + STALE));
+                folded.add(id);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("旧快照收不起来：" + root + "（" + e.getMessage() + "）", e);
+        }
+        return List.copyOf(folded);
     }
 
     /** 打开最近一份还没处置的快照（`POST /api/node/dev/rollback` 与拍快照不在同一次请求里）。没有 → {@code null}。 */

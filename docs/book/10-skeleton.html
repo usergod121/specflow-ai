@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>全局 1：一次点击的骨架 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">横向 · 全局骨架</span> · <a href="11-shared.html">下一页 →</a></nav>
+
+<h1>全局 1：一次点击的骨架</h1>
+<p class="lead">五个节点的按钮长得不一样，但点下去之后的骨架完全一样：<b>判 → 登记 → 干活 → 收场</b>。
+这一页只有这一条链，后面五个节点各自替换中间两步。</p>
+
+<h2>一次点击，五步</h2>
+<div class="fig">界面 POST /api/xxx
+  │
+  ① 路由      Api.xxx()                      取参数、拼 prompt；不判任何事
+  │
+  ② 判        FlowService.requireReachable   前驱没做完 → 409 + 那句话，写一条 gate 事件
+  │
+  ③ 登记      Runs.start(node, action, body) 查有没有别的活在跑 → 盖 runId、取游标
+  │                                           → Journal.begin → 写“开始” → 立刻回 202
+  │
+  ④ 干活      body(progress)                 真正的活：调 Agent / 起容器 / 跑工具
+  │           过程一行行写成事件（Progress 是唯一出口）
+  │
+  ⑤ 收场      Runs 读这一段事件 → 写一条 type=result 的结论
+  │                                           → Journal.end → facts.failed 落盘
+  ▼
+界面再问一次 GET /api/flow，用新状态重画</div>
+
+<p>三种收场：<b>DONE</b>（活干完了）、<b>FAILED</b>（带一句原因和原文）、<b>CANCELLED</b>（叫停优先于失败，不写成“它坏了”）。</p>
+
+<h2>同一件事的另一种形态：同步长任务</h2>
+<p>① 的「起环境」「编译」和 ③ 的「生成用例」不走 <code>Runs</code>——它们的语义是“点一下，等它好”，所以请求线程挂着，
+用 <code>Jobs.register(progress)</code> 登记（这让「叫停」仍然杀得动它）。除这五步外，其余完全一样。</p>
+
+<h2>从上游到下游：五个节点串起来</h2>
+<div class="fig">① 环境 ──▶ ② 上下文 ──▶ ③ 用例 ──▶ ④ 开发 ──▶ ⑤ 测试
+env.yaml      四样产物        带标签清单      真代码改动     结论 + 证据
+编译命令      files          每条一个判据    编译通过       提交 → 接受
+               changes（写白名单）    ↑ 白名单决定 ④ 能改哪些文件
+                                     └── ⑤ 的总结回喂 ④（再优化一轮）</div>
+
+<p class="lead">每个节点交出去的东西，就是下一节点的输入——这是这套流程唯一的耦合方式。所以「一个节点怎么算做完」看的是
+<b>它交的东西够不够下一步用</b>，不是它的 Agent 说自己做完了。</p>
+
+<nav class="bot"><a href="../SYSTEM.html">目录</a> · <a href="11-shared.html">下一页：五个节点共用的东西 →</a></nav>
+
+</body>
+</html>

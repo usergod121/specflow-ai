@@ -158,4 +158,25 @@ class SnapshotTest {
         assertThat(older.directory().getFileName().toString())
                 .isNotEqualTo(found.directory().getFileName().toString());
     }
+
+    @Test
+    @DisplayName("没人处置的旧快照被收进 .stale：latest 不再选它，原文还留在盘上")
+    void supersedeFoldsUnhandledSnapshots(@TempDir Path root) throws IOException {
+        Project project = project(root);
+        write(root, "src/A.java", "改之前的 A");
+
+        Snapshot first = Snapshot.capture(project, List.of(root.resolve("src/A.java")));
+        Snapshot second = Snapshot.capture(project, List.of(root.resolve("src/A.java")));
+        assertThat(first.directory().getFileName().toString()).endsWith(".pending");
+
+        // 用户实报的场景：跑了两次开发，没冻结也没回滚，目录里挂着两份
+        List<String> folded = Snapshot.supersede(project);
+
+        assertThat(folded).as("两份旧快照都该被收起来").containsExactlyInAnyOrder(first.id(), second.id());
+        assertThat(Snapshot.latest(project)).as("收起来之后没有可回滚的快照").isNull();
+        assertThat(first.directory()).as("改名不是删，原目录不该还在").doesNotExist();
+        Path stale = first.directory().resolveSibling(first.id() + ".stale");
+        assertThat(stale).as("原文落在 .stale 里").isDirectory();
+        assertThat(stale.resolve("files/src/A.java")).hasContent("改之前的 A");
+    }
 }

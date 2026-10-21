@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>⑤ 测试 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">纵向 · 节点 ⑤</span> · <a href="31-code-gates.html">下一页 →</a></nav>
+
+<h1>⑤ 测试：在副本里逐条验，结论与证据写回清单</h1>
+<p class="lead">这一格跑在<b>项目副本 + 真容器</b>里，改不坏你的项目。它交的东西是：每条用例的结论、证据，和一份总结。</p>
+
+<h2>点「跑测试」</h2>
+<div class="fig">Api.testRun → startTestRun(list, focus=null)
+ ├ requireReachable(TEST,"跑测试")
+ ├ CaseList.load(...)                       读 cases.json
+ ├ Runs.start(TEST,"run")
+ └ body:
+      ├ TestSandbox.prepare(...)
+      │    ├ copyTree(项目 → flow/&lt;id&gt;/sandbox/&lt;runId&gt;)   整份副本，含未提交的改动
+      │    ├ Compose.render + up                           起测试容器
+      │    └ preflight：工具在不在、目录挂对没有
+      ├ TestAgent.run(...)                                 逐条验
+      └ 收场：容器 down -v + 删副本</div>
+
+<h2>每一轮里有什么</h2>
+<table>
+  <tr><th>工具</th><th>干什么</th></tr>
+  <tr><td><code>bash</code></td><td>在容器里跑命令（带超时；高危命令走审批）</td></tr>
+  <tr><td><code>read_file</code> / <code>read_list</code></td><td>读副本里的文件</td></tr>
+  <tr><td><code>case_update</code></td><td>写回一条用例的结论 + 证据；判 PASS 时引擎会问自己“这条用例期间真调过工具吗”，零调用直接拒</td></tr>
+  <tr><td><code>phase</code></td><td>切「准备 / 验收」阶段，验收期源码冻结（<code>Frozen</code>）</td></tr>
+  <tr><td><code>submit</code></td><td>这一轮验完了，交差</td></tr>
+</table>
+<p>换到新一条用例时回调一次 <code>sandbox.reset()</code>，跑 <code>env.yaml</code> 里那条 <code>reset</code> 命令，让每条用例从已知状态开始。
+单条预算 12 轮（准备阶段多给 8 轮），整轮 <code>max(60, 用例数×12+20)</code>。</p>
+
+<h2>跑完之后的三个按钮</h2>
+<div class="fig">提交 Api.testSubmit
+   清单里还有 PENDING → 拒；否则写 summary.md，并把这段总结写进 ④ 的 feedback（回喂开发）
+
+接受 Api.testAccept
+   freeze(TEST) → 闭环；顺手处置 ⑤ 留下的写前快照
+
+重试这一条 Api.testRetryCase {id}
+   把这一条改回 PENDING 再只验它；单条最多重试 3 次（计数落在 facts 的 retries:&lt;id&gt;）</div>
+
+<p><b>闸</b>：清单里没有 PENDING <b>且</b>已提交。<br />
+<b>断点</b>：跑到一半被杀，<code>checkpoint.json</code> 记着“验到哪一条、下一步干什么”，可以接着跑；
+它只是一份提示，真相永远是 <code>cases.json</code> 和 <code>events.jsonl</code>。</p>
+
+<nav class="bot"><a href="24-dev.html">← 上一页：④ 开发</a> · <a href="../SYSTEM.html">目录</a> · <a href="31-code-gates.html">下一页：关键源码 →</a></nav>
+
+</body>
+</html>

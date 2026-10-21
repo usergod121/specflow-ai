@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>④ 开发 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">纵向 · 节点 ④</span> · <a href="25-test.html">下一页 →</a></nav>
+
+<h1>④ 开发：在白名单里改真代码</h1>
+<p class="lead">这一格唯一真正动用户代码的地方。它交的东西只有一件：<b>改完能编译</b>。</p>
+
+<h2>点「跑开发」</h2>
+<div class="fig">Api.devRun
+ ├ requireReachable(DEV,"跑开发")
+ ├ 读 probe.json：changes→白名单、files→先读哪几处、context→为什么、prompt→任务书
+ │    拿不到 probe / changes 为空 → 400 早退（白名单空＝让它对着整个项目瞎猜）
+ ├ Runs.start(DEV,"dev-run")
+ └ body:
+      ├ Snapshot.supersede(...)          上一份没人处置的快照收进 .stale
+      ├ Snapshot.capture(changes) + hold 只拍白名单里的文件，写之前先留原文
+      └ Dev.run(prompt, changes, files, context, feedback)
+           ├ 工具：read_list / read_file
+           │      StuckCheck(Whitelist(apply_patch))  改已有文件
+           │      StuckCheck(Whitelist(write_file))   新建文件（新增的类）
+           │      submit                              交差
+           ├ 每次 submit → Compiler.compile（宿主机）→ 失败就把原文回喂，接着改
+           └ 收场：compilePassed=true/false + 轮次与调用次数</div>
+
+<h2>三个和别处不一样的旋钮</h2>
+<table>
+  <tr><th>旋钮</th><th>值</th><th>为什么</th></tr>
+  <tr><td>轮次</td><td><code>min(160, max(40, 12 + 白名单×8))</code></td><td>写死 40 时，9 个文件（6 个要新建）读到一半就撞上限，界面上看起来像“编译没过”</td></tr>
+  <tr><td>能写什么</td><td>只有 <code>changes</code> 里的路径</td><td>白名单在工具层强制，不是靠提示词自觉</td></tr>
+  <tr><td>能建什么</td><td><code>write_file</code> 也过白名单</td><td>只有 <code>apply_patch</code> 时它只会改已有文件，需求要新增的类一个都建不出来</td></tr>
+</table>
+
+<h2>后悔了怎么办</h2>
+<div class="fig">Api.devRollback → Snapshot.latest().rollback()
+  按清单把原文逐字节写回；改前不存在的文件删掉；清单缺了就不回滚，如实报
+
+Api.flowFreeze {node:"dev"} → acceptSnapshot()
+  “这些改动我认了”：删掉那份快照（原文不再留）</div>
+
+<p><b>闸</b>：编译通过。没跑过和跑过但没成，话术都是同一句，并把人指到「留档」最后一条——那里写着为什么没成
+（轮次用尽 / 模型没交差 / 编译错误原文）。</p>
+
+<nav class="bot"><a href="23-cases.html">← 上一页：③ 用例</a> · <a href="../SYSTEM.html">目录</a> · <a href="25-test.html">下一页：⑤ 测试 →</a></nav>
+
+</body>
+</html>

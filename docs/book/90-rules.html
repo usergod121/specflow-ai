@@ -8,7 +8,7 @@
 </head>
 <body>
 
-<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">查表</span> · <a href="01-big-picture.html">回第一页 →</a></nav>
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">查表</span> · <a href="10-skeleton.html">回第一页 →</a></nav>
 
 <h1>查表：铁律、不变式、边界、坑</h1>
 <p class="lead">这一页不按顺序读，回头查的时候用。</p>
@@ -41,6 +41,7 @@
   <tr><td>跨文件一致性</td><td>没有事务。恢复粒度是“重跑这一步”，不是回放日志到一致点</td></tr>
   <tr><td>同步任务互斥</td><td>只有后台运行串行；起环境/编译/生成用例之间没有锁，靠界面按钮变灰挡</td></tr>
   <tr><td>叫停</td><td>杀得掉进程，打不断正在飞的模型调用</td></tr>
+  <tr><td>写前快照</td><td>只拍那一次 ④ 白名单里的文件（不是整个项目）。只有最新一份能回滚，旧的被顶替时改名 <code>.stale</code>，不会自动删</td></tr>
   <tr><td>崩溃恢复的测试</td><td>有实现、有调用点，<b>没有单测</b>，靠手工杀进程验证</td></tr>
   <tr><td>平台</td><td>Windows + Docker Desktop 实测；只监听回环地址；无鉴权</td></tr>
 </table>
@@ -66,7 +67,7 @@
 
 <p class="lead">想知道这些坑的来龙去脉：<code>docs/v3/DECISIONS.md</code>（取舍）、<code>docs/DELIVERY.md</code>（验过什么）。</p>
 
-<nav class="bot"><a href="13-code-sandbox.html">← 上一页：验收源码</a> · <a href="../SYSTEM.html">目录</a> · <a href="01-big-picture.html">再读一遍 →</a></nav>
+<nav class="bot"><a href="33-code-ledger.html">← 上一页：账本源码</a> · <a href="../SYSTEM.html">目录</a> · <a href="10-skeleton.html">再读一遍 →</a></nav>
 
 </body>
 </html>

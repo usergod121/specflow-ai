@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>源码 3：账本 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">源码 · 账本</span> · <a href="90-rules.html">下一页 →</a></nav>
+
+<h1>源码 3：账本 —— append 与原子写</h1>
+<p class="lead">两段代码，都在 <code>core/</code>。第一段是 id 怎么来的，第二段是“不会写出半份文件”靠什么。</p>
+
+<h2>① 追加一行 = 先数行号</h2>
+<pre><code>public synchronized Event append(Event event) {
+    Event stamped = event.withId(rows().size() + 1L);   <span class="c">// id ≡ 行号</span>
+    Atomic.appendLine(file, Json.line(stamped));        <span class="c">// 一行一条，追加</span>
+    extend(Json.line(stamped));                         <span class="c">// 缓存接上，下次读 O(1)</span>
+    return stamped;
+}</code></pre>
+<p>数一下现有几行 → 盖号 → 写一行。所以“第几条”就是文件第几行；界面断线重连、进程重启都接着这个数往下读。
+<code>synchronized</code> 是唯一的写者保证，也是唯一的并发控制。</p>
+
+<h2>② 整份替换 = 同目录临时文件 + 改个名</h2>
+<pre><code>Path temp = file.resolveSibling(file.getFileName() + ".tmp");
+Files.writeString(temp, content, UTF_8, CREATE, TRUNCATE_EXISTING, WRITE);
+Files.move(temp, file, REPLACE_EXISTING, ATOMIC_MOVE);   <span class="c">// 原子</span></code></pre>
+<p>两个细节都是踩出来的：临时文件必须和目标<b>同一目录</b>（跨盘改名会退化成复制 + 删，又变回写一半）；
+读的时候要剥掉 BOM（记事本写出的文件第一个字符是 U+FEFF，会让路径解析莫名其妙地失败）。</p>
+
+<h2>③ 读：按 (大小, 修改时间) 判断要不要重读</h2>
+<pre><code>Snapshot cached = CACHE.get(file);
+if (cached != null &amp;&amp; cached.size() == size &amp;&amp; cached.mtime() == mtime) return cached.rows();
+fresh = Files.readAllLines(file);     <span class="c">// 变了才整份重读</span></code></pre>
+<p>界面改成 SSE 之后每 250 毫秒读一次尾巴，没有这层缓存等于每秒把整个文件读四遍。这也守住一条规矩：
+<b>盘是唯一真相，内存只是副本</b>。</p>
+
+<h2>④ 回退时截断：先留副本</h2>
+<p><code>EventLog.truncateTo</code> 在截之前先 <code>Atomic.copy</code> 一份 <code>events-invalidated-&lt;时间&gt;.jsonl</code>。
+回退作废的是“状态”，不是“记录”——用户点回退往往正因为刚才那步失败了，把失败原文一起删掉，他就再也说不出报的什么。</p>
+
+<div class="why"><b>边界</b>：没有 <code>fsync</code>。断电可能丢最后几行，但不会出现半份文件。这一档取舍写在 README 的已知限制里，不装成有数据库级持久性。</div>
+
+<nav class="bot"><a href="32-code-loop.html">← 上一页：回合与压缩</a> · <a href="../SYSTEM.html">目录</a> · <a href="90-rules.html">下一页：查表 →</a></nav>
+
+</body>
+</html>

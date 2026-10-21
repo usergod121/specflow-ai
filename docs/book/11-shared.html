@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>全局 2：共用的件 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">横向 · 共用件</span> · <a href="12-loop.html">下一页 →</a></nav>
+
+<h1>全局 2：五个节点共用的东西</h1>
+<p class="lead">下面八件东西不属于某一个节点，五个节点都在用。认这八件，比认五十个类有用。</p>
+
+<table>
+  <tr><th>件</th><th>干什么</th><th>在哪</th></tr>
+  <tr><td><b>事件流</b></td><td>发生过的每件事一行，一个写者，<code>id ≡ 行号</code>；四种 <code>type</code>：<code>log</code> / <code>tool</code> / <code>result</code> / <code>gate</code></td><td><code>core/EventLog</code> <code>core/Event</code></td></tr>
+  <tr><td><b>闸</b></td><td>能不能动只由一处判；返回空串＝能过，否则就是给用户看的那句话；被拦时写一条 <code>gate</code> 事件并 409</td><td><code>flow/Gates</code> <code>Gate</code> <code>Facts</code> · <code>FlowService.requireReachable</code> / <code>freeze</code></td></tr>
+  <tr><td><b>动作表</b></td><td>每格有哪些按钮、叫什么、进页头还是进「⋯」，只在这里声明一次，随 <code>/api/flow</code> 下发</td><td><code>flow/Actions</code></td></tr>
+  <tr><td><b>运行登记</b></td><td>一段活：立刻返回 202 + 游标、同一时刻只许一段、收场只写一条结论</td><td><code>flow/Runs</code> · 同步活走 <code>core/Jobs</code></td></tr>
+  <tr><td><b>叫停</b></td><td>立取消标记 + 杀它起的整棵进程树；后台活按 <code>CANCELLED</code> 收场，同步活回「已按你的意思停下」</td><td><code>core/Jobs.cancelAll</code> · <code>Runs.cancel</code></td></tr>
+  <tr><td><b>预算</b></td><td>三把尺：等多久（时间）、问几次（轮次）、调几次（工具数）。到点各有自己的收场档</td><td><code>env/Budgets</code> · <code>agent/LoopLimits</code> · <code>test/CaseBudget</code></td></tr>
+  <tr><td><b>快照与留档</b></td><td>改项目之前拍原文（只拍白名单里的文件）；每段活开工/收场各记一行，用来判断有没有被杀过</td><td><code>flow/Snapshot</code> · <code>flow/Journal</code></td></tr>
+  <tr><td><b>错误口径</b></td><td>错误正文恒为 <code>{"error":"一句话"}</code>；400 参数、409 现在不能这么做、500 引擎自己炸了</td><td><code>web/Errors</code> · <code>ApiException</code> · <code>FlowRejected</code></td></tr>
+</table>
+
+<h2>界面只做三件事</h2>
+<div class="fig">GET /api/flow ──▶ 五格状态、那句话、动作表、running ──▶ 画
+点按钮        ──▶ POST ──▶ 不管成功还是 409，都再问一次 /api/flow ──▶ 重画
+换项目        ──▶ 清掉上一套（流程/事件/失败条/游标）──▶ 重新问、重新连流</div>
+<p>没有本地判断：按钮禁不禁用、显示哪句话，全看后端。唯一特殊的是「叫停」——平时在「⋯」里，跑起来时被提到页头最前。</p>
+
+<div class="why"><b>为什么强调“一处”</b>：判据写两处就会出现“界面说能点、后端回 409”；
+按钮文案写两处就会出现“加了一个动作，只有一半页面有”；路径拼两处就会出现“少一层目录”。
+这八件里有一半的存在理由就是“只许有一处”。</div>
+
+<nav class="bot"><a href="10-skeleton.html">← 上一页：一次点击的骨架</a> · <a href="../SYSTEM.html">目录</a> · <a href="12-loop.html">下一页：环（③④⑤ 共用）→</a></nav>
+
+</body>
+</html>

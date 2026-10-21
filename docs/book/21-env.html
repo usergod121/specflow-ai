@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>① 环境 · specflow 说明书</title>
+<link rel="stylesheet" href="book.css" />
+</head>
+<body>
+
+<nav class="top"><a href="../SYSTEM.html">目录</a> · <span class="lv">纵向 · 节点 ①</span> · <a href="22-probe.html">下一页 →</a></nav>
+
+<h1>① 环境：把项目装进一个能构建的容器</h1>
+<p class="lead">这一格要交两样东西：<b>一份环境声明</b>（<code>env.yaml</code>）和<b>一条能跑通的编译命令</b>。
+四个按钮，四条链。</p>
+
+<h2>点「探测环境」</h2>
+<div class="fig">Api.envAgent
+ ├ FlowService.requireReachable(ENV,"探测环境")      判：前驱…① 是第一格，直接过
+ ├ Runs.start(ENV,"env-agent")                        登记：202 + 游标
+ └ body: EnvAgent.run()
+      ├ Loop 跑 read_list / read_file（只读，不动项目）
+      ├ 交回 env.yaml 全文 + 一条编译命令 + 几句说明
+      ├ ok  → Atomic.write(layout.envYaml(), 草稿)    ← 探测完就落盘
+      │       writeCompile(project, 命令)              ← 写进 project.yaml 的 build.compile
+      │       FlowService.note(ENV,{envDeclared,compileCommand})
+      └ !ok → progress.fail(原因)，旧文件一个都不动</div>
+
+<h2>点「起环境」</h2>
+<div class="fig">Api.envUp（同步，不走 Runs；用 Jobs.register 登记）
+ ├ Environment.up(progress)
+ │    ├ Compose.render(env.yaml)        声明 → compose.yaml（写在 flow/&lt;id&gt;/env/&lt;时间&gt;/）
+ │    ├ docker compose up -d            app 容器：非 root、cap_drop、只挂项目树
+ │    ├ init 逐条跑（可在依赖容器里跑，stdin 可喂项目里的文件）
+ │    └ 任何一步失败 → down -v 收干净，不留半成品
+ ├ Capabilities.verify(...)
+ │    ├ command -v 认构建工具（便宜）
+ │    └ 在容器里的副本（/tmp/specflow-build）真构建一次（贵）
+ │         失败且命令带 \ → linuxSafe 改成正斜杠再试，过了就写回 project.yaml
+ └ FlowService.note(ENV,{envReady,containerBuild,containerDetail})</div>
+
+<h2>点「编译」 / 「跳过」</h2>
+<p>编译走 <code>Api.envCompile</code> → <code>Compiler.compile</code>，在<b>宿主机</b>上跑（快速反馈），命令过 <code>CommandGuard</code>。
+跳过走 <code>Api.envSkip</code>，把 <code>envNotNeeded</code> 记成事实——闸的另一条出路。</p>
+
+<h2>这一格交出去什么 · 闸问什么</h2>
+<table>
+  <tr><th>产物</th><th>落在哪</th></tr>
+  <tr><td>环境声明</td><td><code>.specflow/env.yaml</code></td></tr>
+  <tr><td>编译命令</td><td><code>.specflow/project.yaml</code> 的 <code>build.compile</code></td></tr>
+  <tr><td>事实</td><td><code>flow/&lt;id&gt;/flow.json</code>：<code>envDeclared</code> <code>envReady</code> <code>containerBuild</code> <code>compilePassed</code></td></tr>
+</table>
+<p><b>闸</b>：编译命令非空 <b>且</b>（环境起过 <b>或</b> 声明不需要环境）。</p>
+<p><b>最常见的三个失败</b>：镜像里没有构建工具（改 <code>image</code> 或 <code>init</code>）；编译命令是 Windows 写法（自动改一次并写回）；
+Docker 没启动（话术直接说去开 Docker Desktop）。</p>
+
+<nav class="bot"><a href="12-loop.html">← 上一页：环</a> · <a href="../SYSTEM.html">目录</a> · <a href="22-probe.html">下一页：② 上下文 →</a></nav>
+
+</body>
+</html>
