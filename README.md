@@ -36,28 +36,9 @@ specflow 把「给一个陌生项目改一处需求」拆成五个有闸的节�
 
 ## 架构
 
-```mermaid
-flowchart TB
-    subgraph P["五节点流水线"]
-        direction LR
-        E["① 环境<br/><b>env.yaml</b> + 编译命令"] -->|"编译命令非空<br/>且环境可构建"| C["② 上下文<br/><b>files · changes · context · prompt</b>"]
-        C -->|"有可读文件<br/>prompt 非空"| U["③ 用例<br/><b>带标签的验收清单</b>"]
-        U -->|"≥1 条<br/>每条有描述和标签"| D["④ 开发<br/><b>白名单内改真项目</b>"]
-        D -->|"编译通过"| T["⑤ 测试<br/><b>容器副本逐条验</b>"]
-        T -->|"清单无 PENDING<br/>且已提交"| A(("接受"))
-    end
-    D -.->|"编译错误<br/>原文回喂"| D
-    T -.->|"总结回喂"| D
-    S["沙箱：项目副本 + 容器<br/>非 root · 无端口映射 · 用后即毁"] -.-> T
-    L["events.jsonl<br/>单写者 · id = 行号"] -.-> P
-
-    classDef node fill:#eef2ff,stroke:#4f46e5,stroke-width:1px;
-    classDef fin fill:#e7f5ec,stroke:#16a34a,stroke-width:1px;
-    classDef aux fill:#fef9ec,stroke:#b4690e,stroke-dasharray:3 3;
-    class E,C,U,D,T node
-    class A fin
-    class S,L aux
-```
+<p align="center">
+  <img src="docs/diagrams/architecture.svg" alt="specflow 架构图" width="96%" />
+</p>
 
 一次点按钮之后：
 
@@ -172,9 +153,9 @@ reset: "mvn -q flyway:clean flyway:migrate"   # ⑤ 每条用例开始前跑一�
 
 三个容易踩的点：
 
-- `healthcheck` 只认一条命令字符串（或 `{test: "..."}`），不要写 compose 那套 `interval` / `timeout` / `retries`，写了会被忽略。
-- 密码写进顶层 `env` 依赖容器拿不到，要写进 `dependencies.<名>.env`。
-- 不要靠 `init` 里 `apt-get install` 补工具：app 容器非 root、去特权。要工具就换镜像。
+- `healthcheck` 仅支持一条命令字符串（或 `{test: "..."}`）；compose 的 `interval`、`timeout`、`retries` 等字段会被忽略。
+- 密码须写入 `dependencies.<名>.env`：顶层 `env` 仅注入应用容器，依赖容器无法读取。
+- 不建议在 `init` 中安装系统依赖：应用容器以非特权用户运行且已去除能力，构建工具应通过镜像提供。
 
 ### 密钥
 
@@ -226,15 +207,15 @@ cd src/main/frontend && SPECFLOW_PLAYWRIGHT=file:///D:/tools/node_modules/playwr
 
 ## 已知限制
 
-- 只在 Windows 11 上实测，没在 macOS / Linux 上跑过。
-- 接口只监听回环地址、无鉴权，多用户和远程访问都不支持。
-- 同一时刻只允许一段运行。
-- 叫停杀得掉进程，打不断正在飞的模型调用。
-- 实际验证过的都是 Java/Maven 项目，别的语言要自己写 `compile`。
-- 模型只接过 DeepSeek 和一处 OpenAI 兼容端点；小模型偶尔吐不合规的代码块，引擎补问两次后仍不合规就收场。
-- 没有 CI、没有覆盖率门槛；文档里的数字是手工跑的。
-- Maven 版本号还是 `2.0.0`，`specflow version` 也打印 2.0.0。
-- 还没有 License 文件。
+- 仅在 Windows 11 环境验证，未覆盖 macOS / Linux。
+- HTTP 接口无鉴权，仅绑定回环地址；不支持多用户与远程访问。
+- 同一时刻仅允许一段执行，并发提交以冲突状态返回。
+- 终止操作会结束已派生的进程，但不中断进行中的模型请求。
+- 已验证场景为 Java / Maven 项目，其他语言需自定义编译命令。
+- 模型仅验证 DeepSeek 与一个 OpenAI 兼容端点；对不规范的模型输出，引擎在同一轮内最多补问两次，仍不合规则终止。
+- 无 CI 流程与覆盖率门槛，文档中的数字为手工执行所得。
+- Maven 版本号仍为 2.0.0，与分支命名历史不一致。
+- 暂未提供 License。
 
 ## 文档
 
