@@ -1,17 +1,7 @@
 <h1 align="center">specflow</h1>
 
 <p align="center">
-  <b>给 AI 一个项目，让它按五步把活干完——每一步都交出可复核的产物</b>
-</p>
-
-<p align="center">
-  <a href="#五步与闸">五步与闸</a> ·
-  <a href="#技术栈">技术栈</a> ·
-  <a href="#快速开始">快速开始</a> ·
-  <a href="#环境配置">环境配置</a> ·
-  <a href="#命令行">命令行</a> ·
-  <a href="#测试">测试</a> ·
-  <a href="#已知限制">已知限制</a>
+  <b>给 AI 一个项目，让它按五步把活干完——每一步都交出能复核的产物</b>
 </p>
 
 <p align="center">
@@ -24,46 +14,68 @@
   <img src="https://img.shields.io/badge/前端单测-11-4c1" alt="前端单测" />
 </p>
 
-<p align="center">
-  <code>① 环境 ──▶ ② 上下文 ──▶ ③ 用例 ──▶ ④ 开发 ──▶ ⑤ 测试</code>
-</p>
-
 ---
 
-给一个项目目录和一段改动需求，specflow 把活拆成五步：搭容器环境、摸清代码、写验收用例、改真代码、在容器副本里逐条验。每一步都落成能直接打开的文件，过不了闸就退回上一步。做给要接手陌生项目的人用，也给想看清「AI 到底改了什么、凭什么说验过了」的人用。
+specflow 把「给一个陌生项目改一处需求」拆成五个有闸的节点：环境、上下文、用例、开发、测试。每一步交出的产物是下一步的输入，走不过闸就退回上一步；Agent 在容器副本里改代码、按人定义的用例自验，结论与证据回写清单。做给要接手陌生项目、又想看清「AI 到底改了什么、凭什么说验过了」的人。
 
-现状：能在 Windows 11 + Docker Desktop + DeepSeek API 上完整跑通一条链路，后端 231 例单测、前端 11 例、七页浏览器冒烟；没有 CI，也没有自动化端到端脚本。代码在 `master` 分支，旧版按 `v2-final` tag 取。
+现状：在 Windows 11 + Docker Desktop + DeepSeek API 上完整跑通过一条链路；没有 CI、没有对外发布，代码在 `master` 分支。
 
-## 五步与闸
+## 特性
+
+- **五节点状态机**：环境、上下文、用例、开发、测试，顺序由枚举推导，准入判据是表驱动的纯函数，服务端校验与界面提示取同一结论。
+- **可复核的产物**：环境声明、可读文件与写白名单、验收清单、代码改动、结论与证据，全部落成能直接打开的文件。
+- **容器沙箱隔离**：测试在项目副本 + 非特权容器里执行，不映射宿主端口，用例之间重置数据，结束回收容器与卷，宿主项目不被挂载。
+- **事件流审计**：append-only 日志，事件 id 等于行号，增量读取、断点续跑与审计定位共用同一个编号。
+- **可回退**：改码前对白名单文件留存快照，回滚逐字节还原并清理新建文件；崩溃后按开收场记账识别并补偿未收场的执行。
+- **预算与中断**：时间、轮次、工具调用次数三重上限，到点各有明确原因；叫停按进程树整棵终止。
+- **模型无关**：工具调用走文本围栏协议，不依赖 function-calling，换模型只改配置。
+
+## 目录
+
+[架构](#架构) · [技术栈](#技术栈) · [快速开始](#快速开始) · [环境配置](#环境配置) · [命令行](#命令行) · [数据落点](#数据落点) · [测试](#测试) · [已知限制](#已知限制) · [文档](#文档)
+
+## 架构
 
 ```mermaid
-flowchart LR
-    env["① 环境<br/>env.yaml + 编译命令"] -->|编译命令非空, 且环境起过或声明不需要| probe["② 上下文<br/>files / changes / context / prompt"]
-    probe -->|有可读文件, prompt 非空| cases["③ 用例<br/>带标签的清单"]
-    cases -->|每条都有描述和标签| dev["④ 开发<br/>白名单内改真项目"]
-    dev -->|编译通过| test["⑤ 测试<br/>容器副本里逐条验"]
-    test -->|清单无 PENDING, 已提交| accept["接受, 这一轮结束"]
-    dev -.->|编译错误原文回喂| dev
-    test -.->|再优化一轮: 总结回喂 ④| dev
+flowchart TB
+    subgraph P["五节点流水线"]
+        direction LR
+        E["① 环境<br/><b>env.yaml</b> + 编译命令"] -->|"编译命令非空<br/>且环境可构建"| C["② 上下文<br/><b>files · changes · context · prompt</b>"]
+        C -->|"有可读文件<br/>prompt 非空"| U["③ 用例<br/><b>带标签的验收清单</b>"]
+        U -->|"≥1 条<br/>每条有描述和标签"| D["④ 开发<br/><b>白名单内改真项目</b>"]
+        D -->|"编译通过"| T["⑤ 测试<br/><b>容器副本逐条验</b>"]
+        T -->|"清单无 PENDING<br/>且已提交"| A(("接受"))
+    end
+    D -.->|"编译错误<br/>原文回喂"| D
+    T -.->|"总结回喂"| D
+    S["沙箱：项目副本 + 容器<br/>非 root · 无端口映射 · 用后即毁"] -.-> T
+    L["events.jsonl<br/>单写者 · id = 行号"] -.-> P
+
+    classDef node fill:#eef2ff,stroke:#4f46e5,stroke-width:1px;
+    classDef fin fill:#e7f5ec,stroke:#16a34a,stroke-width:1px;
+    classDef aux fill:#fef9ec,stroke:#b4690e,stroke-dasharray:3 3;
+    class E,C,U,D,T node
+    class A fin
+    class S,L aux
 ```
 
-一次点按钮之后发生什么：
+一次点按钮之后：
 
 ```mermaid
 sequenceDiagram
     participant U as 用户
     participant W as Web 路由
-    participant F as 流程(Gates/Runs)
-    participant A as Agent(Loop)
+    participant F as 流程（准入 / 运行登记）
+    participant A as Agent（循环）
     participant D as 磁盘
     U->>W: POST /api/node/test/run
     W->>F: 准入判定
     alt 未满足条件
         F-->>W: 409 + 一句话
     else 放行
-        F->>F: 登记一段执行, 记开工
+        F->>F: 登记一段执行，记开工
         W-->>U: 202 + 事件游标
-        A->>A: 循环: 压缩 → 问模型 → 跑工具
+        A->>A: 压缩 → 问模型 → 跑工具
         A->>D: 事件流 / 用例清单 / 快照
         A-->>W: 收场写结论
         W-->>U: 界面按游标增量刷新
@@ -71,8 +83,8 @@ sequenceDiagram
 ```
 
 - 闸的判据只有一份，在 `src/main/java/com/specflow/flow/Gates.java`，界面只显示它给出的那句话，不自己判断。
-- ② 的 `changes` 是 ④ 的写白名单：要改的文件和要新建的文件都列在这里，漏列的文件 ④ 动不了。
-- ⑤ 跑在项目副本 + 容器里，源码在验收阶段冻结，跑完要你点「接受」才算闭环。
+- ② 的 `changes` 是 ④ 的写白名单：要改的和要新建的文件都列在这里，漏列的文件 ④ 动不了。
+- ⑤ 跑在项目副本 + 容器里，验收阶段源码冻结，跑完要你点「接受」才算闭环。
 
 ## 技术栈
 
@@ -81,7 +93,7 @@ sequenceDiagram
 | 语言 | Java 17 | records 与文本块让数据类写起来很薄 |
 | Web | Spring Boot 3.5，只引 starter-web | 内嵌 Tomcat 一行起；不引 JPA / Security，暴露面越小越好 |
 | 模型 | LangChain4j（OpenAI 兼容） | 只用一个 `chat()` 调用，协议解析自己写更可控 |
-| 前端 | Vue 3 + Vite，无组件库 | 七页不需要框架；手写 CSS 才控得住 |
+| 前端 | Vue 3 + Vite，无组件库 | 七页不需要框架，手写 CSS 才控得住 |
 | 存储 | 文件（JSONL + JSON） | 产物要人能直接打开改；事件 id 就是行号 |
 | 容器 | Docker CLI | 行为可读、排错话术可控，离线仓库可用 |
 
@@ -94,19 +106,19 @@ mvn clean package                              # 产物 target/specflow.jar，�
 java -jar target/specflow.jar web -p fixture   # 打开 fixture 练手项目
 ```
 
-浏览器打开 `http://127.0.0.1:8780`。按页面顺序点：① 探测环境 → 起环境 → 冻结 → ② 存需求 → 跑探针 → 冻结 → ③ 生成用例 → 冻结 → ④ 跑开发 → 冻结 → ⑤ 跑测试 → 提交 → 接受。
+浏览器打开 `http://127.0.0.1:8780`，按页面顺序点：① 探测环境 → 起环境 → 冻结 → ② 存需求 → 跑探针 → 冻结 → ③ 生成用例 → 冻结 → ④ 跑开发 → 冻结 → ⑤ 跑测试 → 提交 → 接受。
 
 `fixture/` 是一个零依赖的 Java 小项目，故意留了一个 bug，期望输出写在 `fixture/README.md`。没有 key 也能开界面，点「跑」的时候会告诉你缺什么。
 
 ## 环境配置
 
-项目里只有两份配置是给人写的：`project.yaml`（构建与模型）和 `env.yaml`（环境声明）。密钥放 `local.env`。
+项目里两份配置是给人写的：`project.yaml`（构建与模型）、`env.yaml`（环境声明）；密钥放 `local.env`。
 
 ### `.specflow/project.yaml`
 
 ```yaml
 build:
-  compile: "mvn -q -DskipTests compile"   # ① 的闸第一条, 也是 ④ 每次交差跑的命令
+  compile: "mvn -q -DskipTests compile"   # ① 的闸第一条，也是 ④ 每次交差跑的命令
 
 llm:
   base-url: "https://api.deepseek.com"    # 任意 OpenAI 兼容端点
@@ -123,10 +135,10 @@ llm:
 「环境长什么样」的声明，引擎按它渲染 compose。① 的探测环境会生成一份，也可以手写。
 
 ```yaml
-image: "maven:3.9-eclipse-temurin-17"   # app 容器镜像, 项目目录挂进去
-workdir: "/work"                        # 容器内挂载点, 必须以 / 开头
+image: "maven:3.9-eclipse-temurin-17"   # app 容器镜像，项目目录挂进去
+workdir: "/work"                        # 容器内挂载点，必须以 / 开头
 
-dependencies:                           # 要连的中间件, 名字就是容器互连的服务名
+dependencies:                           # 要连的中间件，名字就是容器互连的服务名
   db:
     image: "mysql:8.0"
     env:
@@ -134,38 +146,35 @@ dependencies:                           # 要连的中间件, 名字就是容器
       MYSQL_DATABASE: "library"
     healthcheck: "mysqladmin ping -h 127.0.0.1 -uroot -p123456"   # 只写一条命令
 
-env:                                    # 注入 app 容器, 测试代码照它读
+env:                                    # 注入 app 容器，测试代码照它读
   DB_HOST: "db"
   DB_PORT: "3306"
 
-init:                                   # 起完环境跑一次, 逐条执行, 任一失败整体回滚
+init:                                   # 起完环境跑一次，逐条执行，任一失败整体回滚
   - "mvn -q -DskipTests compile"
-  - service: "db"                       # 在 db 容器里跑(非 root 的 app 装不了 mysql 客户端)
+  - service: "db"                       # 在 db 容器里跑（非 root 的 app 装不了 mysql 客户端）
     command: "mysql -uroot -p123456 library"
-    stdin: "sql/schema.sql"             # 项目里的文件, 由引擎搬进容器喂给标准输入
+    stdin: "sql/schema.sql"             # 项目里的文件，由引擎搬进容器喂给标准输入
 
-reset: "mvn -q flyway:clean flyway:migrate"   # ⑤ 每条用例开始前跑一次, 把数据恢复已知状态
+reset: "mvn -q flyway:clean flyway:migrate"   # ⑤ 每条用例开始前跑一次
 ```
-
-字段说明：
 
 | 字段 | 必填 | 作用 | 注意 |
 | --- | --- | --- | --- |
 | `image` | 是 | app 容器镜像 | 必须自带 `compile` 要用的构建工具，版本与项目声明一致 |
 | `workdir` | 否 | 项目目录挂进容器的位置 | 默认 `/work`；别用 `/app`，那是镜像自己的目录 |
-| `dependencies.<名>` | 否 | 一个中间件 | 名字同时是容器互连的主机名，只能用小写字母、数字、点、下划线、短横线 |
-| `dependencies.<名>.image` | 是 | 依赖镜像 | |
-| `dependencies.<名>.env` | 否 | 注入这个依赖容器 | 密码、初始库名写在这里，不是顶层 `env` |
+| `dependencies.<名>` | 否 | 一个中间件 | 名字同时是容器互连的主机名 |
+| `dependencies.<名>.env` | 否 | 注入这个依赖容器 | 密码、初始库名写这里，不是顶层 `env` |
 | `dependencies.<名>.healthcheck` | 否 | 健康检查命令 | 一条命令字符串，不写 `interval` / `timeout` / `retries` |
 | `env` | 否 | 注入 app 容器的连接信息 | 值写成带引号的字符串 |
 | `init` | 否 | 起环境后跑一次 | 可在依赖容器里跑（`service`），可喂项目文件（`stdin`） |
-| `reset` | 否 | 每条用例前跑一次 | 用于把数据恢复到已知状态 |
+| `reset` | 否 | 每条用例前跑一次 | 把数据恢复到已知状态 |
 
 三个容易踩的点：
 
-- `healthcheck` 只认一条命令字符串（或 `{test: "..."}`），不要写 compose 那套 `interval` / `timeout` / `retries`——写了会被忽略。
+- `healthcheck` 只认一条命令字符串（或 `{test: "..."}`），不要写 compose 那套 `interval` / `timeout` / `retries`，写了会被忽略。
 - 密码写进顶层 `env` 依赖容器拿不到，要写进 `dependencies.<名>.env`。
-- 不要靠 `init` 里 `apt-get install` 补工具：app 容器非 root、去特权，装不了系统包。要工具就换镜像。
+- 不要靠 `init` 里 `apt-get install` 补工具：app 容器非 root、去特权。要工具就换镜像。
 
 ### 密钥
 
@@ -175,7 +184,7 @@ reset: "mvn -q flyway:clean flyway:migrate"   # ⑤ 每条用例开始前跑一�
 
 ```bash
 java -jar target/specflow.jar web [--port 8780] [--no-open] [-p 项目目录]
-java -jar target/specflow.jar env prepare [-p 项目目录]               # 只铺配置, 不动 docker
+java -jar target/specflow.jar env prepare [-p 项目目录]               # 只铺配置，不动 docker
 java -jar target/specflow.jar env init    [-p 项目目录] [--timeout 分钟]
 java -jar target/specflow.jar env reset   [-p 项目目录] [--timeout 分钟]
 java -jar target/specflow.jar env status  [-p 项目目录]
@@ -185,19 +194,19 @@ java -jar target/specflow.jar version
 
 `env down` 按项目名扫容器、网络、卷，⑤ 的测试沙箱也会一并收掉。服务只监听 `127.0.0.1`，别改成 `0.0.0.0`。
 
-## 数据落在哪
+## 数据落点
 
 ```text
 <项目>/.specflow/
   project.yaml  local.env  env.yaml
   flow/current                              当前流程 id
   flow/<id>/flow.json                       五格状态 + facts
-  flow/<id>/events.jsonl                    事件流, 行号就是事件 id
+  flow/<id>/events.jsonl                    事件流，行号就是事件 id
   flow/<id>/probe.json  cases.json  summary.md
   flow/<id>/snapshot/                       写之前的原文
   flow/<id>/runs/<runId>.jsonl              每次运行的开工/收场
   flow/<id>/env/<时间戳>/compose.yaml       渲染出来的 compose
-  flow/<id>/checkpoint.json                 断点, 可以删
+  flow/<id>/checkpoint.json                 断点，可以删
 
 ~/.specflow/logs/engine.log                 引擎日志
 ~/.specflow/recent.json                     最近打开的项目
@@ -226,21 +235,6 @@ cd src/main/frontend && SPECFLOW_PLAYWRIGHT=file:///D:/tools/node_modules/playwr
 - 没有 CI、没有覆盖率门槛；文档里的数字是手工跑的。
 - Maven 版本号还是 `2.0.0`，`specflow version` 也打印 2.0.0。
 - 还没有 License 文件。
-
-## 目录结构
-
-```text
-src/main/java/com/specflow/
-  core/    事件流、原子写、路径、进程、模型、日志
-  flow/    五格状态机、闸、动作表、运行登记、快照、崩溃恢复
-  env/     compose 渲染、起停、命令守卫、宿主机编译、容器能力校验
-  agent/   ReAct 循环、上下文压缩、打转检测、工具
-  test/    测试沙箱、用例清单、逐用例预算、审批
-  web/     HTTP 路由、会话、静态资源、错误口径
-src/main/frontend/   Vue 3 + Vite
-fixture/             练手用的零依赖 Java 项目
-docs/                架构、接口、界面、交付记录、说明书
-```
 
 ## 文档
 
